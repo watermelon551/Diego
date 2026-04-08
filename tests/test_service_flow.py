@@ -1,15 +1,35 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from service.app import create_app
+from service.config import load_settings
+from service.llm_client import MockLLMClient
+from service.orchestrator import RunOrchestrator
+from service.store import RunStore
 
 
-def make_client(tmp_path: Path) -> TestClient:
-    return TestClient(create_app(base_dir=tmp_path))
+class SlowMockLLMClient(MockLLMClient):
+    async def generate_outline(self, **kwargs):
+        await asyncio.sleep(0.05)
+        return await super().generate_outline(**kwargs)
+
+
+def make_client(tmp_path: Path, llm_client: MockLLMClient | None = None) -> TestClient:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        llm_client=llm_client or MockLLMClient(),
+        slide_concurrency=2,
+        slide_retry=2,
+        llm_max_retries=2,
+    )
+    return TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
 
 
 def wait_status(client: TestClient, run_id: str, expected: set[str], timeout: float = 4.0) -> dict:
@@ -20,6 +40,14 @@ def wait_status(client: TestClient, run_id: str, expected: set[str], timeout: fl
             return data
         time.sleep(0.02)
     raise AssertionError(f"run {run_id} not in {expected} within {timeout}s")
+
+
+def test_missing_llm_env_should_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    with pytest.raises(ValueError):
+        load_settings(env_file="tests/.missing.env")
 
 
 def test_create_run_and_validation(tmp_path: Path) -> None:
@@ -41,7 +69,7 @@ def test_create_run_and_validation(tmp_path: Path) -> None:
 
 
 def test_confirm_gate_and_success_flow(tmp_path: Path) -> None:
-    client = make_client(tmp_path)
+    client = make_client(tmp_path, llm_client=SlowMockLLMClient())
     run_id = client.post(
         "/v1/ppt/runs",
         json={
@@ -125,6 +153,6 @@ def test_slide_retry_and_compile_failure(tmp_path: Path) -> None:
     client.post(f"/v1/ppt/runs/{fail_run_id}/outline/confirm", json={"approved": True})
     failed = wait_status(client, fail_run_id, {"FAILED"})
 
-    assert failed["error_code"].startswith("COMPILE_ERROR")
+    assert failed["error_code"] == "COMPILE_ERROR"
     assert failed["failed_stage"] == "COMPILING"
     assert "run.failed" in [event["event"] for event in failed["events"]]

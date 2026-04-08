@@ -8,9 +8,47 @@
 - 标准输入：`topic/project_id/rag_source_ids/template_style/target_slide_count`。
 - 标准输出：`OutlineDocument`、逐页 `slide-xx.js`、最终 `pptx`、`citation_map`。
 - 提供可消费事件流，至少覆盖：`outline.token`、`outline.completed`、`slide.generated`、`compile.completed`、`run.failed`。
-- 全链路可观测：每次运行必须记录 `run_id`、`trace_id`、阶段耗时与错误码。
+- 全链路可观测：每次运行记录 `run_id`、`trace_id`、阶段耗时与错误码。
 
 完整规范见：[PROJECT_GOALS.md](./docs/PROJECT_GOALS.md)
+
+## 快速开始
+
+```powershell
+# 1) 创建虚拟环境
+D:\program\Anaconda\python.exe -m venv .venv
+
+# 2) 安装依赖
+.\.venv\Scripts\python.exe -m pip install -e .[dev]
+
+# 3) 配置大模型（必须）
+Copy-Item .env.example .env
+# 然后编辑 .env 中的 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+
+# 4) 启动服务
+.\.venv\Scripts\python.exe .\scripts\run_dev.py
+```
+
+服务默认地址：`http://127.0.0.1:8000`
+
+> 当前版本已接入 OpenAI 兼容 Chat Completions，未配置 `.env` 必填项时会直接报错。
+
+## API 工作流
+
+1. `POST /v1/ppt/runs` 创建 run（进入 `OUTLINE_DRAFTING`）
+2. `GET /v1/ppt/runs/{run_id}/events` 订阅 SSE 事件流
+3. `GET /v1/ppt/runs/{run_id}` 查询状态（等待 `AWAITING_OUTLINE_CONFIRM`）
+4. `POST /v1/ppt/runs/{run_id}/outline/confirm` 确认/提交修改版大纲
+5. `GET /v1/ppt/runs/{run_id}` 获取最终产物路径（`compile.js`、`output.pptx`）
+
+## 运行测试
+
+```powershell
+New-Item -ItemType Directory -Force -Path .runtime,.runtime\pytest_tmp,.runtime\pytest_cache | Out-Null
+$env:TEMP=(Resolve-Path '.runtime').Path
+$env:TMP=$env:TEMP
+.\.venv\Scripts\python.exe -m pytest -q --basetemp=.runtime\pytest_tmp -o cache_dir=.runtime\pytest_cache
+```
 
 ## 文档目录
 

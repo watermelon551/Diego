@@ -7,6 +7,8 @@ ppt_agent_service.egg-info/requires.txt
 ppt_agent_service.egg-info/top_level.txt
 service/__init__.py
 service/app.py
+service/config.py
+service/llm_client.py
 service/models.py
 service/orchestrator.py
 service/pptx_builder.py

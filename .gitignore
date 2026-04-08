@@ -1,9 +1,14 @@
 # Runtime and generated artifacts
 .runtime/
+pytest-cache-files-*/
 
 # Python cache
 __pycache__/
 *.pyc
+*.egg-info/
 
 # IDE
 .idea/
+
+# Local environment config
+.env
