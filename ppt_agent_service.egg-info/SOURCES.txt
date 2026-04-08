@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+ppt_agent_service.egg-info/PKG-INFO
+ppt_agent_service.egg-info/SOURCES.txt
+ppt_agent_service.egg-info/dependency_links.txt
+ppt_agent_service.egg-info/requires.txt
+ppt_agent_service.egg-info/top_level.txt
+service/__init__.py
+service/app.py
+service/models.py
+service/orchestrator.py
+service/pptx_builder.py
+service/store.py
+tests/test_service_flow.py

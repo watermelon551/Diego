@@ -1,0 +1,9 @@
+# Runtime and generated artifacts
+.runtime/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
