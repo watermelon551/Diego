@@ -7,6 +7,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
+    llm_api_style: str
     llm_base_url: str
     llm_api_key: str
     llm_model: str
@@ -16,6 +17,8 @@ class Settings:
     llm_temperature_slide: float
     slide_concurrency: int
     slide_retry: int
+    qa_enabled: bool
+    repair_rounds: int
 
 
 def _require_env(name: str) -> str:
@@ -44,9 +47,15 @@ def _env_int(name: str, default: int, min_value: int = 1) -> int:
     return value
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "1" if default else "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def load_settings(env_file: str | Path = ".env") -> Settings:
     _load_env_file(env_file)
     return Settings(
+        llm_api_style=os.getenv("LLM_API_STYLE", "openai_chat").strip().lower(),
         llm_base_url=_require_env("LLM_BASE_URL"),
         llm_api_key=_require_env("LLM_API_KEY"),
         llm_model=_require_env("LLM_MODEL"),
@@ -56,6 +65,8 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         llm_temperature_slide=_env_float("LLM_TEMPERATURE_SLIDE", 0.6),
         slide_concurrency=_env_int("SLIDE_CONCURRENCY", 4),
         slide_retry=_env_int("SLIDE_RETRY", 2),
+        qa_enabled=_env_bool("QA_ENABLED", True),
+        repair_rounds=_env_int("REPAIR_ROUNDS", 2),
     )
 
 

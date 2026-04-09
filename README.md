@@ -20,10 +20,11 @@ D:\program\Anaconda\python.exe -m venv .venv
 
 # 2) 安装依赖
 .\.venv\Scripts\python.exe -m pip install -e .[dev]
+npm install
 
 # 3) 配置大模型（必须）
 Copy-Item .env.example .env
-# 然后编辑 .env 中的 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+# 然后编辑 .env 中的 LLM_API_STYLE / LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
 
 # 4) 启动服务
 .\.venv\Scripts\python.exe .\scripts\run_dev.py
@@ -31,15 +32,25 @@ Copy-Item .env.example .env
 
 服务默认地址：`http://127.0.0.1:8000`
 
-> 当前版本已接入 OpenAI 兼容 Chat Completions，未配置 `.env` 必填项时会直接报错。
+> 当前版本支持 `openai_chat` 和 `anthropic_messages` 两种协议（由 `LLM_API_STYLE` 控制），未配置 `.env` 必填项时会直接报错。
 
 ## API 工作流
 
+### Scratch 生成（严格 skill 流程）
 1. `POST /v1/ppt/runs` 创建 run（进入 `OUTLINE_DRAFTING`）
 2. `GET /v1/ppt/runs/{run_id}/events` 订阅 SSE 事件流
 3. `GET /v1/ppt/runs/{run_id}` 查询状态（等待 `AWAITING_OUTLINE_CONFIRM`）
 4. `POST /v1/ppt/runs/{run_id}/outline/confirm` 确认/提交修改版大纲
 5. `GET /v1/ppt/runs/{run_id}` 获取最终产物路径（`compile.js`、`output.pptx`）
+
+### Template 编辑模式
+1. `POST /v1/ppt/templates` 上传 `template.pptx`，获得 `template_id`
+2. `POST /v1/ppt/runs` 时带 `generation_mode=template` 与 `template_id`
+3. 按同样的 run + SSE + confirm 流程执行，产出 `edited.pptx`
+
+`POST /v1/ppt/runs` 请求新增可选字段：
+- `generation_mode`: `scratch | template`（默认 `scratch`）
+- `template_id`: 当 `generation_mode=template` 时必填
 
 ## 运行测试
 
@@ -49,6 +60,13 @@ $env:TEMP=(Resolve-Path '.runtime').Path
 $env:TMP=$env:TEMP
 .\.venv\Scripts\python.exe -m pytest -q --basetemp=.runtime\pytest_tmp -o cache_dir=.runtime\pytest_cache
 ```
+
+## Skill 对齐能力
+
+- 按 skill 执行多轮大模型调用：全局规划+评审、逐页生成+审查。
+- 产物结构：`slides/slide-xx.js`、`slides/compile.js`、`slides/output/presentation.pptx`。
+- 编译方式：`node slides/compile.js`（PptxGenJS）。
+- QA：markitdown 检查 + 规则校验（page badge、主题键、导出契约等），失败自动 repair 重试。
 
 ## 文档目录
 

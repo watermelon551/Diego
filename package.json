@@ -1,0 +1,9 @@
+{
+  "name": "ppt-agent-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PPT generation helper runtime",
+  "dependencies": {
+    "pptxgenjs": "^3.12.0"
+  }
+}

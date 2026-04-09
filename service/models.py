@@ -23,6 +23,23 @@ class EventType(str, Enum):
     RUN_FAILED = "run.failed"
     SLIDE_STARTED = "slide.started"
     COMPILE_STARTED = "compile.started"
+    PLAN_COMPLETED = "plan.completed"
+    SLIDE_REVIEWED = "slide.reviewed"
+    QA_COMPLETED = "qa.completed"
+    REPAIR_STARTED = "repair.started"
+
+
+class GenerationMode(str, Enum):
+    SCRATCH = "scratch"
+    TEMPLATE = "template"
+
+
+class SlidePageType(str, Enum):
+    COVER = "cover"
+    TOC = "toc"
+    SECTION = "section"
+    CONTENT = "content"
+    SUMMARY = "summary"
 
 
 class CreateRunRequest(BaseModel):
@@ -31,11 +48,21 @@ class CreateRunRequest(BaseModel):
     rag_source_ids: list[str] = Field(default_factory=list)
     template_style: str = Field(default="default")
     target_slide_count: int = Field(default=8, ge=1, le=50)
+    generation_mode: GenerationMode = GenerationMode.SCRATCH
+    template_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_mode(self) -> "CreateRunRequest":
+        if self.generation_mode == GenerationMode.TEMPLATE and not self.template_id:
+            raise ValueError("template_id is required when generation_mode=template")
+        return self
 
 
 class OutlineNode(BaseModel):
     title: str
     bullets: list[str] = Field(default_factory=list)
+    page_type: SlidePageType = SlidePageType.CONTENT
+    layout_hint: str | None = None
 
 
 class OutlineDocument(BaseModel):
@@ -95,6 +122,7 @@ class RunRecord(BaseModel):
     artifact_dir: str
     compile_js_path: str | None = None
     pptx_path: str | None = None
+    qa_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunSummaryResponse(BaseModel):
@@ -116,4 +144,24 @@ class RunDetailResponse(BaseModel):
     retryable: bool
     compile_js_path: str | None
     pptx_path: str | None
+    qa_report: dict[str, Any]
     events: list[RunEvent]
+
+
+class TemplateRecord(BaseModel):
+    template_id: str
+    filename: str
+    path: str
+    created_at: str
+
+
+class TemplateUploadResponse(BaseModel):
+    template_id: str
+    filename: str
+
+
+class TemplateDetailResponse(BaseModel):
+    template_id: str
+    filename: str
+    path: str
+    created_at: str

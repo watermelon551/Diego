@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from .models import ConfirmOutlineRequest, CreateRunRequest, RunStatus
@@ -48,6 +48,22 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
     @app.post("/v1/ppt/runs")
     async def create_run(req: CreateRunRequest):
         return await ctx.orchestrator.create_run(req)
+
+    @app.post("/v1/ppt/templates")
+    async def upload_template(file: UploadFile = File(...)):
+        if not file.filename.lower().endswith(".pptx"):
+            raise HTTPException(status_code=400, detail="only .pptx template is supported")
+        data = await file.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="empty template file")
+        return await ctx.orchestrator.upload_template(filename=file.filename, content=data)
+
+    @app.get("/v1/ppt/templates/{template_id}")
+    async def get_template(template_id: str):
+        detail = await ctx.orchestrator.get_template_detail(template_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="template not found")
+        return detail
 
     @app.get("/v1/ppt/runs/{run_id}")
     async def get_run(run_id: str):
