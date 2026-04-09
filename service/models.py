@@ -45,6 +45,9 @@ class EventType(str, Enum):
     SLIDE_SELECTION_COMPLETED = "slide.selection.completed"
     TEMPLATE_LAYOUT_REFLOW_COMPLETED = "template.layout.reflow.completed"
     TEMPLATE_FIDELITY_CHECKED = "template.fidelity.checked"
+    OUTLINE_REPAIR_STARTED = "outline.repair.started"
+    OUTLINE_REPAIR_COMPLETED = "outline.repair.completed"
+    OUTLINE_REPAIR_FAILED = "outline.repair.failed"
 
 
 class GenerationMode(str, Enum):
@@ -184,6 +187,7 @@ class RunRecord(BaseModel):
     error_code: str | None = None
     failed_stage: str | None = None
     retryable: bool = False
+    error_details: dict[str, Any] = Field(default_factory=dict)
     artifact_dir: str
     compile_js_path: str | None = None
     pptx_path: str | None = None
@@ -217,6 +221,7 @@ class RunDetailResponse(BaseModel):
     error_code: str | None
     failed_stage: str | None
     retryable: bool
+    error_details: dict[str, Any]
     compile_js_path: str | None
     pptx_path: str | None
     qa_report: dict[str, Any]

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
 import httpx
+from pydantic import ValidationError
 
 from .models import OutlineDocument, OutlineNode, SlidePageType, VisualPolicy
 from .skill_profile import allowed_layouts_for, enforce_layout_variety
@@ -19,6 +20,16 @@ class GeneratedSlide:
     citations: list[str]
     page_type: SlidePageType
     layout_hint: str | None = None
+
+
+@dataclass
+class OutlineFormatError(RuntimeError):
+    category: str
+    details: list[str]
+    raw_response: str
+
+    def __post_init__(self) -> None:
+        super().__init__(f"outline {self.category} error: {'; '.join(self.details[:3])}")
 
 
 class LLMClient(Protocol):
@@ -41,6 +52,19 @@ class LLMClient(Protocol):
         template_style: str,
         target_slide_count: int,
         on_token: TokenCallback,
+    ) -> OutlineDocument: ...
+
+    async def repair_outline(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        template_style: str,
+        target_slide_count: int,
+        previous_response: str,
+        error_category: str,
+        error_details: list[str],
     ) -> OutlineDocument: ...
 
     async def critique_outline(
@@ -265,9 +289,50 @@ class OpenAICompatibleLLMClient:
             temperature=self.outline_temperature,
             on_token=on_token,
         )
-        payload = _extract_json_object(text)
-        outline = OutlineDocument.model_validate(payload)
-        return self._fit_outline(outline, topic=topic, target_slide_count=target_slide_count)
+        return self._parse_outline_or_raise(
+            text=text,
+            topic=topic,
+            target_slide_count=target_slide_count,
+        )
+
+    async def repair_outline(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        template_style: str,
+        target_slide_count: int,
+        previous_response: str,
+        error_category: str,
+        error_details: list[str],
+    ) -> OutlineDocument:
+        system_prompt = (
+            "You repair malformed PPT outline JSON. "
+            "Return JSON only with keys: version, summary, nodes. "
+            "Each node must have: title, bullets(list[str]), page_type(one of cover,toc,section,content,summary), layout_hint."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"project_id={project_id}\n"
+            f"template_style={template_style}\n"
+            f"target_slide_count={target_slide_count}\n"
+            f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"error_category={error_category}\n"
+            f"error_details={json.dumps(error_details, ensure_ascii=False)}\n"
+            "Previous invalid response below. Fix only the format/schema issues while preserving content intent.\n"
+            f"previous_response=\n{previous_response[:20000]}\n"
+            "Output JSON only."
+        )
+        text = await self._chat_text(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=self.outline_temperature,
+        )
+        return self._parse_outline_or_raise(
+            text=text,
+            topic=topic,
+            target_slide_count=target_slide_count,
+        )
 
     async def critique_outline(
         self,
@@ -633,6 +698,38 @@ class OpenAICompatibleLLMClient:
         enforce_layout_variety(nodes=nodes, seed=f"{topic}|{target_slide_count}")
         return OutlineDocument(version=max(1, outline.version), summary=outline.summary, nodes=nodes)
 
+    def _parse_outline_or_raise(
+        self,
+        *,
+        text: str,
+        topic: str,
+        target_slide_count: int,
+    ) -> OutlineDocument:
+        try:
+            payload = _extract_json_object(text)
+        except Exception as exc:
+            raise OutlineFormatError(
+                category="parse",
+                details=[str(exc)],
+                raw_response=text,
+            ) from exc
+        try:
+            outline = OutlineDocument.model_validate(payload)
+        except ValidationError as exc:
+            details: list[str] = []
+            for item in exc.errors():
+                loc = ".".join(str(x) for x in item.get("loc", ()))
+                msg = str(item.get("msg", "validation error"))
+                details.append(f"{loc}: {msg}")
+            if not details:
+                details = [str(exc)]
+            raise OutlineFormatError(
+                category="schema",
+                details=details[:10],
+                raw_response=text,
+            ) from exc
+        return self._fit_outline(outline, topic=topic, target_slide_count=target_slide_count)
+
     def _assign_page_types(self, nodes: list[OutlineNode]) -> None:
         if not nodes:
             return
@@ -703,6 +800,30 @@ class MockLLMClient:
             )
         enforce_layout_variety(nodes=nodes, seed=f"{topic}|mock")
         return OutlineDocument(version=1, summary=f"Auto outline for {topic}", nodes=nodes)
+
+    async def repair_outline(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        template_style: str,
+        target_slide_count: int,
+        previous_response: str,
+        error_category: str,
+        error_details: list[str],
+    ) -> OutlineDocument:
+        async def noop(_: str) -> None:
+            return
+
+        return await self.generate_outline(
+            topic=topic,
+            project_id=project_id,
+            rag_source_ids=rag_source_ids,
+            template_style=template_style,
+            target_slide_count=target_slide_count,
+            on_token=noop,
+        )
 
     async def critique_outline(
         self,

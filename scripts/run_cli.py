@@ -109,6 +109,9 @@ async def _wait_for_status(
                     token_buffer = []
             elif event.event.value in {
                 "outline.completed",
+                "outline.repair.started",
+                "outline.repair.completed",
+                "outline.repair.failed",
                 "research.completed",
                 "slide.generated",
                 "slide.candidate.generated",
@@ -125,7 +128,7 @@ async def _wait_for_status(
                 payload = json.dumps(event.payload, ensure_ascii=False)
                 print(f"[事件] {event.event.value} {payload}")
         if detail.status in expected:
-            if token_buffer:
+            if token_buffer and detail.status != RunStatus.FAILED:
                 print("[大纲流式] " + "".join(token_buffer).strip())
             return detail.status, detail, last_seq
         await asyncio.sleep(0.5)
@@ -216,6 +219,9 @@ async def main() -> None:
         )
         if status == RunStatus.FAILED:
             print(f"运行失败: error_code={detail.error_code}, stage={detail.failed_stage}")
+            if detail.error_details:
+                print("error_details:")
+                print(json.dumps(detail.error_details, ensure_ascii=False, indent=2))
             continue
         if detail.outline is None:
             print("未获取到大纲，终止本次运行。")
@@ -249,6 +255,9 @@ async def main() -> None:
         )
         if status == RunStatus.FAILED:
             print(f"\n运行失败: error_code={final_detail.error_code}, stage={final_detail.failed_stage}, retryable={final_detail.retryable}")
+            if final_detail.error_details:
+                print("error_details:")
+                print(json.dumps(final_detail.error_details, ensure_ascii=False, indent=2))
             if final_detail.research_report:
                 print("research_report:")
                 print(json.dumps(final_detail.research_report, ensure_ascii=False, indent=2))

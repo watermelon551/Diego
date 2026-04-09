@@ -21,6 +21,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from .config import Settings, load_settings
 from .llm_client import GeneratedSlide, LLMClient, OpenAICompatibleLLMClient
+from .llm_client import OutlineFormatError
 from .models import (
     ConfirmOutlineRequest,
     CreateRunRequest,
@@ -224,6 +225,7 @@ class RunOrchestrator:
             error_code=run.error_code,
             failed_stage=run.failed_stage,
             retryable=run.retryable,
+            error_details=run.error_details,
             compile_js_path=run.compile_js_path,
             pptx_path=run.pptx_path,
             qa_report=run.qa_report,
@@ -315,15 +317,89 @@ class RunOrchestrator:
         try:
             async def on_token(token: str) -> None:
                 await self._publish(run_id, EventType.OUTLINE_TOKEN, {"token": token})
+            outline: OutlineDocument | None = None
+            repair_attempts = max(1, self.llm_max_retries)
+            previous_response = ""
+            error_category = ""
+            error_details: list[str] = []
 
-            outline = await self.llm_client.generate_outline(
-                topic=run.input.topic,
-                project_id=run.input.project_id,
-                rag_source_ids=run.input.rag_source_ids,
-                template_style=run.input.template_style,
-                target_slide_count=run.input.target_slide_count,
-                on_token=on_token,
-            )
+            for attempt in range(1, repair_attempts + 2):
+                try:
+                    if attempt == 1:
+                        outline = await self.llm_client.generate_outline(
+                            topic=run.input.topic,
+                            project_id=run.input.project_id,
+                            rag_source_ids=run.input.rag_source_ids,
+                            template_style=run.input.template_style,
+                            target_slide_count=run.input.target_slide_count,
+                            on_token=on_token,
+                        )
+                    else:
+                        await self._publish(
+                            run_id,
+                            EventType.OUTLINE_REPAIR_STARTED,
+                            {
+                                "attempt": attempt - 1,
+                                "error_category": error_category,
+                                "error_details": error_details,
+                            },
+                        )
+                        outline = await self.llm_client.repair_outline(
+                            topic=run.input.topic,
+                            project_id=run.input.project_id,
+                            rag_source_ids=run.input.rag_source_ids,
+                            template_style=run.input.template_style,
+                            target_slide_count=run.input.target_slide_count,
+                            previous_response=previous_response,
+                            error_category=error_category,
+                            error_details=error_details,
+                        )
+                        await self._publish(
+                            run_id,
+                            EventType.OUTLINE_REPAIR_COMPLETED,
+                            {"attempt": attempt - 1},
+                        )
+                    break
+                except OutlineFormatError as fmt_err:
+                    previous_response = fmt_err.raw_response
+                    error_category = fmt_err.category
+                    error_details = list(fmt_err.details)
+                    await self._publish(
+                        run_id,
+                        EventType.OUTLINE_REPAIR_FAILED,
+                        {
+                            "attempt": attempt,
+                            "error_category": error_category,
+                            "error_details": error_details,
+                        },
+                    )
+                    if attempt >= repair_attempts + 1:
+                        await self._fail_run(
+                            run_id,
+                            "OUTLINE_DRAFTING",
+                            "OUTLINE_REPAIR_EXHAUSTED",
+                            retryable=True,
+                            error_details={
+                                "attempts": attempt,
+                                "error_category": error_category,
+                                "error_details": error_details,
+                            },
+                        )
+                        return
+                    continue
+            if outline is None:
+                await self._fail_run(
+                    run_id,
+                    "OUTLINE_DRAFTING",
+                    "OUTLINE_REPAIR_EXHAUSTED",
+                    retryable=True,
+                    error_details={
+                        "attempts": repair_attempts + 1,
+                        "error_category": error_category,
+                        "error_details": error_details,
+                    },
+                )
+                return
             outline = await self.llm_client.critique_outline(
                 topic=run.input.topic,
                 template_style=run.input.template_style,
@@ -385,8 +461,14 @@ class RunOrchestrator:
                     "theme": design.theme,
                 },
             )
-        except Exception:
-            await self._fail_run(run_id, "OUTLINE_DRAFTING", "OUTLINE_LLM_ERROR", retryable=True)
+        except Exception as exc:
+            await self._fail_run(
+                run_id,
+                "OUTLINE_DRAFTING",
+                "OUTLINE_LLM_ERROR",
+                retryable=True,
+                error_details={"reason": str(exc)},
+            )
 
     async def _execute_generation_pipeline(self, run_id: str) -> None:
         run = await self.store.get_run(run_id)
@@ -2261,18 +2343,29 @@ class RunOrchestrator:
 
         await self.store.update_run(run_id, apply)
 
-    async def _fail_run(self, run_id: str, stage: str, error_code: str, retryable: bool) -> None:
+    async def _fail_run(
+        self,
+        run_id: str,
+        stage: str,
+        error_code: str,
+        retryable: bool,
+        error_details: dict[str, Any] | None = None,
+    ) -> None:
         def apply_fail(r: RunRecord) -> None:
             r.status = RunStatus.FAILED
             r.error_code = error_code
             r.failed_stage = stage
             r.retryable = retryable
+            r.error_details = dict(error_details or {})
 
         await self.store.update_run(run_id, apply_fail)
+        payload: dict[str, Any] = {"error_code": error_code, "failed_stage": stage, "retryable": retryable}
+        if error_details:
+            payload["error_details"] = error_details
         await self._publish(
             run_id,
             EventType.RUN_FAILED,
-            {"error_code": error_code, "failed_stage": stage, "retryable": retryable},
+            payload,
         )
 
     def _check_slide_content_rules(self, candidate: GeneratedSlide, node: OutlineNode) -> list[str]:

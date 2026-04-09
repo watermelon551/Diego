@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 import service.orchestrator as orchestrator_mod
 from service.app import create_app
 from service.config import Settings, load_settings
-from service.llm_client import GeneratedSlide, MockLLMClient
+from service.llm_client import GeneratedSlide, MockLLMClient, OutlineFormatError
 from service.models import OutlineDocument, OutlineNode
 from service.orchestrator import RunOrchestrator
 from service.store import RunStore
@@ -122,6 +122,45 @@ class ImageHeavyAgenticLLM(AgenticMockLLM):
             "  const rows = (slideConfig.bullets || []).map((text, idx) => ({ text, options: { bullet: true, breakLine: idx < (slideConfig.bullets || []).length - 1 } }));",
             "  slide.addImage({ path: 'https://example.com/fake.png', x: 6.8, y: 1.5, w: 2.2, h: 1.6 });\n"
             "  const rows = (slideConfig.bullets || []).map((text, idx) => ({ text, options: { bullet: true, breakLine: idx < (slideConfig.bullets || []).length - 1 } }));",
+        )
+
+
+class MalformedOutlineThenRepairLLM(MockLLMClient):
+    async def generate_outline(self, **kwargs):
+        raise OutlineFormatError(
+            category="parse",
+            details=["model response does not contain a JSON object"],
+            raw_response="```json { bad",
+        )
+
+    async def repair_outline(self, **kwargs):
+        async def noop(_: str) -> None:
+            return
+
+        return await MockLLMClient.generate_outline(
+            self,
+            topic=kwargs["topic"],
+            project_id=kwargs["project_id"],
+            rag_source_ids=kwargs["rag_source_ids"],
+            template_style=kwargs["template_style"],
+            target_slide_count=kwargs["target_slide_count"],
+            on_token=noop,
+        )
+
+
+class AlwaysMalformedOutlineLLM(MockLLMClient):
+    async def generate_outline(self, **kwargs):
+        raise OutlineFormatError(
+            category="schema",
+            details=["version: Input should be a valid integer"],
+            raw_response='{"version":"1.0"}',
+        )
+
+    async def repair_outline(self, **kwargs):
+        raise OutlineFormatError(
+            category="schema",
+            details=["nodes.0.page_type: Input should be 'cover'|'toc'|'section'|'content'|'summary'"],
+            raw_response='{"version":1,"summary":"x","nodes":[{"page_type":"invalid"}]}',
         )
 
 
@@ -474,6 +513,47 @@ def test_create_run_from_prompt_endpoint(tmp_path: Path) -> None:
     assert detail["outline_history"]
     assert detail["research_report"]["audience"]
     assert detail["research_report"]["page_focus"]
+
+
+def test_outline_format_error_should_trigger_repair_and_succeed(tmp_path: Path) -> None:
+    client = make_client(tmp_path, llm_client=MalformedOutlineThenRepairLLM())
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Outline Repair",
+            "project_id": "p-outline-repair",
+            "rag_source_ids": ["r1"],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    assert detail["outline"] is not None
+    events = [item["event"] for item in detail["events"]]
+    assert "outline.repair.failed" in events
+    assert "outline.repair.started" in events
+    assert "outline.repair.completed" in events
+
+
+def test_outline_repair_exhausted_should_fail_with_error_details(tmp_path: Path) -> None:
+    client = make_client(tmp_path, llm_client=AlwaysMalformedOutlineLLM())
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Outline Repair Exhausted",
+            "project_id": "p-outline-fail",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"FAILED"})
+    assert detail["error_code"] == "OUTLINE_REPAIR_EXHAUSTED"
+    assert detail["failed_stage"] == "OUTLINE_DRAFTING"
+    assert detail["error_details"]["error_category"] == "schema"
+    assert detail["error_details"]["error_details"]
 
 
 def test_confirm_gate_and_scratch_success_flow(tmp_path: Path) -> None:
