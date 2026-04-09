@@ -25,7 +25,8 @@ npm install
 # 3) 配置大模型（必须）
 Copy-Item .env.example .env
 # 然后编辑 .env 中的 LLM_API_STYLE / LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
-# 如需模板图片/图标语义替换，额外配置 ASSET_PROVIDER 与对应 key（UNSPLASH_ACCESS_KEY / PEXELS_API_KEY）；默认 `ASSET_PROVIDER=auto`，未配置 key 会启动报错。
+# 生成引擎默认 `GENERATION_ENGINE=agentic_v2`
+# 本地默认 `ASSET_PROVIDER=mock`，无需图片 API key；要接入真实图片源可改为 `auto/unsplash/pexels`
 
 # 4) 启动服务
 .\.venv\Scripts\python.exe .\scripts\run_dev.py
@@ -34,6 +35,7 @@ Copy-Item .env.example .env
 服务默认地址：`http://127.0.0.1:8000`
 
 > 当前版本支持 `openai_chat` 和 `anthropic_messages` 两种协议（由 `LLM_API_STYLE` 控制），未配置 `.env` 必填项时会直接报错。
+> `agentic_v2` 会逐页进行 `codegen -> preview QA -> critic repair` 多轮闭环，默认自动清理临时 `slide-XX-preview.pptx`（可用 `DEBUG_KEEP_PREVIEWS=1` 保留）。
 
 ## 终端交互调试（推荐）
 
@@ -73,6 +75,7 @@ Copy-Item .env.example .env
 `POST /v1/ppt/runs` 请求新增可选字段：
 - `generation_mode`: `scratch | template`（默认 `scratch`）
 - `template_id`: 当 `generation_mode=template` 时必填
+- `visual_policy`: `auto | media_required | basic_graphics_only`（默认 `auto`，仅对 scratch 质量门禁生效）
 
 Template 模式返回：
 - `slides[].js_path`：模板流程生成的逐页 `slide-xx.js`
@@ -81,6 +84,7 @@ Template 模式返回：
 
 `POST /v1/ppt/runs/prompt` 请求字段：
 - `prompt`: 用户提示词（作为主题输入）
+- `visual_policy`: 与 `POST /v1/ppt/runs` 一致
 - 其余字段与 `POST /v1/ppt/runs` 保持一致
 
 ## 运行测试
@@ -97,7 +101,7 @@ $env:TMP=$env:TEMP
 - 按 skill 执行多轮大模型调用：全局规划+评审、逐页生成+审查。
 - 产物结构：`slides/slide-xx.js`、`slides/compile.js`、`slides/output/presentation.pptx`。
 - 编译方式：`node slides/compile.js`（PptxGenJS）。
-- QA：markitdown 检查 + 规则校验（page badge、主题键、导出契约等），失败自动 repair 重试。
+- QA：逐页 preview QA + markitdown 检查 + 规则校验（page badge、主题键、导出契约等），失败自动 repair 重试。
 
 ## 文档目录
 

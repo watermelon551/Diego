@@ -19,6 +19,14 @@ class Settings:
     slide_retry: int
     qa_enabled: bool
     repair_rounds: int
+    asset_provider: str = "auto"
+    unsplash_access_key: str = ""
+    pexels_api_key: str = ""
+    asset_timeout_sec: float = 20.0
+    asset_max_retries: int = 2
+    generation_engine: str = "agentic_v2"
+    debug_keep_previews: bool = False
+    max_slide_repair_rounds: int = 4
 
 
 def _require_env(name: str) -> str:
@@ -54,6 +62,20 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def load_settings(env_file: str | Path = ".env") -> Settings:
     _load_env_file(env_file)
+    asset_provider = os.getenv("ASSET_PROVIDER", "auto").strip().lower()
+    generation_engine = os.getenv("GENERATION_ENGINE", "agentic_v2").strip().lower()
+    unsplash_access_key = os.getenv("UNSPLASH_ACCESS_KEY", "").strip()
+    pexels_api_key = os.getenv("PEXELS_API_KEY", "").strip()
+    if asset_provider not in {"mock", "none", "auto", "unsplash", "pexels"}:
+        raise ValueError(f"invalid ASSET_PROVIDER={asset_provider!r}")
+    if asset_provider == "unsplash" and not unsplash_access_key:
+        raise ValueError("UNSPLASH_ACCESS_KEY is required when ASSET_PROVIDER=unsplash")
+    if asset_provider == "pexels" and not pexels_api_key:
+        raise ValueError("PEXELS_API_KEY is required when ASSET_PROVIDER=pexels")
+    if asset_provider == "auto" and not (unsplash_access_key or pexels_api_key):
+        raise ValueError("UNSPLASH_ACCESS_KEY or PEXELS_API_KEY is required when ASSET_PROVIDER=auto")
+    if generation_engine not in {"agentic_v2", "legacy"}:
+        raise ValueError(f"invalid GENERATION_ENGINE={generation_engine!r}")
     return Settings(
         llm_api_style=os.getenv("LLM_API_STYLE", "openai_chat").strip().lower(),
         llm_base_url=_require_env("LLM_BASE_URL"),
@@ -67,6 +89,14 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         slide_retry=_env_int("SLIDE_RETRY", 2),
         qa_enabled=_env_bool("QA_ENABLED", True),
         repair_rounds=_env_int("REPAIR_ROUNDS", 2),
+        asset_provider=asset_provider,
+        unsplash_access_key=unsplash_access_key,
+        pexels_api_key=pexels_api_key,
+        asset_timeout_sec=_env_float("ASSET_TIMEOUT_SEC", 20.0),
+        asset_max_retries=_env_int("ASSET_MAX_RETRIES", 2),
+        generation_engine=generation_engine,
+        debug_keep_previews=_env_bool("DEBUG_KEEP_PREVIEWS", False),
+        max_slide_repair_rounds=_env_int("MAX_SLIDE_REPAIR_ROUNDS", 4),
     )
 
 
