@@ -18,6 +18,7 @@ class RunStatus(str, Enum):
 class EventType(str, Enum):
     OUTLINE_TOKEN = "outline.token"
     OUTLINE_COMPLETED = "outline.completed"
+    OUTLINE_UPDATED = "outline.updated"
     SLIDE_GENERATED = "slide.generated"
     COMPILE_COMPLETED = "compile.completed"
     RUN_FAILED = "run.failed"
@@ -58,6 +59,33 @@ class CreateRunRequest(BaseModel):
         return self
 
 
+class PromptRunRequest(BaseModel):
+    prompt: str = Field(min_length=1)
+    project_id: str = Field(default="default-project", min_length=1)
+    rag_source_ids: list[str] = Field(default_factory=list)
+    template_style: str = Field(default="default")
+    target_slide_count: int = Field(default=8, ge=1, le=50)
+    generation_mode: GenerationMode = GenerationMode.SCRATCH
+    template_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_mode(self) -> "PromptRunRequest":
+        if self.generation_mode == GenerationMode.TEMPLATE and not self.template_id:
+            raise ValueError("template_id is required when generation_mode=template")
+        return self
+
+    def to_create_run_request(self) -> CreateRunRequest:
+        return CreateRunRequest(
+            topic=self.prompt,
+            project_id=self.project_id,
+            rag_source_ids=self.rag_source_ids,
+            template_style=self.template_style,
+            target_slide_count=self.target_slide_count,
+            generation_mode=self.generation_mode,
+            template_id=self.template_id,
+        )
+
+
 class OutlineNode(BaseModel):
     title: str
     bullets: list[str] = Field(default_factory=list)
@@ -73,6 +101,7 @@ class OutlineDocument(BaseModel):
 
 class SlideArtifact(BaseModel):
     slide_no: int
+    js_path: str | None = None
     js_code: str
     status: str
     citations: list[str] = Field(default_factory=list)
@@ -106,12 +135,22 @@ class ConfirmOutlineRequest(BaseModel):
         return self
 
 
+class OutlineHistoryEntry(BaseModel):
+    action: str
+    approved: bool
+    base_version: int | None = None
+    new_version: int | None = None
+    change_reason: str | None = None
+    at: str
+
+
 class RunRecord(BaseModel):
     run_id: str
     trace_id: str
     status: RunStatus
     input: CreateRunRequest
     outline: OutlineDocument | None = None
+    outline_history: list[OutlineHistoryEntry] = Field(default_factory=list)
     slides: list[SlideArtifact] = Field(default_factory=list)
     citation_map: dict[int, list[str]] = Field(default_factory=dict)
     events: list[RunEvent] = Field(default_factory=list)
@@ -136,6 +175,7 @@ class RunDetailResponse(BaseModel):
     trace_id: str
     status: RunStatus
     outline: OutlineDocument | None
+    outline_history: list[OutlineHistoryEntry]
     slides: list[SlideArtifact]
     citation_map: dict[int, list[str]]
     stage_timings: StageTimings

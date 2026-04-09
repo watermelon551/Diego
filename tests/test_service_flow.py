@@ -13,6 +13,7 @@ import service.orchestrator as orchestrator_mod
 from service.app import create_app
 from service.config import Settings, load_settings
 from service.llm_client import MockLLMClient
+from service.models import OutlineDocument, OutlineNode
 from service.orchestrator import RunOrchestrator
 from service.store import RunStore
 
@@ -147,6 +148,27 @@ def test_create_run_and_validation(tmp_path: Path) -> None:
     assert resp.json()["status"] == "OUTLINE_DRAFTING"
 
 
+def test_create_run_from_prompt_endpoint(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    resp = client.post(
+        "/v1/ppt/runs/prompt",
+        json={
+            "prompt": "AI Agents for Product Teams",
+            "project_id": "p-prompt",
+            "rag_source_ids": ["r1", "r2"],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "OUTLINE_DRAFTING"
+    detail = wait_status(client, data["run_id"], {"AWAITING_OUTLINE_CONFIRM"})
+    assert len(detail["outline"]["nodes"]) == 3
+    assert detail["outline_history"]
+
+
 def test_confirm_gate_and_scratch_success_flow(tmp_path: Path) -> None:
     client = make_client(tmp_path, llm_client=SlowMockLLMClient())
     run_id = client.post(
@@ -169,7 +191,84 @@ def test_confirm_gate_and_scratch_success_flow(tmp_path: Path) -> None:
     assert final_data["pptx_path"] and Path(final_data["pptx_path"]).exists()
     assert final_data["compile_js_path"] and Path(final_data["compile_js_path"]).exists()
     assert len(final_data["slides"]) == 4
+    assert all(item.get("js_path") and Path(item["js_path"]).exists() for item in final_data["slides"])
     assert final_data["qa_report"]["passed"] is True
+
+
+def test_outline_update_then_approve_flow(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Editable Outline",
+            "project_id": "p-edit",
+            "rag_source_ids": ["c1", "c2"],
+            "template_style": "business",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    drafted = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    base_version = drafted["outline"]["version"]
+
+    edited_outline = OutlineDocument(
+        version=base_version,
+        summary="edited summary",
+        nodes=[
+            OutlineNode(title="封面", bullets=["主题导入"], page_type="cover", layout_hint="cover-asymmetric"),
+            OutlineNode(title="目录", bullets=["问题", "方法", "结果"], page_type="toc", layout_hint="toc-list"),
+            OutlineNode(title="总结", bullets=["结论", "行动项"], page_type="summary", layout_hint="summary-cta"),
+        ],
+    ).model_dump(mode="json")
+
+    update_resp = client.post(
+        f"/v1/ppt/runs/{run_id}/outline/confirm",
+        json={
+            "approved": False,
+            "outline": edited_outline,
+            "base_version": base_version,
+            "change_reason": "用户修改结构",
+        },
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["status"] == "AWAITING_OUTLINE_CONFIRM"
+
+    detail_after_update = client.get(f"/v1/ppt/runs/{run_id}").json()
+    assert detail_after_update["outline"]["version"] == base_version + 1
+    assert detail_after_update["outline_history"][-1]["action"] == "updated"
+
+    approve_resp = client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    assert approve_resp.status_code == 200
+    final_data = wait_status(client, run_id, {"SUCCEEDED"})
+    assert len(final_data["slides"]) == 3
+    assert final_data["qa_report"]["passed"] is True
+
+
+def test_outline_update_with_wrong_base_version_should_conflict(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Version Check",
+            "project_id": "p-version",
+            "rag_source_ids": ["s1"],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    drafted = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    outline = drafted["outline"]
+    resp = client.post(
+        f"/v1/ppt/runs/{run_id}/outline/confirm",
+        json={
+            "approved": False,
+            "outline": outline,
+            "base_version": outline["version"] + 10,
+            "change_reason": "wrong version",
+        },
+    )
+    assert resp.status_code == 409
 
 
 def test_event_stream_has_required_events(tmp_path: Path) -> None:

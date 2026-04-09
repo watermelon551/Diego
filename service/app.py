@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from .models import ConfirmOutlineRequest, CreateRunRequest, RunStatus
+from .models import ConfirmOutlineRequest, CreateRunRequest, PromptRunRequest, RunStatus
 from .orchestrator import RunOrchestrator, build_orchestrator
 
 
@@ -48,6 +48,10 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
     @app.post("/v1/ppt/runs")
     async def create_run(req: CreateRunRequest):
         return await ctx.orchestrator.create_run(req)
+
+    @app.post("/v1/ppt/runs/prompt")
+    async def create_run_from_prompt(req: PromptRunRequest):
+        return await ctx.orchestrator.create_run(req.to_create_run_request())
 
     @app.post("/v1/ppt/templates")
     async def upload_template(file: UploadFile = File(...)):

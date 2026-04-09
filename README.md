@@ -37,11 +37,17 @@ Copy-Item .env.example .env
 ## API 工作流
 
 ### Scratch 生成（严格 skill 流程）
-1. `POST /v1/ppt/runs` 创建 run（进入 `OUTLINE_DRAFTING`）
+1. `POST /v1/ppt/runs` 或 `POST /v1/ppt/runs/prompt` 创建 run（进入 `OUTLINE_DRAFTING`）
 2. `GET /v1/ppt/runs/{run_id}/events` 订阅 SSE 事件流
 3. `GET /v1/ppt/runs/{run_id}` 查询状态（等待 `AWAITING_OUTLINE_CONFIRM`）
-4. `POST /v1/ppt/runs/{run_id}/outline/confirm` 确认/提交修改版大纲
+4. `POST /v1/ppt/runs/{run_id}/outline/confirm`
+   - `approved=false`：仅更新大纲，保持 `AWAITING_OUTLINE_CONFIRM`
+   - `approved=true`：确认并进入生成
 5. `GET /v1/ppt/runs/{run_id}` 获取最终产物路径（`compile.js`、`output.pptx`）
+
+运行结果中会返回：
+- `slides[].js_path`：每页生成的 `slide-xx.js` 文件路径
+- `pptx_path`：最终编译产物 `presentation.pptx` 路径
 
 ### Template 编辑模式
 1. `POST /v1/ppt/templates` 上传 `template.pptx`，获得 `template_id`
@@ -51,6 +57,10 @@ Copy-Item .env.example .env
 `POST /v1/ppt/runs` 请求新增可选字段：
 - `generation_mode`: `scratch | template`（默认 `scratch`）
 - `template_id`: 当 `generation_mode=template` 时必填
+
+`POST /v1/ppt/runs/prompt` 请求字段：
+- `prompt`: 用户提示词（作为主题输入）
+- 其余字段与 `POST /v1/ppt/runs` 保持一致
 
 ## 运行测试
 

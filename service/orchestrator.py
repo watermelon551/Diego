@@ -21,6 +21,7 @@ from .models import (
     EventType,
     GenerationMode,
     OutlineNode,
+    OutlineHistoryEntry,
     RunDetailResponse,
     RunEvent,
     RunRecord,
@@ -114,6 +115,7 @@ class RunOrchestrator:
             trace_id=run.trace_id,
             status=run.status,
             outline=run.outline,
+            outline_history=run.outline_history,
             slides=run.slides,
             citation_map=run.citation_map,
             stage_timings=run.stage_timings,
@@ -133,13 +135,56 @@ class RunOrchestrator:
         if run.status != RunStatus.AWAITING_OUTLINE_CONFIRM:
             raise ValueError("run is not awaiting outline confirmation")
 
+        if run.outline is None:
+            raise ValueError("run outline is missing")
+
+        if req.outline is not None:
+            if req.base_version != run.outline.version:
+                raise ValueError(
+                    f"base_version mismatch: expected {run.outline.version}, got {req.base_version}"
+                )
+            enforce_layout_variety(
+                nodes=req.outline.nodes,
+                seed=f"{run.input.topic}|{run.input.template_style}|{run_id}|confirm",
+            )
+            if req.outline.version <= run.outline.version:
+                req.outline.version = run.outline.version + 1
+
         def apply_confirm(r: RunRecord) -> None:
+            current_version = r.outline.version if r.outline is not None else None
             if req.outline is not None:
                 r.outline = req.outline
-            r.status = RunStatus.SLIDES_GENERATING
+            if req.approved:
+                r.status = RunStatus.SLIDES_GENERATING
+            else:
+                r.status = RunStatus.AWAITING_OUTLINE_CONFIRM
+            new_version = r.outline.version if r.outline is not None else None
+            action = "confirmed" if req.approved else ("updated" if req.outline is not None else "rejected")
+            r.outline_history.append(
+                OutlineHistoryEntry(
+                    action=action,
+                    approved=req.approved,
+                    base_version=current_version,
+                    new_version=new_version,
+                    change_reason=req.change_reason,
+                    at=now_iso(),
+                )
+            )
 
         await self.store.update_run(run_id, apply_confirm)
-        self._spawn(self._execute_generation_pipeline(run_id))
+        if req.outline is not None:
+            await self._publish(
+                run_id,
+                EventType.OUTLINE_UPDATED,
+                {
+                    "approved": req.approved,
+                    "base_version": req.base_version,
+                    "new_version": req.outline.version,
+                    "change_reason": req.change_reason,
+                },
+            )
+        if req.approved:
+            self._spawn(self._execute_generation_pipeline(run_id))
         updated = await self.store.get_run(run_id)
         assert updated is not None
         return RunSummaryResponse(run_id=updated.run_id, trace_id=updated.trace_id, status=updated.status)
@@ -181,6 +226,16 @@ class RunOrchestrator:
                 r.outline = outline
                 r.status = RunStatus.AWAITING_OUTLINE_CONFIRM
                 r.stage_timings.outline_ms = int((time.perf_counter() - started) * 1000)
+                r.outline_history.append(
+                    OutlineHistoryEntry(
+                        action="generated",
+                        approved=False,
+                        base_version=None,
+                        new_version=outline.version,
+                        change_reason=None,
+                        at=now_iso(),
+                    )
+                )
 
             await self.store.update_run(run_id, apply_outline)
             await self._publish(run_id, EventType.OUTLINE_COMPLETED, {"version": outline.version, "sections": len(outline.nodes)})
@@ -421,7 +476,13 @@ class RunOrchestrator:
                 slide_path.write_text(js_code, encoding="utf-8")
                 citations = self._normalize_citations(reviewed.citations, run.input.rag_source_ids, slide_no)
                 status = "ok" if retries == 0 else f"ok_after_retry_{retries}"
-                return SlideArtifact(slide_no=slide_no, js_code=js_code, status=status, citations=citations)
+                return SlideArtifact(
+                    slide_no=slide_no,
+                    js_path=str(slide_path),
+                    js_code=js_code,
+                    status=status,
+                    citations=citations,
+                )
             except Exception:
                 retries += 1
                 if retries >= self.slide_retry:
