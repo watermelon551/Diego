@@ -10,6 +10,7 @@ from service.models import (
     OutlineDocument,
     PromptRunRequest,
     RunStatus,
+    VisualPolicy,
 )
 from service.orchestrator import build_orchestrator
 
@@ -108,13 +109,18 @@ async def _wait_for_status(
                     token_buffer = []
             elif event.event.value in {
                 "outline.completed",
+                "research.completed",
                 "slide.generated",
+                "slide.candidate.generated",
+                "slide.selection.completed",
                 "compile.completed",
                 "run.failed",
                 "slot.mapping.completed",
                 "slide.preview.qa",
                 "chart.truth.checked",
                 "repair.round.completed",
+                "template.layout.reflow.completed",
+                "template.fidelity.checked",
             }:
                 payload = json.dumps(event.payload, ensure_ascii=False)
                 print(f"[事件] {event.event.value} {payload}")
@@ -167,6 +173,17 @@ async def main() -> None:
         template_style = _ask("template_style", "default")
         mode_raw = _ask("generation_mode (scratch/template)", "scratch").lower()
         generation_mode = GenerationMode.TEMPLATE if mode_raw == "template" else GenerationMode.SCRATCH
+        visual_raw = _ask(
+            "visual_policy (auto/media_required/basic_graphics_only)",
+            "auto",
+        ).lower()
+        visual_policy = (
+            VisualPolicy.MEDIA_REQUIRED
+            if visual_raw == "media_required"
+            else VisualPolicy.BASIC_GRAPHICS_ONLY
+            if visual_raw == "basic_graphics_only"
+            else VisualPolicy.AUTO
+        )
         rag_raw = _ask("rag_source_ids（用 | 分隔，留空可不填）", "")
         rag_source_ids = [item.strip() for item in rag_raw.split("|") if item.strip()] if rag_raw else []
 
@@ -182,6 +199,7 @@ async def main() -> None:
             target_slide_count=target_slide_count,
             generation_mode=generation_mode,
             template_id=template_id,
+            visual_policy=visual_policy,
         )
         summary = await orchestrator.create_run(req.to_create_run_request())
         run_id = summary.run_id
@@ -231,9 +249,15 @@ async def main() -> None:
         )
         if status == RunStatus.FAILED:
             print(f"\n运行失败: error_code={final_detail.error_code}, stage={final_detail.failed_stage}, retryable={final_detail.retryable}")
+            if final_detail.research_report:
+                print("research_report:")
+                print(json.dumps(final_detail.research_report, ensure_ascii=False, indent=2))
             if final_detail.template_mapping_report:
                 print("template_mapping_report:")
                 print(json.dumps(final_detail.template_mapping_report, ensure_ascii=False, indent=2))
+            if final_detail.template_layout_report:
+                print("template_layout_report:")
+                print(json.dumps(final_detail.template_layout_report, ensure_ascii=False, indent=2))
             continue
 
         print("\n运行成功。")
@@ -246,6 +270,18 @@ async def main() -> None:
         if final_detail.chart_truth_report:
             print("chart_truth_report:")
             print(json.dumps(final_detail.chart_truth_report, ensure_ascii=False, indent=2))
+        if final_detail.research_report:
+            print("research_report:")
+            print(json.dumps(final_detail.research_report, ensure_ascii=False, indent=2))
+        if final_detail.candidate_selection_report:
+            print("candidate_selection_report:")
+            print(json.dumps(final_detail.candidate_selection_report, ensure_ascii=False, indent=2))
+        if final_detail.template_layout_report:
+            print("template_layout_report:")
+            print(json.dumps(final_detail.template_layout_report, ensure_ascii=False, indent=2))
+        if final_detail.quality_gate_report:
+            print("quality_gate_report:")
+            print(json.dumps(final_detail.quality_gate_report, ensure_ascii=False, indent=2))
         if final_detail.qa_report:
             print("qa_report:")
             print(json.dumps(final_detail.qa_report, ensure_ascii=False, indent=2))
