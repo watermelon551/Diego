@@ -78,9 +78,16 @@ def _edit_outline_interactive(outline: OutlineDocument) -> OutlineDocument:
     return edited
 
 
-async def _wait_for_status(orchestrator, run_id: str, expected: set[RunStatus]) -> tuple[RunStatus, object]:
+async def _wait_for_status(
+    orchestrator,
+    run_id: str,
+    expected: set[RunStatus],
+    *,
+    start_seq: int = 0,
+    show_outline_tokens: bool = True,
+) -> tuple[RunStatus, object, int]:
     last_status: RunStatus | None = None
-    last_seq = 0
+    last_seq = max(0, start_seq)
     token_buffer = []
     while True:
         detail = await orchestrator.get_run_detail(run_id)
@@ -93,7 +100,7 @@ async def _wait_for_status(orchestrator, run_id: str, expected: set[RunStatus]) 
             if event.seq <= last_seq:
                 continue
             last_seq = event.seq
-            if event.event.value == "outline.token":
+            if event.event.value == "outline.token" and show_outline_tokens:
                 token = str(event.payload.get("token", ""))
                 token_buffer.append(token)
                 if len(token_buffer) >= 20:
@@ -114,7 +121,7 @@ async def _wait_for_status(orchestrator, run_id: str, expected: set[RunStatus]) 
         if detail.status in expected:
             if token_buffer:
                 print("[大纲流式] " + "".join(token_buffer).strip())
-            return detail.status, detail
+            return detail.status, detail, last_seq
         await asyncio.sleep(0.5)
 
 
@@ -181,10 +188,13 @@ async def main() -> None:
         print(f"\nrun_id={run_id}")
         print(f"trace_id={summary.trace_id}")
 
-        status, detail = await _wait_for_status(
+        last_seq = 0
+        status, detail, last_seq = await _wait_for_status(
             orchestrator,
             run_id,
             {RunStatus.AWAITING_OUTLINE_CONFIRM, RunStatus.FAILED},
+            start_seq=last_seq,
+            show_outline_tokens=True,
         )
         if status == RunStatus.FAILED:
             print(f"运行失败: error_code={detail.error_code}, stage={detail.failed_stage}")
@@ -212,10 +222,12 @@ async def main() -> None:
 
         await orchestrator.confirm_outline(run_id, confirm_req)
 
-        status, final_detail = await _wait_for_status(
+        status, final_detail, last_seq = await _wait_for_status(
             orchestrator,
             run_id,
             {RunStatus.SUCCEEDED, RunStatus.FAILED},
+            start_seq=last_seq,
+            show_outline_tokens=False,
         )
         if status == RunStatus.FAILED:
             print(f"\n运行失败: error_code={final_detail.error_code}, stage={final_detail.failed_stage}, retryable={final_detail.retryable}")
