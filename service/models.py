@@ -28,11 +28,34 @@ class EventType(str, Enum):
     SLIDE_REVIEWED = "slide.reviewed"
     QA_COMPLETED = "qa.completed"
     REPAIR_STARTED = "repair.started"
+    SLOT_MAPPING_COMPLETED = "slot.mapping.completed"
+    SLIDE_PREVIEW_QA = "slide.preview.qa"
+    CHART_TRUTH_CHECKED = "chart.truth.checked"
+    REPAIR_ROUND_COMPLETED = "repair.round.completed"
+    SLIDE_CODEGEN_STARTED = "slide.codegen.started"
+    SLIDE_CODEGEN_COMPLETED = "slide.codegen.completed"
+    SLIDE_CRITIC_COMPLETED = "slide.critic.completed"
+    SLIDE_REPAIR_COMPLETED = "slide.repair.completed"
+    ARTIFACT_CLEANUP_COMPLETED = "artifact.cleanup.completed"
+    SLIDE_PLAN_COMPLETED = "slide.plan.completed"
+    SLIDE_QUALITY_GATE_COMPLETED = "slide.quality.gate.completed"
+    SLIDE_REPAIR_DIRECTIVES_GENERATED = "slide.repair.directives.generated"
+    RESEARCH_COMPLETED = "research.completed"
+    SLIDE_CANDIDATE_GENERATED = "slide.candidate.generated"
+    SLIDE_SELECTION_COMPLETED = "slide.selection.completed"
+    TEMPLATE_LAYOUT_REFLOW_COMPLETED = "template.layout.reflow.completed"
+    TEMPLATE_FIDELITY_CHECKED = "template.fidelity.checked"
 
 
 class GenerationMode(str, Enum):
     SCRATCH = "scratch"
     TEMPLATE = "template"
+
+
+class VisualPolicy(str, Enum):
+    AUTO = "auto"
+    MEDIA_REQUIRED = "media_required"
+    BASIC_GRAPHICS_ONLY = "basic_graphics_only"
 
 
 class SlidePageType(str, Enum):
@@ -51,6 +74,7 @@ class CreateRunRequest(BaseModel):
     target_slide_count: int = Field(default=8, ge=1, le=50)
     generation_mode: GenerationMode = GenerationMode.SCRATCH
     template_id: str | None = None
+    visual_policy: VisualPolicy = VisualPolicy.AUTO
 
     @model_validator(mode="after")
     def validate_mode(self) -> "CreateRunRequest":
@@ -67,6 +91,7 @@ class PromptRunRequest(BaseModel):
     target_slide_count: int = Field(default=8, ge=1, le=50)
     generation_mode: GenerationMode = GenerationMode.SCRATCH
     template_id: str | None = None
+    visual_policy: VisualPolicy = VisualPolicy.AUTO
 
     @model_validator(mode="after")
     def validate_mode(self) -> "PromptRunRequest":
@@ -83,6 +108,7 @@ class PromptRunRequest(BaseModel):
             target_slide_count=self.target_slide_count,
             generation_mode=self.generation_mode,
             template_id=self.template_id,
+            visual_policy=self.visual_policy,
         )
 
 
@@ -162,6 +188,15 @@ class RunRecord(BaseModel):
     compile_js_path: str | None = None
     pptx_path: str | None = None
     qa_report: dict[str, Any] = Field(default_factory=dict)
+    template_mapping_report: dict[str, Any] = Field(default_factory=dict)
+    chart_truth_report: dict[str, Any] = Field(default_factory=dict)
+    repair_history: list[dict[str, Any]] = Field(default_factory=list)
+    quality_report: dict[str, Any] = Field(default_factory=dict)
+    quality_gate_report: dict[str, Any] = Field(default_factory=dict)
+    research_report: dict[str, Any] = Field(default_factory=dict)
+    candidate_selection_report: dict[str, Any] = Field(default_factory=dict)
+    template_layout_report: dict[str, Any] = Field(default_factory=dict)
+    artifact_cleanup_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunSummaryResponse(BaseModel):
@@ -185,6 +220,15 @@ class RunDetailResponse(BaseModel):
     compile_js_path: str | None
     pptx_path: str | None
     qa_report: dict[str, Any]
+    template_mapping_report: dict[str, Any]
+    chart_truth_report: dict[str, Any]
+    repair_history: list[dict[str, Any]]
+    quality_report: dict[str, Any]
+    quality_gate_report: dict[str, Any]
+    research_report: dict[str, Any]
+    candidate_selection_report: dict[str, Any]
+    template_layout_report: dict[str, Any]
+    artifact_cleanup_report: dict[str, Any]
     events: list[RunEvent]
 
 

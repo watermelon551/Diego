@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 import httpx
 
-from .models import OutlineDocument, OutlineNode, SlidePageType
+from .models import OutlineDocument, OutlineNode, SlidePageType, VisualPolicy
 from .skill_profile import allowed_layouts_for, enforce_layout_variety
 
 TokenCallback = Callable[[str], Awaitable[None]]
@@ -22,6 +22,16 @@ class GeneratedSlide:
 
 
 class LLMClient(Protocol):
+    async def generate_research_brief(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        template_style: str,
+        target_slide_count: int,
+    ) -> dict[str, Any]: ...
+
     async def generate_outline(
         self,
         *,
@@ -66,6 +76,52 @@ class LLMClient(Protocol):
         rule_violations: list[str],
     ) -> GeneratedSlide: ...
 
+    async def generate_slide_js(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        theme: dict[str, str],
+        title_font: str,
+        body_font: str,
+        rag_source_ids: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+    ) -> str: ...
+
+    async def critique_slide_js(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        candidate_js: str,
+        issues: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+        repair_directives: list[str] | None = None,
+        preview_text: str = "",
+    ) -> str: ...
+
+    async def evaluate_slide_quality(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        candidate_js: str,
+        preview_text: str,
+        hard_issues: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+    ) -> dict[str, Any]: ...
+
 
 def _extract_json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
@@ -101,6 +157,20 @@ def _normalize_page_type(raw: str | None) -> SlidePageType:
     return mapping.get(value, SlidePageType.CONTENT)
 
 
+def _extract_code_block(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        while lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+    return stripped
+
+
 class OpenAICompatibleLLMClient:
     def __init__(
         self,
@@ -120,6 +190,47 @@ class OpenAICompatibleLLMClient:
         self.timeout_sec = timeout_sec
         self.outline_temperature = outline_temperature
         self.slide_temperature = slide_temperature
+
+    async def generate_research_brief(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        template_style: str,
+        target_slide_count: int,
+    ) -> dict[str, Any]:
+        system_prompt = (
+            "You are a presentation research planner. "
+            "Return JSON only with keys: audience, purpose, tone, narrative_arc, page_focus(list[str]), design_notes(list[str])."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"project_id={project_id}\n"
+            f"template_style={template_style}\n"
+            f"target_slide_count={target_slide_count}\n"
+            f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            "Provide concise, practical planning guidance."
+        )
+        text = await self._chat_text(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=self.outline_temperature,
+        )
+        payload = _extract_json_object(text)
+        page_focus = payload.get("page_focus", [])
+        if not isinstance(page_focus, list):
+            page_focus = []
+        notes = payload.get("design_notes", [])
+        if not isinstance(notes, list):
+            notes = []
+        return {
+            "audience": str(payload.get("audience", "")).strip() or "general",
+            "purpose": str(payload.get("purpose", "")).strip() or "inform",
+            "tone": str(payload.get("tone", "")).strip() or "professional",
+            "narrative_arc": str(payload.get("narrative_arc", "")).strip() or "problem -> analysis -> solution -> summary",
+            "page_focus": [str(item).strip() for item in page_focus if str(item).strip()][:target_slide_count],
+            "design_notes": [str(item).strip() for item in notes if str(item).strip()][:8],
+        }
 
     async def generate_outline(
         self,
@@ -247,6 +358,135 @@ class OpenAICompatibleLLMClient:
             temperature=self.slide_temperature,
         )
         return self._parse_generated_slide(text=text, fallback=outline_node)
+
+    async def generate_slide_js(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        theme: dict[str, str],
+        title_font: str,
+        body_font: str,
+        rag_source_ids: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+    ) -> str:
+        system_prompt = (
+            "You are a PPT code agent. Return JavaScript only (no markdown fences) for one runnable slide module. "
+            "Must export synchronous createSlide(pres, theme) and slideConfig. "
+            "Use only theme keys: primary, secondary, accent, light, bg. "
+            "Never output placeholders or pseudo code."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"template_style={template_style}\n"
+            f"slide_no={slide_no}\n"
+            f"target_slide_count={target_slide_count}\n"
+            f"outline_node={outline_node.model_dump_json()}\n"
+            f"theme={json.dumps(theme, ensure_ascii=False)}\n"
+            f"title_font={title_font}\n"
+            f"body_font={body_font}\n"
+            f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"visual_policy={visual_policy.value}\n"
+            f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
+            "Requirements: LAYOUT_16x9, readable hierarchy, varied layout, natural language text, no hardcoded generic labels."
+        )
+        text = await self._chat_text(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=self.slide_temperature,
+        )
+        return _extract_code_block(text)
+
+    async def critique_slide_js(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        candidate_js: str,
+        issues: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+        repair_directives: list[str] | None = None,
+        preview_text: str = "",
+    ) -> str:
+        system_prompt = (
+            "You are a strict PPT code reviewer. Rewrite and return full JavaScript module only. "
+            "Keep createSlide synchronous. Fix all listed issues while preserving content intent."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"template_style={template_style}\n"
+            f"slide_no={slide_no}\n"
+            f"target_slide_count={target_slide_count}\n"
+            f"outline_node={outline_node.model_dump_json()}\n"
+            f"issues={json.dumps(issues, ensure_ascii=False)}\n"
+            f"repair_directives={json.dumps(repair_directives or [], ensure_ascii=False)}\n"
+            f"visual_policy={visual_policy.value}\n"
+            f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
+            f"preview_text={preview_text[:2000]}\n"
+            f"candidate_js=\n{candidate_js}\n"
+        )
+        text = await self._chat_text(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=self.slide_temperature,
+        )
+        return _extract_code_block(text)
+
+    async def evaluate_slide_quality(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        candidate_js: str,
+        preview_text: str,
+        hard_issues: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+    ) -> dict[str, Any]:
+        system_prompt = (
+            "You are a strict PPT slide QA judge. "
+            "Return JSON only with keys: score(0-100 int), issues(list[str]), repair_directives(list[str]). "
+            "Focus on information hierarchy, layout clarity, language naturalness, and style consistency."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"template_style={template_style}\n"
+            f"slide_no={slide_no}\n"
+            f"target_slide_count={target_slide_count}\n"
+            f"outline_node={outline_node.model_dump_json()}\n"
+            f"visual_policy={visual_policy.value}\n"
+            f"hard_issues={json.dumps(hard_issues, ensure_ascii=False)}\n"
+            f"preview_text={preview_text[:2000]}\n"
+            f"candidate_js=\n{candidate_js[:16000]}\n"
+        )
+        text = await self._chat_text(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=self.outline_temperature,
+        )
+        payload = _extract_json_object(text)
+        raw_score = payload.get("score", 0)
+        try:
+            score = int(raw_score)
+        except (TypeError, ValueError):
+            score = 0
+        score = max(0, min(100, score))
+        issues_raw = payload.get("issues", [])
+        if not isinstance(issues_raw, list):
+            issues_raw = []
+        directives_raw = payload.get("repair_directives", [])
+        if not isinstance(directives_raw, list):
+            directives_raw = []
+        issues = [str(item).strip() for item in issues_raw if str(item).strip()]
+        directives = [str(item).strip() for item in directives_raw if str(item).strip()]
+        return {"score": score, "issues": issues, "repair_directives": directives}
 
     def _parse_generated_slide(self, *, text: str, fallback: OutlineNode) -> GeneratedSlide:
         payload = _extract_json_object(text)
@@ -417,6 +657,28 @@ class OpenAICompatibleLLMClient:
 
 
 class MockLLMClient:
+    async def generate_research_brief(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        template_style: str,
+        target_slide_count: int,
+    ) -> dict[str, Any]:
+        return {
+            "audience": "general",
+            "purpose": "explain topic clearly",
+            "tone": "professional",
+            "narrative_arc": "context -> core points -> implications -> summary",
+            "page_focus": [f"Slide {idx}: focus on key point {idx}" for idx in range(1, target_slide_count + 1)],
+            "design_notes": [
+                f"Prefer {template_style} style.",
+                "Maintain strong hierarchy and spacing.",
+                "Use non-text visual on content slides.",
+            ],
+        }
+
     async def generate_outline(
         self,
         *,
@@ -485,6 +747,95 @@ class MockLLMClient:
         if not candidate.bullets:
             candidate.bullets = [f"Point {slide_no}.1"]
         return candidate
+
+    async def generate_slide_js(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        theme: dict[str, str],
+        title_font: str,
+        body_font: str,
+        rag_source_ids: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+    ) -> str:
+        title = json.dumps(outline_node.title, ensure_ascii=False)
+        bullets = json.dumps(outline_node.bullets or [f"Point {slide_no}.1", f"Point {slide_no}.2"], ensure_ascii=False)
+        return "\n".join(
+            [
+                "const pptxgen = require('pptxgenjs');",
+                "const slideConfig = {",
+                f"  type: {json.dumps(outline_node.page_type.value)},",
+                f"  index: {slide_no},",
+                f"  total: {target_slide_count},",
+                f"  title: {title},",
+                f"  layoutHint: {json.dumps(outline_node.layout_hint or 'content-two-column')},",
+                f"  bullets: {bullets},",
+                "};",
+                "function createSlide(pres, theme) {",
+                "  const slide = pres.addSlide();",
+                "  slide.background = { color: theme.bg };",
+                f"  slide.addText(slideConfig.title, {{ x: 0.6, y: 0.4, w: 8.8, h: 0.7, fontSize: 34, fontFace: {json.dumps(title_font)}, color: theme.primary, bold: true, fit: 'shrink' }});",
+                "  const rows = (slideConfig.bullets || []).map((text, idx) => ({ text, options: { bullet: true, breakLine: idx < (slideConfig.bullets || []).length - 1 } }));",
+                f"  slide.addText(rows, {{ x: 0.9, y: 1.4, w: 8.0, h: 3.5, fontSize: 16, fontFace: {json.dumps(body_font)}, color: theme.secondary, margin: 0 }});",
+                "  if (slideConfig.type !== 'cover') {",
+                "    slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+                "    slide.addText(String(slideConfig.index), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', bold: true, align: 'center', valign: 'mid', margin: 0 });",
+                "  }",
+                "  return slide;",
+                "}",
+                "if (require.main === module) {",
+                "  const pres = new pptxgen();",
+                "  pres.layout = 'LAYOUT_16x9';",
+                f"  const theme = {json.dumps(theme, ensure_ascii=False)};",
+                "  createSlide(pres, theme);",
+                f"  pres.writeFile({{ fileName: 'slide-{slide_no:02d}-preview.pptx' }});",
+                "}",
+                "module.exports = { createSlide, slideConfig };",
+            ]
+        )
+
+    async def critique_slide_js(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        candidate_js: str,
+        issues: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+        repair_directives: list[str] | None = None,
+        preview_text: str = "",
+    ) -> str:
+        return candidate_js
+
+    async def evaluate_slide_quality(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        candidate_js: str,
+        preview_text: str,
+        hard_issues: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+    ) -> dict[str, Any]:
+        if hard_issues:
+            return {
+                "score": 60,
+                "issues": list(hard_issues),
+                "repair_directives": ["Fix all hard issues before polishing visual quality."],
+            }
+        return {"score": 90, "issues": [], "repair_directives": []}
 
     def _page_type_for_index(self, index: int, total: int) -> SlidePageType:
         if index == 1:
