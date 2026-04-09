@@ -25,6 +25,7 @@ npm install
 # 3) 配置大模型（必须）
 Copy-Item .env.example .env
 # 然后编辑 .env 中的 LLM_API_STYLE / LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+# 如需模板图片/图标语义替换，额外配置 ASSET_PROVIDER 与对应 key（UNSPLASH_ACCESS_KEY / PEXELS_API_KEY）；默认 `ASSET_PROVIDER=auto`，未配置 key 会启动报错。
 
 # 4) 启动服务
 .\.venv\Scripts\python.exe .\scripts\run_dev.py
@@ -33,6 +34,21 @@ Copy-Item .env.example .env
 服务默认地址：`http://127.0.0.1:8000`
 
 > 当前版本支持 `openai_chat` 和 `anthropic_messages` 两种协议（由 `LLM_API_STYLE` 控制），未配置 `.env` 必填项时会直接报错。
+
+## 终端交互调试（推荐）
+
+如果你希望直接在终端里“输入提示词 -> 看大纲 -> 确认 -> 看产物路径”，可使用：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\run_cli.py
+```
+
+交互脚本能力：
+- 终端输入 `prompt/project_id/页数/style/mode`；
+- 模板模式可直接输入本地 `.pptx` 路径并自动上传；
+- 自动打印大纲，支持“直接确认”或“编辑后确认”；
+- 生成完成后输出 `pptx_path`、`compile_js_path`、每页 `slide-xx.js` 路径；
+- 同步输出关键事件与 QA/图表真实性报告，便于调试。
 
 ## API 工作流
 
@@ -52,11 +68,16 @@ Copy-Item .env.example .env
 ### Template 编辑模式
 1. `POST /v1/ppt/templates` 上传 `template.pptx`，获得 `template_id`
 2. `POST /v1/ppt/runs` 时带 `generation_mode=template` 与 `template_id`
-3. 按同样的 run + SSE + confirm 流程执行，产出 `edited.pptx`
+3. 按同样的 run + SSE + confirm 流程执行，产出 `edited.pptx` + `template_slides/slide-xx.js` + `template_slides/compile.js`
 
 `POST /v1/ppt/runs` 请求新增可选字段：
 - `generation_mode`: `scratch | template`（默认 `scratch`）
 - `template_id`: 当 `generation_mode=template` 时必填
+
+Template 模式返回：
+- `slides[].js_path`：模板流程生成的逐页 `slide-xx.js`
+- `compile_js_path`：模板流程 `template_slides/compile.js`
+- `pptx_path`：模板编辑打包后的 `edited.pptx`
 
 `POST /v1/ppt/runs/prompt` 请求字段：
 - `prompt`: 用户提示词（作为主题输入）
