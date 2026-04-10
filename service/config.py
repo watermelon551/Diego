@@ -27,6 +27,9 @@ class Settings:
     generation_engine: str = "agentic_v2"
     debug_keep_previews: bool = False
     max_slide_repair_rounds: int = 4
+    outline_timeout_retries: int = 3
+    outline_timeout_backoff_sec: float = 1.0
+    outline_structured_output: bool = True
 
 
 def _require_env(name: str) -> str:
@@ -76,15 +79,21 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         raise ValueError("UNSPLASH_ACCESS_KEY or PEXELS_API_KEY is required when ASSET_PROVIDER=auto")
     if generation_engine not in {"agentic_v2", "legacy"}:
         raise ValueError(f"invalid GENERATION_ENGINE={generation_engine!r}")
+    outline_timeout_backoff_sec = _env_float("OUTLINE_TIMEOUT_BACKOFF_SEC", 1.0)
+    if outline_timeout_backoff_sec < 0:
+        raise ValueError("OUTLINE_TIMEOUT_BACKOFF_SEC must be >= 0")
     return Settings(
         llm_api_style=os.getenv("LLM_API_STYLE", "openai_chat").strip().lower(),
         llm_base_url=_require_env("LLM_BASE_URL"),
         llm_api_key=_require_env("LLM_API_KEY"),
         llm_model=_require_env("LLM_MODEL"),
-        llm_timeout_sec=_env_float("LLM_TIMEOUT_SEC", 60.0),
+        llm_timeout_sec=_env_float("LLM_TIMEOUT_SEC", 120.0),
         llm_max_retries=_env_int("LLM_MAX_RETRIES", 2),
         llm_temperature_outline=_env_float("LLM_TEMPERATURE_OUTLINE", 0.3),
         llm_temperature_slide=_env_float("LLM_TEMPERATURE_SLIDE", 0.6),
+        outline_timeout_retries=_env_int("OUTLINE_TIMEOUT_RETRIES", 3, min_value=0),
+        outline_timeout_backoff_sec=outline_timeout_backoff_sec,
+        outline_structured_output=_env_bool("OUTLINE_STRUCTURED_OUTPUT", True),
         slide_concurrency=_env_int("SLIDE_CONCURRENCY", 4),
         slide_retry=_env_int("SLIDE_RETRY", 2),
         qa_enabled=_env_bool("QA_ENABLED", True),

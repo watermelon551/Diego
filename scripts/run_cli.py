@@ -108,10 +108,13 @@ async def _wait_for_status(
                     print("[大纲流式] " + "".join(token_buffer).strip())
                     token_buffer = []
             elif event.event.value in {
+                "requirements.analyzed",
                 "outline.completed",
                 "outline.repair.started",
                 "outline.repair.completed",
                 "outline.repair.failed",
+                "llm.request.retry",
+                "llm.request.timeout",
                 "research.completed",
                 "slide.generated",
                 "slide.candidate.generated",
@@ -124,6 +127,7 @@ async def _wait_for_status(
                 "repair.round.completed",
                 "template.layout.reflow.completed",
                 "template.fidelity.checked",
+                "slide.failed",
             }:
                 payload = json.dumps(event.payload, ensure_ascii=False)
                 print(f"[事件] {event.event.value} {payload}")

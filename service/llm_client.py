@@ -32,6 +32,17 @@ class OutlineFormatError(RuntimeError):
         super().__init__(f"outline {self.category} error: {'; '.join(self.details[:3])}")
 
 
+@dataclass
+class LLMTimeoutError(RuntimeError):
+    attempts: int
+    reason: str
+    phase: str = "outline"
+
+    def __post_init__(self) -> None:
+        message = self.reason.strip() or "request timed out"
+        super().__init__(f"{self.phase} timeout after {self.attempts} attempts: {message}")
+
+
 class LLMClient(Protocol):
     async def generate_research_brief(
         self,
@@ -206,6 +217,7 @@ class OpenAICompatibleLLMClient:
         timeout_sec: float = 60.0,
         outline_temperature: float = 0.3,
         slide_temperature: float = 0.6,
+        outline_structured_output: bool = True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -214,6 +226,7 @@ class OpenAICompatibleLLMClient:
         self.timeout_sec = timeout_sec
         self.outline_temperature = outline_temperature
         self.slide_temperature = slide_temperature
+        self.outline_structured_output = outline_structured_output
 
     async def generate_research_brief(
         self,
@@ -226,7 +239,8 @@ class OpenAICompatibleLLMClient:
     ) -> dict[str, Any]:
         system_prompt = (
             "You are a presentation research planner. "
-            "Return JSON only with keys: audience, purpose, tone, narrative_arc, page_focus(list[str]), design_notes(list[str])."
+            "Return JSON only with keys: audience, purpose, tone, narrative_arc, page_focus(list[str]), "
+            "design_notes(list[str]), style_intent, effective_template_style."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -254,6 +268,8 @@ class OpenAICompatibleLLMClient:
             "narrative_arc": str(payload.get("narrative_arc", "")).strip() or "problem -> analysis -> solution -> summary",
             "page_focus": [str(item).strip() for item in page_focus if str(item).strip()][:target_slide_count],
             "design_notes": [str(item).strip() for item in notes if str(item).strip()][:8],
+            "style_intent": str(payload.get("style_intent", "")).strip(),
+            "effective_template_style": str(payload.get("effective_template_style", "")).strip(),
         }
 
     async def generate_outline(
@@ -281,14 +297,19 @@ class OpenAICompatibleLLMClient:
             f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
             "Plan varied layouts and avoid repeating adjacent layouts. Output JSON only."
         )
-        text = await self._chat_stream_text(
+        response_format = self._outline_response_format(target_slide_count=target_slide_count)
+        text = await self._chat_text(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=self.outline_temperature,
-            on_token=on_token,
+            response_format=response_format,
+            allow_response_format_fallback=True,
         )
+        # Maintain token event compatibility for CLI/event consumers.
+        for token in text.split():
+            await on_token(token + " ")
         return self._parse_outline_or_raise(
             text=text,
             topic=topic,
@@ -324,9 +345,12 @@ class OpenAICompatibleLLMClient:
             f"previous_response=\n{previous_response[:20000]}\n"
             "Output JSON only."
         )
+        response_format = self._outline_response_format(target_slide_count=target_slide_count)
         text = await self._chat_text(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=self.outline_temperature,
+            response_format=response_format,
+            allow_response_format_fallback=True,
         )
         return self._parse_outline_or_raise(
             text=text,
@@ -355,16 +379,21 @@ class OpenAICompatibleLLMClient:
             f"outline={outline.model_dump_json()}\n"
             "Return improved outline JSON only."
         )
+        response_format = self._outline_response_format(target_slide_count=target_slide_count)
         text = await self._chat_text(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=self.outline_temperature,
+            response_format=response_format,
+            allow_response_format_fallback=True,
         )
-        payload = _extract_json_object(text)
-        improved = OutlineDocument.model_validate(payload)
-        return self._fit_outline(improved, topic=topic, target_slide_count=target_slide_count)
+        return self._parse_outline_or_raise(
+            text=text,
+            topic=topic,
+            target_slide_count=target_slide_count,
+        )
 
     async def generate_slide(
         self,
@@ -581,7 +610,14 @@ class OpenAICompatibleLLMClient:
             layout_hint=layout_hint,
         )
 
-    async def _chat_text(self, *, messages: list[dict[str, str]], temperature: float) -> str:
+    async def _chat_text(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        temperature: float,
+        response_format: dict[str, Any] | None = None,
+        allow_response_format_fallback: bool = False,
+    ) -> str:
         if self.api_style == "anthropic_messages":
             return await self._anthropic_text(messages=messages, temperature=temperature)
         payload = {
@@ -590,13 +626,30 @@ class OpenAICompatibleLLMClient:
             "temperature": temperature,
             "stream": False,
         }
+        if response_format and self.outline_structured_output:
+            payload["response_format"] = response_format
         headers = {"Authorization": f"Bearer {self.api_key}"}
         endpoint = self._openai_completions_endpoint()
-        async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
-            resp = await client.post(endpoint, json=payload, headers=headers)
-            resp.raise_for_status()
-            body = resp.json()
-        return str(body["choices"][0]["message"]["content"])
+        attempted_fallback = False
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
+                    resp = await client.post(endpoint, json=payload, headers=headers)
+                    resp.raise_for_status()
+                    body = resp.json()
+                content = body["choices"][0]["message"]["content"]
+                return self._response_content_to_text(content)
+            except httpx.HTTPStatusError as exc:
+                if (
+                    allow_response_format_fallback
+                    and not attempted_fallback
+                    and "response_format" in payload
+                    and self._is_response_format_unsupported(exc)
+                ):
+                    attempted_fallback = True
+                    payload.pop("response_format", None)
+                    continue
+                raise
 
     async def _chat_stream_text(
         self,
@@ -669,6 +722,79 @@ class OpenAICompatibleLLMClient:
             texts = [str(part.get("text", "")) for part in content if isinstance(part, dict)]
             return "".join(texts)
         return str(content)
+
+    def _response_content_to_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text", "")
+                    if text:
+                        chunks.append(str(text))
+                elif part:
+                    chunks.append(str(part))
+            return "".join(chunks)
+        return str(content)
+
+    def _is_response_format_unsupported(self, exc: httpx.HTTPStatusError) -> bool:
+        status = exc.response.status_code
+        if status not in {400, 404, 415, 422}:
+            return False
+        body = ""
+        try:
+            body = exc.response.text
+        except Exception:
+            body = ""
+        hint = body.lower()
+        return "response_format" in hint or "json_schema" in hint or "schema" in hint
+
+    def _outline_response_format(self, *, target_slide_count: int) -> dict[str, Any] | None:
+        if not self.outline_structured_output or self.api_style == "anthropic_messages":
+            return None
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "version": {"type": "integer", "minimum": 1},
+                "summary": {"type": "string"},
+                "nodes": {
+                    "type": "array",
+                    "minItems": target_slide_count,
+                    "maxItems": target_slide_count,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "title": {"type": "string"},
+                            "bullets": {"type": "array", "items": {"type": "string"}},
+                            "page_type": {
+                                "type": "string",
+                                "enum": [
+                                    SlidePageType.COVER.value,
+                                    SlidePageType.TOC.value,
+                                    SlidePageType.SECTION.value,
+                                    SlidePageType.CONTENT.value,
+                                    SlidePageType.SUMMARY.value,
+                                ],
+                            },
+                            "layout_hint": {"type": ["string", "null"]},
+                        },
+                        "required": ["title", "bullets", "page_type", "layout_hint"],
+                    },
+                },
+            },
+            "required": ["version", "summary", "nodes"],
+        }
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "outline_document",
+                "strict": True,
+                "schema": schema,
+            },
+        }
 
     def _openai_completions_endpoint(self) -> str:
         if self.base_url.endswith("/v1"):

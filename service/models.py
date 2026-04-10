@@ -16,6 +16,7 @@ class RunStatus(str, Enum):
 
 
 class EventType(str, Enum):
+    REQUIREMENTS_ANALYZED = "requirements.analyzed"
     OUTLINE_TOKEN = "outline.token"
     OUTLINE_COMPLETED = "outline.completed"
     OUTLINE_UPDATED = "outline.updated"
@@ -48,6 +49,9 @@ class EventType(str, Enum):
     OUTLINE_REPAIR_STARTED = "outline.repair.started"
     OUTLINE_REPAIR_COMPLETED = "outline.repair.completed"
     OUTLINE_REPAIR_FAILED = "outline.repair.failed"
+    LLM_REQUEST_RETRY = "llm.request.retry"
+    LLM_REQUEST_TIMEOUT = "llm.request.timeout"
+    SLIDE_FAILED = "slide.failed"
 
 
 class GenerationMode(str, Enum):

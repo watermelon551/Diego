@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 import service.orchestrator as orchestrator_mod
 from service.app import create_app
 from service.config import Settings, load_settings
-from service.llm_client import GeneratedSlide, MockLLMClient, OutlineFormatError
+from service.llm_client import GeneratedSlide, LLMTimeoutError, MockLLMClient, OutlineFormatError
 from service.models import OutlineDocument, OutlineNode
 from service.orchestrator import RunOrchestrator
 from service.store import RunStore
@@ -125,6 +125,19 @@ class ImageHeavyAgenticLLM(AgenticMockLLM):
         )
 
 
+class CandidateOneFailsAgenticLLM(AgenticMockLLM):
+    async def generate_slide_js(self, **kwargs):
+        slide_plan = kwargs.get("slide_plan") or {}
+        if int(slide_plan.get("candidate_worker", 0)) == 1:
+            raise RuntimeError("simulated candidate worker failure")
+        return await super().generate_slide_js(**kwargs)
+
+
+class AllCandidatesFailAgenticLLM(AgenticMockLLM):
+    async def generate_slide_js(self, **kwargs):
+        raise RuntimeError("simulated all candidate failures")
+
+
 class MalformedOutlineThenRepairLLM(MockLLMClient):
     async def generate_outline(self, **kwargs):
         raise OutlineFormatError(
@@ -164,6 +177,32 @@ class AlwaysMalformedOutlineLLM(MockLLMClient):
         )
 
 
+class CritiqueMalformedThenRepairLLM(MockLLMClient):
+    async def critique_outline(self, **kwargs):
+        raise OutlineFormatError(
+            category="parse",
+            details=["model response does not contain a JSON object"],
+            raw_response="```json { invalid critique",
+        )
+
+
+class TimeoutThenSuccessOutlineLLM(MockLLMClient):
+    def __init__(self, *, fail_times: int = 1) -> None:
+        self.fail_times = fail_times
+        self.calls = 0
+
+    async def generate_outline(self, **kwargs):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise LLMTimeoutError(attempts=1, reason="simulated timeout", phase="outline.generate")
+        return await super().generate_outline(**kwargs)
+
+
+class AlwaysTimeoutOutlineLLM(MockLLMClient):
+    async def generate_outline(self, **kwargs):
+        raise LLMTimeoutError(attempts=1, reason="simulated timeout", phase="outline.generate")
+
+
 def fake_subprocess_run(args, cwd=None, capture_output=False, text=False, check=False, **kwargs):
     cmd = " ".join(args) if isinstance(args, (list, tuple)) else str(args)
     if "node" in cmd and "compile.js" in cmd:
@@ -171,6 +210,12 @@ def fake_subprocess_run(args, cwd=None, capture_output=False, text=False, check=
         out.mkdir(parents=True, exist_ok=True)
         (out / "presentation.pptx").write_bytes(b"fake-pptx")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="compiled", stderr="")
+    if "node" in cmd and ".preview-runner-" in cmd:
+        match = re.search(r"\.preview-runner-(\d+)\.js", cmd)
+        if match:
+            preview = Path(cwd) / f"slide-{int(match.group(1)):02d}-preview.pptx"
+            preview.write_bytes(b"fake-preview-pptx")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="preview", stderr="")
     if "node" in cmd and "slide-" in cmd and cmd.strip().endswith(".js"):
         match = re.search(r"slide-(\d+)(?:-cand-\d+)?\.js", cmd)
         if match:
@@ -204,6 +249,9 @@ def make_settings() -> Settings:
         generation_engine="legacy",
         debug_keep_previews=False,
         max_slide_repair_rounds=2,
+        outline_timeout_retries=3,
+        outline_timeout_backoff_sec=0.0,
+        outline_structured_output=True,
     )
 
 
@@ -515,6 +563,29 @@ def test_create_run_from_prompt_endpoint(tmp_path: Path) -> None:
     assert detail["research_report"]["page_focus"]
 
 
+def test_requirements_analysis_should_publish_before_outline(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Requirements Stage",
+            "project_id": "p-req",
+            "rag_source_ids": ["r1", "r2"],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    req_event = next(item for item in detail["events"] if item["event"] == "requirements.analyzed")
+    outline_event = next(item for item in detail["events"] if item["event"] == "outline.completed")
+    assert req_event["seq"] < outline_event["seq"]
+    report = detail["research_report"]
+    assert report["page_count_fixed"] == 3
+    assert report["content_source_mode"] == "rag_first"
+    assert report["effective_template_style"]
+
+
 def test_outline_format_error_should_trigger_repair_and_succeed(tmp_path: Path) -> None:
     client = make_client(tmp_path, llm_client=MalformedOutlineThenRepairLLM())
     run_id = client.post(
@@ -554,6 +625,65 @@ def test_outline_repair_exhausted_should_fail_with_error_details(tmp_path: Path)
     assert detail["failed_stage"] == "OUTLINE_DRAFTING"
     assert detail["error_details"]["error_category"] == "schema"
     assert detail["error_details"]["error_details"]
+
+
+def test_outline_critique_format_error_should_repair_and_continue(tmp_path: Path) -> None:
+    client = make_client(tmp_path, llm_client=CritiqueMalformedThenRepairLLM())
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Critique Repair",
+            "project_id": "p-critique-repair",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    events = [item for item in detail["events"] if item["event"].startswith("outline.repair.")]
+    assert any(item["payload"].get("phase") == "critique" and item["event"] == "outline.repair.failed" for item in events)
+    assert any(item["payload"].get("phase") == "critique" and item["event"] == "outline.repair.completed" for item in events)
+
+
+def test_outline_timeout_retry_then_success(tmp_path: Path) -> None:
+    client = make_client(tmp_path, llm_client=TimeoutThenSuccessOutlineLLM(fail_times=2))
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Outline Timeout Retry",
+            "project_id": "p-timeout-retry",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    events = [item["event"] for item in detail["events"]]
+    assert "llm.request.timeout" in events
+    assert "llm.request.retry" in events
+    assert detail["outline"] is not None
+
+
+def test_outline_timeout_exhausted_should_fail_with_timeout_code(tmp_path: Path) -> None:
+    client = make_client(tmp_path, llm_client=AlwaysTimeoutOutlineLLM())
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Outline Timeout Exhausted",
+            "project_id": "p-timeout-fail",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"FAILED"})
+    assert detail["error_code"] == "OUTLINE_LLM_TIMEOUT"
+    assert detail["failed_stage"] == "OUTLINE_DRAFTING"
+    assert detail["error_details"]["phase"] == "outline.generate"
+    assert detail["error_details"]["attempts"] == 4
 
 
 def test_confirm_gate_and_scratch_success_flow(tmp_path: Path) -> None:
@@ -633,6 +763,85 @@ def test_agentic_engine_generates_js_and_cleans_preview_artifacts(tmp_path: Path
     assert "event: slide.quality.gate.completed" in body
     assert "event: slide.candidate.generated" in body
     assert "event: slide.selection.completed" in body
+
+
+def test_agentic_should_continue_when_single_candidate_fails(tmp_path: Path) -> None:
+    settings = make_settings()
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "generation_engine": "agentic_v2",
+            "debug_keep_previews": False,
+            "max_slide_repair_rounds": 2,
+        }
+    )
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=CandidateOneFailsAgenticLLM(),
+        settings=settings,
+    )
+    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Candidate Fault Tolerance",
+            "project_id": "p-agentic-candidate-fail",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    final = wait_status(client, run_id, {"SUCCEEDED"}, timeout=20.0)
+    assert final["status"] == "SUCCEEDED"
+    assert any(item["event"] == "slide.candidate.generated" and item["payload"].get("error") for item in final["events"])
+
+
+def test_agentic_should_fail_with_slide_diagnostics_when_all_candidates_fail(tmp_path: Path) -> None:
+    settings = make_settings()
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "generation_engine": "agentic_v2",
+            "debug_keep_previews": False,
+            "max_slide_repair_rounds": 2,
+        }
+    )
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=AllCandidatesFailAgenticLLM(),
+        settings=settings,
+    )
+    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "All Candidates Fail",
+            "project_id": "p-agentic-fail",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 1,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    final = wait_status(client, run_id, {"FAILED"}, timeout=20.0)
+    assert final["error_code"] == "SLIDE_LLM_ERROR"
+    assert final["error_details"]["failure_count"] >= 1
+    first = final["error_details"]["first_failure"]
+    assert first["slide_no"] == 1
+    assert first["phase"]
+    assert first["reason"]
+    assert any(item["event"] == "slide.failed" for item in final["events"])
 
 
 def test_visual_policy_media_required_should_fail_when_images_missing(tmp_path: Path) -> None:
