@@ -5,6 +5,7 @@ import html
 import httpx
 import json
 import os
+import random
 import re
 import shutil
 import struct
@@ -21,7 +22,15 @@ from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from .config import Settings, load_settings
-from .llm_client import GeneratedSlide, LLMClient, LLMTimeoutError, OpenAICompatibleLLMClient, OutlineFormatError
+from .llm_client import (
+    GeneratedSlide,
+    LLMClient,
+    LLMEmptyResponseError,
+    LLMTimeoutError,
+    OpenAICompatibleLLMClient,
+    OutlineFormatError,
+    SlideSpec,
+)
 from .models import (
     ConfirmOutlineRequest,
     CreateRunRequest,
@@ -41,7 +50,7 @@ from .models import (
     TemplateUploadResponse,
     VisualPolicy,
 )
-from .skill_profile import DesignProfile, StyleRecipe, allowed_layouts_for, choose_design_profile, enforce_layout_variety
+from .skill_profile import PALETTES, FONT_PAIRS, STYLE_RECIPES, DesignProfile, StyleRecipe, allowed_layouts_for, choose_design_profile, enforce_layout_variety
 from .store import RunStore, now_iso
 
 
@@ -167,9 +176,29 @@ class LayoutBox:
         return self.h_emu / 914400.0
 
 
+@dataclass
+class JsLayoutBox:
+    element_type: str
+    x: float
+    y: float
+    w: float
+    h: float
+    text_expr: str = ""
+    options_raw: str = ""
+    font_size: float | None = None
+    align: str | None = None
+    bold: bool | None = None
+    fit: str | None = None
+
+    @property
+    def area(self) -> float:
+        return self.w * self.h
+
+
 SLIDE_WIDTH_EMU = 9_144_000
 SLIDE_HEIGHT_EMU = 5_143_500
-
+SLIDE_WIDTH_IN = 10.0
+SLIDE_HEIGHT_IN = 5.625
 
 class RunOrchestrator:
     def __init__(
@@ -193,6 +222,18 @@ class RunOrchestrator:
         self.outline_timeout_backoff_sec = max(0.0, settings.outline_timeout_backoff_sec)
         self.repair_rounds = max(1, settings.repair_rounds)
         self.max_slide_repair_rounds = max(1, settings.max_slide_repair_rounds)
+        self.llm_request_concurrency = max(1, int(getattr(settings, "llm_request_concurrency", 6)))
+        self.slide_candidate_workers = max(1, min(5, int(getattr(settings, "slide_candidate_workers", 3))))
+        self.llm_timeout_jitter_sec = max(0.0, float(getattr(settings, "llm_timeout_jitter_sec", 0.2)))
+        self.slide_fatal_early_stop_rounds = max(1, int(getattr(settings, "slide_fatal_early_stop_rounds", 2)))
+        self.run_max_llm_calls = max(0, int(getattr(settings, "run_max_llm_calls", 0)))
+        self.keep_failed_candidate_js = bool(getattr(settings, "keep_failed_candidate_js", True))
+        self._llm_request_gate = threading.BoundedSemaphore(self.llm_request_concurrency)
+        self._timeout_lock = threading.Lock()
+        self._timeout_streak = 0
+        self._run_budget_lock = threading.Lock()
+        self._run_llm_call_counts: dict[str, int] = {}
+        self._run_llm_call_limits: dict[str, int] = {}
 
     def _use_agentic_engine(self) -> bool:
         return self.settings.generation_engine == "agentic_v2"
@@ -346,9 +387,111 @@ class RunOrchestrator:
         event = RunEvent(seq=len(run.events) + 1, event=event_type, ts=now_iso(), payload=payload)
         await self.store.append_event(run_id, event)
 
-    def _is_timeout_exception(self, exc: Exception) -> bool:
-        return isinstance(exc, (LLMTimeoutError, httpx.TimeoutException, TimeoutError))
+    def _retryable_http_statuses(self) -> set[int]:
+        # 529 is provider overload; 429/5xx are transient in most LLM gateways.
+        return {
+            408,
+            409,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504,
+            520,
+            521,
+            522,
+            523,
+            524,
+            529,
+        }
 
+    def _is_retryable_http_status_error(self, exc: Exception) -> bool:
+        if not isinstance(exc, httpx.HTTPStatusError):
+            return False
+        try:
+            code = int(exc.response.status_code)
+        except Exception:
+            return False
+        return code in self._retryable_http_statuses()
+
+    def _retry_after_seconds(self, exc: Exception) -> float | None:
+        if not isinstance(exc, httpx.HTTPStatusError):
+            return None
+        header = (exc.response.headers.get("Retry-After") or "").strip()
+        if not header:
+            return None
+        try:
+            value = float(header)
+        except ValueError:
+            return None
+        if value < 0:
+            return None
+        return value
+
+    def _is_retryable_llm_exception(self, exc: Exception) -> bool:
+        if isinstance(exc, (LLMTimeoutError, httpx.TimeoutException, TimeoutError)):
+            return True
+        if isinstance(exc, LLMEmptyResponseError):
+            return True
+        if isinstance(exc, httpx.NetworkError):
+            return True
+        if self._is_retryable_http_status_error(exc):
+            return True
+        return False
+    def _note_timeout(self) -> None:
+        with self._timeout_lock:
+            self._timeout_streak = min(100, self._timeout_streak + 1)
+
+    def _note_llm_success(self) -> None:
+        with self._timeout_lock:
+            if self._timeout_streak > 0:
+                self._timeout_streak -= 1
+
+    def _recommended_candidate_workers(self) -> int:
+        base = max(1, self.slide_candidate_workers)
+        with self._timeout_lock:
+            streak = self._timeout_streak
+        if streak >= 8:
+            return 1
+        if streak >= 4:
+            return min(base, 2)
+        return base
+
+    def _init_run_llm_budget(self, *, run_id: str, target_slide_count: int) -> None:
+        dynamic_default = max(
+            60,
+            int(target_slide_count) * (max(1, self.max_slide_repair_rounds) * 4 + 6),
+        )
+        limit = self.run_max_llm_calls if self.run_max_llm_calls > 0 else dynamic_default
+        with self._run_budget_lock:
+            self._run_llm_call_counts[run_id] = 0
+            self._run_llm_call_limits[run_id] = max(1, limit)
+
+    def _clear_run_llm_budget(self, run_id: str) -> None:
+        with self._run_budget_lock:
+            self._run_llm_call_counts.pop(run_id, None)
+            self._run_llm_call_limits.pop(run_id, None)
+
+    def _consume_run_llm_budget(self, *, run_id: str, phase: str) -> None:
+        with self._run_budget_lock:
+            limit = self._run_llm_call_limits.get(run_id)
+            if limit is None:
+                return
+            next_count = self._run_llm_call_counts.get(run_id, 0) + 1
+            self._run_llm_call_counts[run_id] = next_count
+            if next_count > limit:
+                raise RuntimeError(f"llm call budget exceeded at {phase}: {next_count}>{limit}")
+
+    def _is_timeout_failure_payload(self, payload: dict[str, Any]) -> bool:
+        reason = str(payload.get("reason", "")).lower()
+        error_type = str(payload.get("error_type", ""))
+        if "timeout" in reason or "Timeout" in error_type:
+            return True
+        # Treat transient overload/rate-limit server codes as timeout-like pressure signals.
+        if any(code in reason for code in (" 429", " 500", " 502", " 503", " 504", " 529")):
+            return True
+        return False
     def _exception_reason(self, exc: Exception) -> str:
         reason = str(exc).strip()
         return reason or repr(exc)
@@ -371,8 +514,15 @@ class RunOrchestrator:
             return "mock"
         return provider or "auto"
 
-    def _compose_requirements_report(self, *, run: RunRecord, research_brief: dict[str, Any]) -> dict[str, Any]:
+    def _compose_requirements_report(
+        self,
+        *,
+        run: RunRecord,
+        research_brief: dict[str, Any],
+        design_intent: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         report: dict[str, Any] = dict(research_brief or {})
+        intent_raw = dict(design_intent or {})
         notes_raw = report.get("design_notes", [])
         notes = [str(item).strip() for item in notes_raw if str(item).strip()] if isinstance(notes_raw, list) else []
         page_focus_raw = report.get("page_focus", [])
@@ -380,6 +530,28 @@ class RunOrchestrator:
         tone = str(report.get("tone", "")).strip()
         style_intent = str(report.get("style_intent", "")).strip() or tone or "professional"
         effective_template_style = str(report.get("effective_template_style", "")).strip() or run.input.template_style
+        theme_overrides_raw = intent_raw.get("theme") if isinstance(intent_raw.get("theme"), dict) else {}
+        theme_overrides = {
+            key: value
+            for key, value in {
+                "primary": self._normalize_hex6(str(theme_overrides_raw.get("primary", ""))),
+                "secondary": self._normalize_hex6(str(theme_overrides_raw.get("secondary", ""))),
+                "accent": self._normalize_hex6(str(theme_overrides_raw.get("accent", ""))),
+                "light": self._normalize_hex6(str(theme_overrides_raw.get("light", ""))),
+                "bg": self._normalize_hex6(str(theme_overrides_raw.get("bg", ""))),
+            }.items()
+            if value
+        }
+        design_intent_norm = {
+            "palette_name": str(intent_raw.get("palette_name", "")).strip(),
+            "style_recipe": str(intent_raw.get("style_recipe", "")).strip().lower(),
+            "title_font": str(intent_raw.get("title_font", "")).strip(),
+            "body_font": str(intent_raw.get("body_font", "")).strip(),
+            "visual_strategy": str(intent_raw.get("visual_strategy", "")).strip(),
+            "density": str(intent_raw.get("density", "")).strip(),
+            "rationale": str(intent_raw.get("rationale", "")).strip(),
+            "theme": theme_overrides,
+        }
         report.update(
             {
                 "audience": str(report.get("audience", "")).strip() or "general audience",
@@ -390,6 +562,7 @@ class RunOrchestrator:
                 "design_notes": notes[:8],
                 "style_intent": style_intent,
                 "effective_template_style": effective_template_style,
+                "design_intent": design_intent_norm,
                 "page_count_fixed": run.input.target_slide_count,
                 "content_source_mode": self._resolve_content_source_mode(run),
                 "image_source_mode": self._resolve_image_source_mode(run),
@@ -397,7 +570,92 @@ class RunOrchestrator:
         )
         return report
 
-    async def _call_outline_with_timeout_retry(
+    def _normalize_hex6(self, raw: str) -> str | None:
+        value = (raw or "").strip().lstrip("#")
+        if len(value) == 3 and all(ch in "0123456789abcdefABCDEF" for ch in value):
+            value = "".join(ch * 2 for ch in value)
+        if len(value) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in value):
+            return None
+        return value.upper()
+
+    def _resolve_palette_theme(self, *, base: DesignProfile, design_intent: dict[str, Any]) -> tuple[str, dict[str, str]]:
+        palette_name = str(design_intent.get("palette_name", "")).strip()
+        for name, palette in PALETTES:
+            if palette_name and name.lower() == palette_name.lower():
+                return name, {
+                    "primary": palette[0],
+                    "secondary": palette[1],
+                    "accent": palette[4],
+                    "light": palette[3],
+                    "bg": palette[2],
+                }
+
+        theme = dict(base.theme)
+        theme_payload = design_intent.get("theme") if isinstance(design_intent.get("theme"), dict) else {}
+        for key in ("primary", "secondary", "accent", "light", "bg"):
+            candidate = self._normalize_hex6(str(theme_payload.get(key, "")))
+            if candidate:
+                theme[key] = candidate
+        return (palette_name or base.palette_name), theme
+
+    def _resolve_style_recipe_name(
+        self,
+        *,
+        design_intent: dict[str, Any],
+        style_intent: str,
+        template_style: str,
+        fallback: str,
+    ) -> str:
+        explicit = str(design_intent.get("style_recipe", "")).strip().lower()
+        if explicit in STYLE_RECIPES:
+            return explicit
+        merged = f"{style_intent} {template_style}".lower()
+        if any(word in merged for word in ("brutal", "sharp", "authority", "finance", "data")):
+            return "sharp"
+        if any(word in merged for word in ("premium", "luxury", "editorial", "brand")):
+            return "pill"
+        if any(word in merged for word in ("creative", "marketing", "rounded", "friendly")):
+            return "rounded"
+        if any(word in merged for word in ("soft", "education", "training", "balanced")):
+            return "soft"
+        return fallback if fallback in STYLE_RECIPES else "soft"
+
+    def _resolve_font_from_intent(self, *, preferred: str, fallback: str) -> str:
+        normalized_preferred = preferred.strip()
+        if not normalized_preferred:
+            return fallback
+        available = {font for pair in FONT_PAIRS for font in pair}
+        return normalized_preferred if normalized_preferred in available else fallback
+
+    def _resolve_design_profile(self, *, topic: str, template_style: str, requirements_report: dict[str, Any]) -> DesignProfile:
+        base = choose_design_profile(topic=topic, template_style=template_style)
+        design_intent = requirements_report.get("design_intent", {})
+        if not isinstance(design_intent, dict):
+            design_intent = {}
+        palette_name, theme = self._resolve_palette_theme(base=base, design_intent=design_intent)
+        style_name = self._resolve_style_recipe_name(
+            design_intent=design_intent,
+            style_intent=str(requirements_report.get("style_intent", "")),
+            template_style=template_style,
+            fallback=base.style.name,
+        )
+        style = STYLE_RECIPES.get(style_name, base.style)
+        title_font = self._resolve_font_from_intent(
+            preferred=str(design_intent.get("title_font", "")),
+            fallback=base.title_font,
+        )
+        body_font = self._resolve_font_from_intent(
+            preferred=str(design_intent.get("body_font", "")),
+            fallback=base.body_font,
+        )
+        return DesignProfile(
+            palette_name=palette_name,
+            theme=theme,
+            title_font=title_font,
+            body_font=body_font,
+            style=style,
+        )
+    async def _call_llm_with_timeout_retry(
         self,
         *,
         run_id: str,
@@ -405,12 +663,21 @@ class RunOrchestrator:
         action: Any,
     ) -> Any:
         max_attempts = self.outline_timeout_retries + 1
+        gate_timeout_sec = max(1.0, float(self.settings.llm_timeout_sec) + 5.0)
         for attempt in range(1, max_attempts + 1):
+            acquired = False
             try:
-                return await action()
+                self._consume_run_llm_budget(run_id=run_id, phase=phase)
+                acquired = await asyncio.to_thread(self._llm_request_gate.acquire, True, gate_timeout_sec)
+                if not acquired:
+                    raise TimeoutError("llm request concurrency gate timeout")
+                result = await action()
+                self._note_llm_success()
+                return result
             except Exception as exc:
-                if not self._is_timeout_exception(exc):
+                if not self._is_retryable_llm_exception(exc):
                     raise
+                self._note_timeout()
                 reason = self._exception_reason(exc)
                 await self._publish(
                     run_id,
@@ -424,7 +691,11 @@ class RunOrchestrator:
                 )
                 if attempt >= max_attempts:
                     raise LLMTimeoutError(attempts=attempt, reason=reason, phase=phase) from exc
-                delay = self.outline_timeout_backoff_sec * (2 ** (attempt - 1))
+                jitter = random.uniform(0.0, self.llm_timeout_jitter_sec) if self.llm_timeout_jitter_sec > 0 else 0.0
+                delay = self.outline_timeout_backoff_sec * (2 ** (attempt - 1)) + jitter
+                retry_after = self._retry_after_seconds(exc)
+                if retry_after is not None:
+                    delay = max(delay, retry_after)
                 await self._publish(
                     run_id,
                     EventType.LLM_REQUEST_RETRY,
@@ -438,7 +709,19 @@ class RunOrchestrator:
                 )
                 if delay > 0:
                     await asyncio.sleep(delay)
+            finally:
+                if acquired:
+                    self._llm_request_gate.release()
         raise RuntimeError("unreachable timeout retry loop")
+
+    async def _call_outline_with_timeout_retry(
+        self,
+        *,
+        run_id: str,
+        phase: str,
+        action: Any,
+    ) -> Any:
+        return await self._call_llm_with_timeout_retry(run_id=run_id, phase=phase, action=action)
 
     async def _generate_outline(self, run_id: str) -> None:
         started = time.perf_counter()
@@ -446,6 +729,15 @@ class RunOrchestrator:
         if run is None:
             return
         try:
+            await self._publish(
+                run_id,
+                EventType.REQUIREMENTS_ANALYZING_STARTED,
+                {
+                    "target_slide_count": run.input.target_slide_count,
+                    "project_id": run.input.project_id,
+                    "has_rag": bool(run.input.rag_source_ids),
+                },
+            )
             try:
                 base_research = await self._call_outline_with_timeout_retry(
                     run_id=run_id,
@@ -464,20 +756,44 @@ class RunOrchestrator:
                     template_style=run.input.template_style,
                     target_slide_count=run.input.target_slide_count,
                 )
-            requirements_report = self._compose_requirements_report(run=run, research_brief=base_research)
+            design_intent: dict[str, Any] = {}
+            try:
+                design_intent = await self._call_outline_with_timeout_retry(
+                    run_id=run_id,
+                    phase="requirements.design_intent",
+                    action=lambda: self.llm_client.generate_design_intent(
+                        topic=run.input.topic,
+                        template_style=run.input.template_style,
+                        target_slide_count=run.input.target_slide_count,
+                        research_brief=base_research,
+                    ),
+                )
+            except Exception:
+                design_intent = {}
+            requirements_report = self._compose_requirements_report(
+                run=run,
+                research_brief=base_research,
+                design_intent=design_intent,
+            )
             effective_template_style = str(requirements_report.get("effective_template_style", "")).strip() or run.input.template_style
             await self.store.update_run(run_id, lambda r: setattr(r, "research_report", requirements_report))
-            await self._publish(
-                run_id,
-                EventType.REQUIREMENTS_ANALYZED,
-                {
-                    "page_count_fixed": requirements_report.get("page_count_fixed", run.input.target_slide_count),
-                    "effective_template_style": effective_template_style,
-                    "style_intent": requirements_report.get("style_intent", ""),
-                    "content_source_mode": requirements_report.get("content_source_mode", ""),
-                    "image_source_mode": requirements_report.get("image_source_mode", ""),
-                },
-            )
+            design_intent_payload = requirements_report.get("design_intent", {}) if isinstance(requirements_report.get("design_intent", {}), dict) else {}
+            requirements_payload = {
+                "page_count_fixed": requirements_report.get("page_count_fixed", run.input.target_slide_count),
+                "effective_template_style": effective_template_style,
+                "style_intent": requirements_report.get("style_intent", ""),
+                "content_source_mode": requirements_report.get("content_source_mode", ""),
+                "image_source_mode": requirements_report.get("image_source_mode", ""),
+                "audience": requirements_report.get("audience", ""),
+                "purpose": requirements_report.get("purpose", ""),
+                "tone": requirements_report.get("tone", ""),
+                "palette_name": design_intent_payload.get("palette_name", ""),
+                "style_recipe": design_intent_payload.get("style_recipe", ""),
+                "visual_strategy": design_intent_payload.get("visual_strategy", ""),
+                "density": design_intent_payload.get("density", ""),
+            }
+            await self._publish(run_id, EventType.REQUIREMENTS_ANALYZING_COMPLETED, requirements_payload)
+            await self._publish(run_id, EventType.REQUIREMENTS_ANALYZED, requirements_payload)
 
             async def on_token(token: str) -> None:
                 await self._publish(run_id, EventType.OUTLINE_TOKEN, {"token": token})
@@ -635,7 +951,7 @@ class RunOrchestrator:
                         {"attempt": 1, "phase": "critique", "fallback_used": True},
                     )
             enforce_layout_variety(nodes=outline.nodes, seed=f"{run.input.topic}|{effective_template_style}|{run_id}")
-            design = choose_design_profile(topic=run.input.topic, template_style=effective_template_style)
+            design = self._resolve_design_profile(topic=run.input.topic, template_style=effective_template_style, requirements_report=requirements_report)
 
             def apply_outline(r: RunRecord) -> None:
                 r.outline = outline
@@ -720,11 +1036,12 @@ class RunOrchestrator:
     async def _generate_from_scratch(self, run_id: str) -> None:
         run = await self.store.get_run(run_id)
         assert run is not None and run.outline is not None
+        self._init_run_llm_budget(run_id=run_id, target_slide_count=run.input.target_slide_count)
         if run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED and self.settings.asset_provider == "none":
             await self._fail_run(run_id, "SLIDES_GENERATING", "VISUAL_POLICY_UNSATISFIED", retryable=False)
             return
         effective_template_style = self._resolved_template_style(run)
-        design = choose_design_profile(topic=run.input.topic, template_style=effective_template_style)
+        design = self._resolve_design_profile(topic=run.input.topic, template_style=effective_template_style, requirements_report=run.research_report if isinstance(run.research_report, dict) else {})
 
         artifact_dir = Path(run.artifact_dir)
         slides_dir = artifact_dir / "slides"
@@ -735,7 +1052,7 @@ class RunOrchestrator:
         imgs_dir.mkdir(parents=True, exist_ok=True)
 
         slide_start = time.perf_counter()
-        sem = asyncio.Semaphore(min(5, self.slide_concurrency))
+        sem = asyncio.Semaphore(min(5, self.slide_concurrency, self.llm_request_concurrency))
 
         async def generate_one(slide_no: int, node: OutlineNode) -> None:
             async with sem:
@@ -862,12 +1179,14 @@ class RunOrchestrator:
                         await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False)
                         return
         await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SUCCEEDED))
+        self._clear_run_llm_budget(run_id)
 
     async def _generate_from_template(self, run_id: str) -> None:
         run = await self.store.get_run(run_id)
         assert run is not None and run.outline is not None
+        self._init_run_llm_budget(run_id=run_id, target_slide_count=run.input.target_slide_count)
         effective_template_style = self._resolved_template_style(run)
-        design = choose_design_profile(topic=run.input.topic, template_style=effective_template_style)
+        design = self._resolve_design_profile(topic=run.input.topic, template_style=effective_template_style, requirements_report=run.research_report if isinstance(run.research_report, dict) else {})
         if not run.input.template_id:
             await self._fail_run(run_id, "SLIDES_GENERATING", "TEMPLATE_ID_MISSING", retryable=False)
             return
@@ -964,6 +1283,7 @@ class RunOrchestrator:
                     await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False)
                     return
         await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SUCCEEDED))
+        self._clear_run_llm_budget(run_id)
 
     def _template_work_paths(self, artifact_dir: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
         template_dir = artifact_dir / "template_edit"
@@ -1029,14 +1349,18 @@ class RunOrchestrator:
                     fallback_node=base_node,
                     citations=citations,
                 )
-                reviewed = await self.llm_client.review_slide(
-                    topic=run.input.topic,
-                    template_style=effective_template_style,
-                    slide_no=idx,
-                    target_slide_count=run.input.target_slide_count,
-                    outline_node=base_node,
-                    candidate=candidate,
-                    rule_violations=forced_issues or run.qa_report.get("issues", []),
+                reviewed = await self._call_llm_with_timeout_retry(
+                    run_id=run_id,
+                    phase=f"template.slide.{idx}.review",
+                    action=lambda: self.llm_client.review_slide(
+                        topic=run.input.topic,
+                        template_style=effective_template_style,
+                        slide_no=idx,
+                        target_slide_count=run.input.target_slide_count,
+                        outline_node=base_node,
+                        candidate=candidate,
+                        rule_violations=forced_issues or run.qa_report.get("issues", []),
+                    ),
                 )
                 node_for_apply = OutlineNode(
                     title=reviewed.title,
@@ -1308,25 +1632,33 @@ class RunOrchestrator:
         retries = 0
         while True:
             try:
-                generated = await self.llm_client.generate_slide(
-                    topic=run.input.topic,
-                    project_id=run.input.project_id,
-                    template_style=effective_template_style,
-                    slide_no=slide_no,
-                    target_slide_count=run.input.target_slide_count,
-                    outline_node=node,
-                    rag_source_ids=run.input.rag_source_ids,
+                generated = await self._call_llm_with_timeout_retry(
+                    run_id=run_id,
+                    phase=f"slide.{slide_no}.legacy.generate",
+                    action=lambda: self.llm_client.generate_slide(
+                        topic=run.input.topic,
+                        project_id=run.input.project_id,
+                        template_style=effective_template_style,
+                        slide_no=slide_no,
+                        target_slide_count=run.input.target_slide_count,
+                        outline_node=node,
+                        rag_source_ids=run.input.rag_source_ids,
+                    ),
                 )
                 candidate = generated
                 rule_violations = self._check_slide_content_rules(candidate, node)
-                reviewed = await self.llm_client.review_slide(
-                    topic=run.input.topic,
-                    template_style=effective_template_style,
-                    slide_no=slide_no,
-                    target_slide_count=run.input.target_slide_count,
-                    outline_node=node,
-                    candidate=candidate,
-                    rule_violations=rule_violations,
+                reviewed = await self._call_llm_with_timeout_retry(
+                    run_id=run_id,
+                    phase=f"slide.{slide_no}.legacy.review",
+                    action=lambda: self.llm_client.review_slide(
+                        topic=run.input.topic,
+                        template_style=effective_template_style,
+                        slide_no=slide_no,
+                        target_slide_count=run.input.target_slide_count,
+                        outline_node=node,
+                        candidate=candidate,
+                        rule_violations=rule_violations,
+                    ),
                 )
                 await self._publish(run_id, EventType.SLIDE_REVIEWED, {"slide_no": slide_no, "violations": rule_violations})
                 citations = self._normalize_citations(reviewed.citations, run.input.rag_source_ids, slide_no)
@@ -1402,6 +1734,19 @@ class RunOrchestrator:
         assert run is not None
         effective_template_style = self._resolved_template_style(run)
         slide_plan = self._build_slide_plan(node=node, design=design, slide_no=slide_no)
+        assets = await self._prepare_scratch_visual_assets(
+            run=run,
+            node=node,
+            slide_no=slide_no,
+            slide_plan=slide_plan,
+            slides_dir=slides_dir,
+        )
+        if assets:
+            visual_plan = slide_plan.get("visual_plan") if isinstance(slide_plan.get("visual_plan"), dict) else {}
+            visual_plan = dict(visual_plan)
+            visual_plan["assets"] = assets
+            slide_plan["visual_plan"] = visual_plan
+        slide_brief = self._build_slide_brief(run=run, node=node, slide_no=slide_no, slide_plan=slide_plan)
         await self._publish(
             run_id,
             EventType.SLIDE_PLAN_COMPLETED,
@@ -1410,6 +1755,7 @@ class RunOrchestrator:
                 "layout": slide_plan.get("layout"),
                 "visual_policy": run.input.visual_policy.value,
                 "visual_plan": slide_plan.get("visual_plan", {}),
+                "constraints": slide_plan.get("constraints", {}),
             },
         )
         await self._publish(
@@ -1417,218 +1763,275 @@ class RunOrchestrator:
             EventType.SLIDE_CODEGEN_STARTED,
             {"slide_no": slide_no, "engine": self.settings.generation_engine},
         )
-        slide_path = slides_dir / f"slide-{slide_no:02d}.js"
 
+        slide_path = slides_dir / f"slide-{slide_no:02d}.js"
         issues: list[str] = []
-        round_passed = 0
-        llm_score = 0
-        selected_preview_text = ""
         selected_repair_directives: list[str] = []
         selected_llm_issues: list[str] = []
+        selected_preview_text = ""
+        llm_score = 0
+        round_passed = 0
+        degraded_accept = False
         gate_threshold = 80
-        candidate_workers = 3
-        best_js = ""
-        for repair_round in range(1, self.max_slide_repair_rounds + 1):
-            if repair_round == 1:
-                async def build_candidate(worker_idx: int) -> tuple[int, str]:
-                    variant_plan = dict(slide_plan)
-                    variant_plan["candidate_worker"] = worker_idx
-                    js = await self.llm_client.generate_slide_js(
-                        topic=run.input.topic,
-                        template_style=effective_template_style,
-                        slide_no=slide_no,
-                        target_slide_count=run.input.target_slide_count,
-                        outline_node=node,
-                        theme=design.theme,
-                        title_font=design.title_font,
-                        body_font=design.body_font,
-                        rag_source_ids=run.input.rag_source_ids,
-                        visual_policy=run.input.visual_policy,
-                        slide_plan=variant_plan,
-                    )
-                    return worker_idx, js
-            else:
-                async def build_candidate(worker_idx: int) -> tuple[int, str]:
-                    directives = list(selected_repair_directives) + [f"variant worker {worker_idx}"]
-                    js = await self.llm_client.critique_slide_js(
-                        topic=run.input.topic,
-                        template_style=effective_template_style,
-                        slide_no=slide_no,
-                        target_slide_count=run.input.target_slide_count,
-                        outline_node=node,
-                        candidate_js=best_js,
-                        issues=issues,
-                        visual_policy=run.input.visual_policy,
-                        slide_plan=slide_plan,
-                        repair_directives=directives,
-                        preview_text=selected_preview_text,
-                    )
-                    return worker_idx, js
 
-            built = await asyncio.gather(
-                *(build_candidate(worker_idx) for worker_idx in range(1, candidate_workers + 1)),
-                return_exceptions=True,
-            )
-            candidate_eval_items: list[dict[str, Any]] = []
-            candidate_paths: list[Path] = []
-            candidate_failures: list[dict[str, Any]] = []
-            for worker_idx, built_item in enumerate(built, start=1):
-                if isinstance(built_item, Exception):
-                    reason = self._exception_reason(built_item)
-                    candidate_failures.append(
-                        {
-                            "candidate": worker_idx,
-                            "phase": "candidate.build",
-                            "reason": reason,
-                            "error_type": type(built_item).__name__,
-                        }
+        best_js = ""
+        best_generated: GeneratedSlide | None = None
+        best_chart_plan: ChartPlan | None = None
+        best_variant: dict[str, Any] = {}
+        current_spec: SlideSpec | None = None
+
+        for repair_round in range(1, self.max_slide_repair_rounds + 1):
+            variant = {
+                "mode": "spec_single",
+                "round": repair_round,
+                "layout_anchor": str(slide_plan.get("layout", "")),
+                "seed": f"s{slide_no}-r{repair_round}-spec-single",
+            }
+            try:
+                if repair_round == 1:
+                    spec = await self._call_llm_with_timeout_retry(
+                        run_id=run_id,
+                        phase=f"slide.{slide_no}.round.{repair_round}.spec.generate",
+                        action=lambda: self.llm_client.generate_slide_spec(
+                            topic=run.input.topic,
+                            template_style=effective_template_style,
+                            slide_no=slide_no,
+                            target_slide_count=run.input.target_slide_count,
+                            outline_node=node,
+                            rag_source_ids=run.input.rag_source_ids,
+                            visual_policy=run.input.visual_policy,
+                            slide_plan=slide_plan,
+                            slide_brief=slide_brief,
+                        ),
                     )
+                    current_spec = spec
                     await self._publish(
                         run_id,
-                        EventType.SLIDE_CANDIDATE_GENERATED,
+                        EventType.SLIDE_SPEC_GENERATED,
                         {
                             "slide_no": slide_no,
                             "round": repair_round,
-                            "candidate": worker_idx,
-                            "score": 0,
-                            "passed": False,
-                            "hard_issue_count": 1,
-                            "llm_issue_count": 0,
-                            "error": reason,
-                            "phase": "candidate.build",
+                            "page_type": spec.page_type.value,
+                            "layout_hint": spec.layout_hint,
+                            "visual_kind": spec.visual_kind,
+                            "bullet_count": len(spec.bullets),
                         },
                     )
-                    continue
-                worker_idx, js = built_item
-                candidate_path = slides_dir / f"slide-{slide_no:02d}-cand-{worker_idx:02d}.js"
-                try:
-                    candidate_path.write_text(js, encoding="utf-8")
-                    candidate_paths.append(candidate_path)
-                    hard_issues = self._validate_slide_js_contract(
-                        js,
-                        slide_no=slide_no,
-                        page_type=node.page_type.value,
-                        visual_policy=run.input.visual_policy,
-                    )
-                    preview_issues, preview_text = await self._run_slide_preview_qa_with_text(
+                else:
+                    if current_spec is None:
+                        fallback_generated = best_generated or GeneratedSlide(
+                            title=node.title,
+                            bullets=list(node.bullets),
+                            citations=[],
+                            page_type=node.page_type,
+                            layout_hint=node.layout_hint,
+                        )
+                        current_spec = self._slide_spec_from_generated(generated=fallback_generated, node=node)
+                    spec = await self._call_llm_with_timeout_retry(
                         run_id=run_id,
-                        slide_js=candidate_path,
-                        slide_no=slide_no,
+                        phase=f"slide.{slide_no}.round.{repair_round}.spec.repair",
+                        action=lambda: self.llm_client.repair_slide_spec(
+                            topic=run.input.topic,
+                            template_style=effective_template_style,
+                            slide_no=slide_no,
+                            target_slide_count=run.input.target_slide_count,
+                            outline_node=node,
+                            previous_spec=current_spec,
+                            issues=issues,
+                            repair_directives=selected_repair_directives,
+                            visual_policy=run.input.visual_policy,
+                            slide_plan=slide_plan,
+                            slide_brief=slide_brief,
+                        ),
                     )
-                    hard_issues.extend(preview_issues)
-                    llm_gate = await self.llm_client.evaluate_slide_quality(
+                    current_spec = spec
+                    await self._publish(
+                        run_id,
+                        EventType.SLIDE_SPEC_REPAIRED,
+                        {
+                            "slide_no": slide_no,
+                            "round": repair_round,
+                            "page_type": spec.page_type.value,
+                            "layout_hint": spec.layout_hint,
+                            "visual_kind": spec.visual_kind,
+                            "bullet_count": len(spec.bullets),
+                        },
+                    )
+            except Exception as exc:
+                reason = self._exception_reason(exc)
+                await self._publish(
+                    run_id,
+                    EventType.SLIDE_CANDIDATE_GENERATED,
+                    {
+                        "slide_no": slide_no,
+                        "round": repair_round,
+                        "candidate": 1,
+                        "score": 0,
+                        "passed": False,
+                        "hard_issue_count": 1,
+                        "llm_issue_count": 0,
+                        "error": reason,
+                        "phase": ("spec.generate" if repair_round == 1 else "spec.repair"),
+                        "variant": variant,
+                    },
+                )
+                if repair_round == 1:
+                    legacy_generated = await self._call_llm_with_timeout_retry(
+                        run_id=run_id,
+                        phase=f"slide.{slide_no}.round.{repair_round}.legacy.generate",
+                        action=lambda: self.llm_client.generate_slide(
+                            topic=run.input.topic,
+                            project_id=run.input.project_id,
+                            template_style=effective_template_style,
+                            slide_no=slide_no,
+                            target_slide_count=run.input.target_slide_count,
+                            outline_node=node,
+                            rag_source_ids=run.input.rag_source_ids,
+                        ),
+                    )
+                    spec = self._slide_spec_from_generated(generated=legacy_generated, node=node)
+                    current_spec = spec
+                    await self._publish(
+                        run_id,
+                        EventType.SLIDE_SPEC_GENERATED,
+                        {
+                            "slide_no": slide_no,
+                            "round": repair_round,
+                            "fallback": "legacy_slide_content",
+                            "page_type": spec.page_type.value,
+                            "layout_hint": spec.layout_hint,
+                            "visual_kind": spec.visual_kind,
+                            "bullet_count": len(spec.bullets),
+                        },
+                    )
+                else:
+                    raise
+
+            generated = self._generated_from_slide_spec(spec=current_spec, node=node)
+            citations = self._normalize_citations(list(current_spec.citations), run.input.rag_source_ids, slide_no)
+            generated.citations = citations
+
+            chart_plan = self._build_chart_plan_from_bullets(
+                node=OutlineNode(
+                    title=generated.title,
+                    bullets=list(generated.bullets),
+                    page_type=node.page_type,
+                    layout_hint=generated.layout_hint or node.layout_hint,
+                ),
+                source_refs=citations,
+            )
+            js_code = self._render_skill_slide_js(
+                slide_no=slide_no,
+                total=run.input.target_slide_count,
+                node=node,
+                generated=generated,
+                design=design,
+                chart_plan=chart_plan,
+            )
+            candidate_path = slides_dir / f"slide-{slide_no:02d}-cand-01.js"
+            candidate_path.write_text(js_code, encoding="utf-8")
+
+            hard_issues = self._validate_slide_js_contract(
+                js_code,
+                slide_no=slide_no,
+                page_type=node.page_type.value,
+                visual_policy=run.input.visual_policy,
+            )
+            fatal_contract = any(
+                issue in {"missing export contract", "createSlide signature invalid", "createSlide must be synchronous"}
+                for issue in hard_issues
+            )
+
+            preview_mode = "full"
+            preview_text = ""
+            preview_issues: list[str] = []
+            if fatal_contract:
+                preview_mode = "skip_contract_failure"
+                preview_issues.append("preview skipped due to fatal contract issue")
+            else:
+                preview_issues, preview_text = await self._run_slide_preview_qa_with_text(
+                    run_id=run_id,
+                    slide_js=candidate_path,
+                    slide_no=slide_no,
+                )
+            hard_issues.extend(preview_issues)
+
+            llm_eval_degraded = False
+            try:
+                llm_gate = await self._call_llm_with_timeout_retry(
+                    run_id=run_id,
+                    phase=f"slide.{slide_no}.round.{repair_round}.candidate.1.evaluate",
+                    action=lambda: self.llm_client.evaluate_slide_quality(
                         topic=run.input.topic,
                         template_style=effective_template_style,
                         slide_no=slide_no,
                         target_slide_count=run.input.target_slide_count,
                         outline_node=node,
-                        candidate_js=js,
+                        candidate_js=js_code,
                         preview_text=preview_text,
                         hard_issues=hard_issues,
                         visual_policy=run.input.visual_policy,
-                    )
-                    score = int(llm_gate.get("score", 0))
-                    llm_issues = [str(item) for item in llm_gate.get("issues", [])]
-                    repair_directives = [str(item) for item in llm_gate.get("repair_directives", [])]
-                    item_issues = list(hard_issues)
-                    if score < gate_threshold:
-                        item_issues.append(f"quality score below threshold: {score} < {gate_threshold}")
-                    item_issues.extend(llm_issues)
-                    candidate_eval = {
-                        "candidate": worker_idx,
-                        "candidate_js": js,
-                        "score": score,
-                        "hard_issues": hard_issues,
-                        "llm_issues": llm_issues,
-                        "repair_directives": repair_directives,
-                        "issues": item_issues,
-                        "passed": not item_issues,
-                        "preview_text": preview_text,
-                    }
-                    candidate_eval_items.append(candidate_eval)
-                    await self._publish(
-                        run_id,
-                        EventType.SLIDE_CANDIDATE_GENERATED,
-                        {
-                            "slide_no": slide_no,
-                            "round": repair_round,
-                            "candidate": worker_idx,
-                            "score": score,
-                            "passed": not item_issues,
-                            "hard_issue_count": len(hard_issues),
-                            "llm_issue_count": len(llm_issues),
-                        },
-                    )
-                except Exception as exc:
-                    reason = self._exception_reason(exc)
-                    candidate_failures.append(
-                        {
-                            "candidate": worker_idx,
-                            "phase": "candidate.evaluate",
-                            "reason": reason,
-                            "error_type": type(exc).__name__,
-                        }
-                    )
-                    await self._publish(
-                        run_id,
-                        EventType.SLIDE_CANDIDATE_GENERATED,
-                        {
-                            "slide_no": slide_no,
-                            "round": repair_round,
-                            "candidate": worker_idx,
-                            "score": 0,
-                            "passed": False,
-                            "hard_issue_count": 1,
-                            "llm_issue_count": 0,
-                            "error": reason,
-                            "phase": "candidate.evaluate",
-                        },
-                    )
-
-            if not candidate_eval_items:
-                for candidate_path in candidate_paths:
-                    candidate_path.unlink(missing_ok=True)
-                raise SlideGenerationError(
-                    slide_no=slide_no,
-                    phase="candidate.all_failed",
-                    reason=f"all candidates failed in round {repair_round}",
-                    round_no=repair_round,
-                    details={"failures": candidate_failures[:candidate_workers]},
+                        slide_brief=slide_brief,
+                    ),
+                )
+            except LLMTimeoutError:
+                llm_eval_degraded = True
+                llm_gate = self._fallback_quality_gate(
+                    hard_issues=hard_issues,
+                    preview_text=preview_text,
+                    candidate_js=js_code,
                 )
 
-            candidate_eval_items.sort(
-                key=lambda item: (
-                    len(item["hard_issues"]),
-                    0 if item["passed"] else 1,
-                    -int(item["score"]),
-                    len(item["issues"]),
-                )
+            llm_score = int(llm_gate.get("score", 0))
+            llm_issues = [str(item) for item in llm_gate.get("issues", [])]
+            repair_directives = [str(item) for item in llm_gate.get("repair_directives", [])]
+            issues = list(hard_issues)
+            if llm_score < gate_threshold:
+                issues.append(f"quality score below threshold: {llm_score} < {gate_threshold}")
+            issues.extend(llm_issues)
+            issues = self._dedupe_preserve_order(issues)
+            selected_llm_issues = list(llm_issues)
+            selected_repair_directives = list(repair_directives)
+            selected_preview_text = preview_text
+
+            await self._publish(
+                run_id,
+                EventType.SLIDE_CANDIDATE_GENERATED,
+                {
+                    "slide_no": slide_no,
+                    "round": repair_round,
+                    "candidate": 1,
+                    "score": llm_score,
+                    "passed": not issues,
+                    "hard_issue_count": len(hard_issues),
+                    "llm_issue_count": len(llm_issues),
+                    "degraded": llm_eval_degraded,
+                    "preview_mode": preview_mode,
+                    "variant": variant,
+                },
             )
-            best = candidate_eval_items[0]
-            best_js = str(best["candidate_js"])
-            llm_score = int(best["score"])
-            selected_preview_text = str(best["preview_text"])
-            selected_repair_directives = [str(x) for x in best["repair_directives"]]
-            selected_llm_issues = [str(x) for x in best["llm_issues"]]
-            issues = [str(x) for x in best["issues"]]
-
             await self._append_candidate_selection_entry(
                 run_id=run_id,
                 entry={
                     "slide_no": slide_no,
                     "round": repair_round,
-                    "selected_candidate": int(best["candidate"]),
+                    "selected_candidate": 1,
                     "selected_score": llm_score,
-                    "selected_passed": bool(best["passed"]),
+                    "selected_passed": not issues,
+                    "selected_degraded": llm_eval_degraded,
+                    "selected_variant": variant,
+                    "degraded_accept": False,
                     "candidates": [
                         {
-                            "candidate": int(item["candidate"]),
-                            "score": int(item["score"]),
-                            "passed": bool(item["passed"]),
-                            "hard_issue_count": len(item["hard_issues"]),
-                            "llm_issue_count": len(item["llm_issues"]),
+                            "candidate": 1,
+                            "variant": variant,
+                            "score": llm_score,
+                            "passed": not issues,
+                            "degraded": llm_eval_degraded,
+                            "hard_issue_count": len(hard_issues),
+                            "llm_issue_count": len(llm_issues),
+                            "preview_mode": preview_mode,
                         }
-                        for item in candidate_eval_items
                     ],
                 },
             )
@@ -1638,9 +2041,11 @@ class RunOrchestrator:
                 {
                     "slide_no": slide_no,
                     "round": repair_round,
-                    "selected_candidate": int(best["candidate"]),
+                    "selected_candidate": 1,
                     "score": llm_score,
-                    "passed": bool(best["passed"]),
+                    "passed": not issues,
+                    "degraded": llm_eval_degraded,
+                    "variant": variant,
                 },
             )
             await self._append_quality_gate_entry(
@@ -1651,9 +2056,9 @@ class RunOrchestrator:
                     "visual_policy": run.input.visual_policy.value,
                     "score": llm_score,
                     "threshold": gate_threshold,
-                    "hard_issues": list(best["hard_issues"]),
-                    "llm_issues": selected_llm_issues,
-                    "repair_directives": selected_repair_directives,
+                    "hard_issues": list(hard_issues),
+                    "llm_issues": list(llm_issues),
+                    "repair_directives": list(repair_directives),
                     "passed": not issues,
                 },
             )
@@ -1666,17 +2071,23 @@ class RunOrchestrator:
                     "score": llm_score,
                     "threshold": gate_threshold,
                     "passed": not issues,
-                    "hard_issue_count": len(best["hard_issues"]),
-                    "llm_issue_count": len(selected_llm_issues),
+                    "hard_issue_count": len(hard_issues),
+                    "llm_issue_count": len(llm_issues),
+                    "degraded": llm_eval_degraded,
                 },
             )
-            for candidate_path in candidate_paths:
-                candidate_path.unlink(missing_ok=True)
+
+            best_js = js_code
+            best_generated = generated
+            best_chart_plan = chart_plan
+            best_variant = variant
+            candidate_path.unlink(missing_ok=True)
 
             if not issues:
                 slide_path.write_text(best_js, encoding="utf-8")
                 round_passed = repair_round
                 break
+
             await self._publish(
                 run_id,
                 EventType.SLIDE_CRITIC_COMPLETED,
@@ -1685,7 +2096,12 @@ class RunOrchestrator:
             await self._publish(
                 run_id,
                 EventType.SLIDE_REPAIR_DIRECTIVES_GENERATED,
-                {"slide_no": slide_no, "round": repair_round, "directives": selected_repair_directives},
+                {
+                    "slide_no": slide_no,
+                    "round": repair_round,
+                    "directives": selected_repair_directives,
+                    "variant": best_variant,
+                },
             )
             await self._publish(
                 run_id,
@@ -1698,16 +2114,71 @@ class RunOrchestrator:
                 raise VisualPolicyUnsatisfiedError(
                     f"slide {slide_no} violated visual policy={run.input.visual_policy.value}: {issues}"
                 )
-            raise SlideGenerationError(
-                slide_no=slide_no,
-                phase="candidate.rounds_exhausted",
-                reason=f"failed after {self.max_slide_repair_rounds} rounds",
-                round_no=self.max_slide_repair_rounds,
-                details={"issues": issues[:20]},
+            critical_markers = (
+                "missing export contract",
+                "createSlide signature invalid",
+                "createSlide must be synchronous",
+                "preview compile failed",
+                "preview pptx missing",
+                "out of slide bounds",
             )
+            has_critical = any(any(marker in issue for marker in critical_markers) for issue in issues)
+            if not has_critical and best_js:
+                slide_path.write_text(best_js, encoding="utf-8")
+                round_passed = self.max_slide_repair_rounds
+                degraded_accept = True
+                await self._publish(
+                    run_id,
+                    EventType.SLIDE_REPAIR_COMPLETED,
+                    {
+                        "slide_no": slide_no,
+                        "round": self.max_slide_repair_rounds,
+                        "degraded_accept": True,
+                        "issues": issues[:10],
+                    },
+                )
+            else:
+                if self.keep_failed_candidate_js and best_js:
+                    self._persist_failed_candidate_js(
+                        slides_dir=slides_dir,
+                        slide_no=slide_no,
+                        js_code=best_js,
+                        round_no=self.max_slide_repair_rounds,
+                        issues=issues[:20],
+                    )
+                raise SlideGenerationError(
+                    slide_no=slide_no,
+                    phase="candidate.rounds_exhausted",
+                    reason=f"failed after {self.max_slide_repair_rounds} rounds",
+                    round_no=self.max_slide_repair_rounds,
+                    details={"issues": issues[:20]},
+                )
 
         final_js = slide_path.read_text(encoding="utf-8")
-        citations = self._normalize_citations([], run.input.rag_source_ids, slide_no)
+        citations = list(best_generated.citations) if best_generated else self._normalize_citations([], run.input.rag_source_ids, slide_no)
+        if best_chart_plan is not None:
+            await self._append_chart_truth_report(
+                run_id=run_id,
+                entry={
+                    "slide_no": slide_no,
+                    "has_verified_data": best_chart_plan.has_verified_data,
+                    "mode": best_chart_plan.mode,
+                    "source": best_chart_plan.source,
+                    "note": best_chart_plan.note,
+                    "labels": best_chart_plan.labels,
+                },
+            )
+            await self._publish(
+                run_id,
+                EventType.CHART_TRUTH_CHECKED,
+                {
+                    "slide_no": slide_no,
+                    "has_verified_data": best_chart_plan.has_verified_data,
+                    "mode": best_chart_plan.mode,
+                    "source": best_chart_plan.source,
+                },
+            )
+
         await self._append_quality_entry(
             run_id=run_id,
             entry={
@@ -1717,18 +2188,23 @@ class RunOrchestrator:
                 "engine": self.settings.generation_engine,
                 "quality_score": llm_score,
                 "visual_policy": run.input.visual_policy.value,
+                "selected_variant": best_variant,
+                "degraded_accept": degraded_accept,
+                "preview_text_excerpt": selected_preview_text[:300],
+                "repair_directives": selected_repair_directives[:8],
+                "llm_issues": selected_llm_issues[:8],
             },
         )
         await self._publish(
             run_id,
             EventType.SLIDE_CODEGEN_COMPLETED,
-            {"slide_no": slide_no, "rounds": round_passed},
+            {"slide_no": slide_no, "rounds": round_passed, "degraded_accept": degraded_accept},
         )
         return SlideArtifact(
             slide_no=slide_no,
             js_path=str(slide_path),
             js_code=final_js,
-            status=f"ok_agentic_round_{round_passed}",
+            status=(f"ok_agentic_degraded_round_{round_passed}" if degraded_accept else f"ok_agentic_round_{round_passed}"),
             citations=citations,
         )
 
@@ -1747,6 +2223,10 @@ class RunOrchestrator:
             issues.append("createSlide signature invalid")
         if "async function createSlide" in js_code:
             issues.append("createSlide must be synchronous")
+        if "addGroup(" in js_code:
+            issues.append("forbidden api detected: addGroup()")
+        if re.search(r"addShape\(\s*['\"][a-zA-Z0-9_-]+['\"]", js_code):
+            issues.append("addShape must use pres.shapes enum, not string literal")
         if re.search(r"['\"]#[0-9a-fA-F]{3,8}['\"]", js_code):
             issues.append("hex color with # is forbidden")
         if re.search(r"['\"][0-9a-fA-F]{8}['\"]", js_code):
@@ -1766,7 +2246,343 @@ class RunOrchestrator:
             elif visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY:
                 if "addImage(" in js_code:
                     issues.append("visual_policy violation: basic_graphics_only forbids addImage()")
-        return issues
+        issues.extend(self._collect_js_style_issues(js_code=js_code, page_type=page_type))
+        return self._dedupe_preserve_order(issues)
+
+    def _issues_have_fatal_markers(self, issues: list[str]) -> bool:
+        markers = (
+            "missing export contract",
+            "createSlide signature invalid",
+            "createSlide must be synchronous",
+            "preview compile failed",
+            "preview pptx missing",
+            "JSONDecodeError",
+            "LLM_OUTPUT_NOT_EXECUTABLE",
+        )
+        for issue in issues:
+            text = str(issue)
+            if any(marker in text for marker in markers):
+                return True
+        return False
+
+    def _persist_failed_candidate_js(
+        self,
+        *,
+        slides_dir: Path,
+        slide_no: int,
+        js_code: str,
+        round_no: int,
+        issues: list[str],
+    ) -> None:
+        failed_dir = slides_dir / "failed"
+        failed_dir.mkdir(parents=True, exist_ok=True)
+        failed_js = failed_dir / f"slide-{slide_no:02d}-last.js"
+        failed_meta = failed_dir / f"slide-{slide_no:02d}-last.meta.json"
+        failed_js.write_text(js_code, encoding="utf-8")
+        failed_meta.write_text(
+            json.dumps(
+                {
+                    "slide_no": slide_no,
+                    "round": round_no,
+                    "issues": issues[:20],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    def _collect_js_style_issues(self, *, js_code: str, page_type: str) -> list[str]:
+        issues: list[str] = []
+        boxes = self._collect_js_layout_boxes(js_code)
+        if not boxes:
+            return issues
+
+        major_boxes = [
+            box
+            for box in boxes
+            if not self._is_js_page_badge_box(box)
+            and (box.element_type in {"text", "image", "chart"} or box.area >= 0.45)
+        ]
+        margin_floor = 0.5 if page_type == "content" else 0.35
+
+        for idx, box in enumerate(major_boxes, start=1):
+            if box.x < -0.01 or box.y < -0.01 or box.x + box.w > SLIDE_WIDTH_IN + 0.01 or box.y + box.h > SLIDE_HEIGHT_IN + 0.01:
+                issues.append(f"box-{idx} out of slide bounds")
+                continue
+            if page_type == "content":
+                left = box.x
+                top = box.y
+                right = SLIDE_WIDTH_IN - (box.x + box.w)
+                bottom = SLIDE_HEIGHT_IN - (box.y + box.h)
+                lowered_expr = box.text_expr.lower()
+                is_title_box = box.element_type == "text" and "slideconfig.title" in lowered_expr
+                if is_title_box:
+                    if min(left, right) < margin_floor - 0.03:
+                        issues.append(f"box-{idx} horizontal margin too tight (<{margin_floor:.1f}in)")
+                elif min(left, right, top, bottom) < margin_floor - 0.03:
+                    issues.append(f"box-{idx} margin too tight (<{margin_floor:.1f}in)")
+
+        for i in range(len(major_boxes)):
+            for j in range(i + 1, len(major_boxes)):
+                if self._is_js_intentional_container_overlap(major_boxes[i], major_boxes[j]):
+                    continue
+                overlap_ratio = self._js_box_overlap_ratio(major_boxes[i], major_boxes[j])
+                if overlap_ratio >= 0.12:
+                    issues.append(f"box-{i + 1} overlaps box-{j + 1} (ratio={overlap_ratio:.2f})")
+                if page_type == "content":
+                    gap = self._js_major_block_gap(major_boxes[i], major_boxes[j])
+                    if gap is not None and 0 < gap < 0.22:
+                        issues.append(f"box-{i + 1} and box-{j + 1} gap too tight ({gap:.2f}\" < 0.22\")")
+
+        text_boxes = [box for box in boxes if box.element_type == "text" and not self._is_js_page_badge_box(box)]
+        title_box = next((box for box in text_boxes if "slideconfig.title" in box.text_expr.lower()), None)
+        body_font_sizes: list[float] = []
+        for box in text_boxes:
+            lowered_expr = box.text_expr.lower()
+            looks_like_body = box.y >= 1.0 or any(token in lowered_expr for token in ("bullets", "rows", "item", "note", "takeaway"))
+            if looks_like_body and box.font_size is not None:
+                body_font_sizes.append(box.font_size)
+            if page_type == "content" and looks_like_body:
+                if (box.align or "").lower() == "center" and box.h >= 0.32:
+                    issues.append("body text must be left-aligned (center detected)")
+                if box.bold is True and (box.font_size is None or box.font_size <= 24):
+                    issues.append("body text should not use bold")
+                if box.w >= 1.2 and box.h >= 0.35 and (box.fit or "").lower() != "shrink":
+                    issues.append("body text missing fit:'shrink'")
+
+        if title_box is not None:
+            if (title_box.fit or "").lower() != "shrink":
+                issues.append("title missing fit:'shrink'")
+            if title_box.font_size is not None:
+                if title_box.font_size < 36:
+                    issues.append(f"title font too small ({title_box.font_size:.0f} < 36)")
+                if body_font_sizes and title_box.font_size < max(body_font_sizes) + 18:
+                    issues.append("title/body size contrast too weak")
+
+        return self._dedupe_preserve_order(issues)
+
+    def _collect_js_layout_boxes(self, js_code: str) -> list[JsLayoutBox]:
+        boxes: list[JsLayoutBox] = []
+        for method in ("addText", "addShape", "addImage", "addChart"):
+            for first_arg, options_raw in self._extract_slide_method_calls(js_code, method):
+                x = self._parse_js_float_option(options_raw, "x")
+                y = self._parse_js_float_option(options_raw, "y")
+                w = self._parse_js_float_option(options_raw, "w")
+                h = self._parse_js_float_option(options_raw, "h")
+                if x is None or y is None or w is None or h is None or w <= 0 or h <= 0:
+                    continue
+                element_type = "text" if method == "addText" else ("shape" if method == "addShape" else ("image" if method == "addImage" else "chart"))
+                boxes.append(
+                    JsLayoutBox(
+                        element_type=element_type,
+                        x=x,
+                        y=y,
+                        w=w,
+                        h=h,
+                        text_expr=first_arg,
+                        options_raw=options_raw,
+                        font_size=self._parse_js_float_option(options_raw, "fontSize") if method == "addText" else None,
+                        align=self._parse_js_string_option(options_raw, "align") if method == "addText" else None,
+                        bold=self._parse_js_bool_option(options_raw, "bold") if method == "addText" else None,
+                        fit=self._parse_js_string_option(options_raw, "fit") if method == "addText" else None,
+                    )
+                )
+        return boxes
+
+    def _extract_slide_method_calls(self, js_code: str, method: str) -> list[tuple[str, str]]:
+        token = f"slide.{method}("
+        calls: list[tuple[str, str]] = []
+        cursor = 0
+        while True:
+            start = js_code.find(token, cursor)
+            if start < 0:
+                break
+            open_idx = start + len(token) - 1
+            close_idx = self._find_matching_delimiter(js_code, start_idx=open_idx, open_char="(", close_char=")")
+            if close_idx < 0:
+                cursor = start + len(token)
+                continue
+            args_raw = js_code[open_idx + 1 : close_idx]
+            parts = self._split_top_level_args(args_raw)
+            if len(parts) >= 2:
+                calls.append((parts[0].strip(), parts[1].strip()))
+            cursor = close_idx + 1
+        return calls
+
+    def _find_matching_delimiter(self, text: str, *, start_idx: int, open_char: str, close_char: str) -> int:
+        depth = 0
+        quote: str | None = None
+        escape = False
+        for idx in range(start_idx, len(text)):
+            ch = text[idx]
+            if quote is not None:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == quote:
+                    quote = None
+                continue
+            if ch in {"'", '"', "`"}:
+                quote = ch
+                continue
+            if ch == open_char:
+                depth += 1
+                continue
+            if ch == close_char:
+                depth -= 1
+                if depth == 0:
+                    return idx
+        return -1
+
+    def _split_top_level_args(self, raw_args: str) -> list[str]:
+        parts: list[str] = []
+        buf: list[str] = []
+        depth_round = 0
+        depth_curly = 0
+        depth_square = 0
+        quote: str | None = None
+        escape = False
+
+        for ch in raw_args:
+            if quote is not None:
+                buf.append(ch)
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == quote:
+                    quote = None
+                continue
+            if ch in {"'", '"', "`"}:
+                quote = ch
+                buf.append(ch)
+                continue
+            if ch == "(":
+                depth_round += 1
+            elif ch == ")":
+                depth_round = max(0, depth_round - 1)
+            elif ch == "{":
+                depth_curly += 1
+            elif ch == "}":
+                depth_curly = max(0, depth_curly - 1)
+            elif ch == "[":
+                depth_square += 1
+            elif ch == "]":
+                depth_square = max(0, depth_square - 1)
+            elif ch == "," and depth_round == 0 and depth_curly == 0 and depth_square == 0:
+                parts.append("".join(buf).strip())
+                buf = []
+                continue
+            buf.append(ch)
+
+        tail = "".join(buf).strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
+    def _parse_js_float_option(self, options_raw: str, key: str) -> float | None:
+        match = re.search(rf"\b{re.escape(key)}\s*:\s*(-?\d+(?:\.\d+)?)\b", options_raw)
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+
+    def _parse_js_string_option(self, options_raw: str, key: str) -> str | None:
+        match = re.search(rf"\b{re.escape(key)}\s*:\s*(['\"])(.*?)\1", options_raw, flags=re.S)
+        if not match:
+            return None
+        return match.group(2).strip()
+
+    def _parse_js_bool_option(self, options_raw: str, key: str) -> bool | None:
+        match = re.search(rf"\b{re.escape(key)}\s*:\s*(true|false)\b", options_raw)
+        if not match:
+            return None
+        return match.group(1) == "true"
+
+    def _is_js_page_badge_box(self, box: JsLayoutBox) -> bool:
+        if box.x >= 9.1 and box.y >= 5.0 and box.w <= 0.7 and box.h <= 0.7:
+            return True
+        lowered = box.text_expr.lower()
+        if "slideconfig.index" in lowered and box.w <= 0.8 and box.h <= 0.8:
+            return True
+        return False
+
+    def _is_js_intentional_container_overlap(self, left: JsLayoutBox, right: JsLayoutBox) -> bool:
+        if left.element_type == right.element_type:
+            return False
+        if "shape" not in {left.element_type, right.element_type}:
+            return False
+        container = left if left.element_type == "shape" else right
+        inner = right if container is left else left
+        tol = 0.08
+        inside = (
+            inner.x >= container.x - tol
+            and inner.y >= container.y - tol
+            and inner.x + inner.w <= container.x + container.w + tol
+            and inner.y + inner.h <= container.y + container.h + tol
+        )
+        if not inside:
+            return False
+        if container.area <= 0:
+            return False
+        ratio = inner.area / container.area
+        return 0.05 <= ratio <= 0.95
+
+    def _js_box_overlap_ratio(self, left: JsLayoutBox, right: JsLayoutBox) -> float:
+        x_overlap = max(0.0, min(left.x + left.w, right.x + right.w) - max(left.x, right.x))
+        y_overlap = max(0.0, min(left.y + left.h, right.y + right.h) - max(left.y, right.y))
+        if x_overlap <= 0 or y_overlap <= 0:
+            return 0.0
+        overlap_area = x_overlap * y_overlap
+        min_area = min(left.area, right.area)
+        if min_area <= 0:
+            return 0.0
+        return overlap_area / min_area
+
+    def _js_major_block_gap(self, left: JsLayoutBox, right: JsLayoutBox) -> float | None:
+        x_overlap = min(left.x + left.w, right.x + right.w) - max(left.x, right.x)
+        y_overlap = min(left.y + left.h, right.y + right.h) - max(left.y, right.y)
+        if x_overlap > 0:
+            if left.y <= right.y:
+                return max(0.0, right.y - (left.y + left.h))
+            return max(0.0, left.y - (right.y + right.h))
+        if y_overlap > 0:
+            if left.x <= right.x:
+                return max(0.0, right.x - (left.x + left.w))
+            return max(0.0, left.x - (right.x + right.w))
+        return None
+
+    def _dedupe_preserve_order(self, issues: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in issues:
+            key = item.strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+        return out
+
+    def _fallback_quality_gate(self, *, hard_issues: list[str], preview_text: str, candidate_js: str) -> dict[str, Any]:
+        score = 92 - len(hard_issues) * 15
+        text = (preview_text or "").strip()
+        lowered = candidate_js.lower()
+        issues: list[str] = []
+        directives: list[str] = []
+        if len(text) < 20:
+            score -= 18
+            issues.append("preview text too short")
+            directives.append("expand concrete natural-language copy")
+        if re.search(r"(placeholder|lorem|ipsum|todo|xxxx)", lowered):
+            score -= 25
+            issues.append("placeholder-like code/text remains")
+            directives.append("replace placeholders with natural language")
+        score = max(0, min(100, int(score)))
+        return {"score": score, "issues": issues, "repair_directives": directives}
 
     def _build_slide_plan(
         self,
@@ -1787,6 +2603,8 @@ class RunOrchestrator:
                 visual_kind = "icon_rows"
             elif layout in {"content-timeline", "content-comparison"}:
                 visual_kind = "shape_flow"
+
+        image_slots = 1 if (node.page_type == SlidePageType.CONTENT and visual_kind in {"image_or_showcase", "icon_rows"}) else 0
         return {
             "slide_no": slide_no,
             "page_type": node.page_type.value,
@@ -1794,6 +2612,17 @@ class RunOrchestrator:
             "visual_plan": {
                 "kind": visual_kind,
                 "must_have_badge": node.page_type != SlidePageType.COVER,
+                "image_slots": image_slots,
+                "chart_preferred": visual_kind in {"chart_callout"},
+            },
+            "constraints": {
+                "min_margin_in": 0.5 if node.page_type == SlidePageType.CONTENT else 0.35,
+                "min_block_gap_in": 0.22 if node.page_type == SlidePageType.CONTENT else 0.18,
+                "body_align": "left",
+                "title_min_size": 36,
+                "body_preferred_size": "14-16",
+                "title_body_min_delta": 18,
+                "must_use_shrink": True,
             },
             "design_tokens": {
                 "palette": design.palette_name,
@@ -1807,19 +2636,157 @@ class RunOrchestrator:
             },
         }
 
+    def _build_slide_brief(
+        self,
+        *,
+        run: RunRecord,
+        node: OutlineNode,
+        slide_no: int,
+        slide_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        report = run.research_report if isinstance(run.research_report, dict) else {}
+        page_focus_raw = report.get("page_focus", [])
+        page_focus_list = [str(item).strip() for item in page_focus_raw if str(item).strip()] if isinstance(page_focus_raw, list) else []
+        design_notes_raw = report.get("design_notes", [])
+        design_notes = [str(item).strip() for item in design_notes_raw if str(item).strip()] if isinstance(design_notes_raw, list) else []
+        design_intent = report.get("design_intent", {}) if isinstance(report.get("design_intent", {}), dict) else {}
+        selected_focus = page_focus_list[slide_no - 1] if 0 < slide_no <= len(page_focus_list) else ""
+        visual_plan = slide_plan.get("visual_plan", {}) if isinstance(slide_plan.get("visual_plan", {}), dict) else {}
+        assets = visual_plan.get("assets", []) if isinstance(visual_plan.get("assets", []), list) else []
+        return {
+            "audience": str(report.get("audience", "")).strip(),
+            "purpose": str(report.get("purpose", "")).strip(),
+            "tone": str(report.get("tone", "")).strip(),
+            "narrative_arc": str(report.get("narrative_arc", "")).strip(),
+            "style_intent": str(report.get("style_intent", "")).strip(),
+            "design_intent": design_intent,
+            "current_page_focus": selected_focus,
+            "page_type": node.page_type.value,
+            "layout": str(slide_plan.get("layout", "")),
+            "design_notes": design_notes[:8],
+            "assets": assets,
+        }
+
+    def _candidate_variant_specs(
+        self,
+        *,
+        slide_no: int,
+        round_no: int,
+        worker_count: int,
+        layout: str,
+    ) -> list[dict[str, Any]]:
+        seeds = [
+            {"composition": "balanced", "emphasis": "narrative", "density": "medium", "contrast": "high"},
+            {"composition": "visual_heavy", "emphasis": "data", "density": "compact", "contrast": "high"},
+            {"composition": "text_heavy", "emphasis": "explanation", "density": "airy", "contrast": "medium"},
+            {"composition": "diagrammatic", "emphasis": "structure", "density": "medium", "contrast": "high"},
+            {"composition": "storyboard", "emphasis": "progression", "density": "medium", "contrast": "medium"},
+        ]
+        variants: list[dict[str, Any]] = []
+        for worker_idx in range(1, worker_count + 1):
+            base = dict(seeds[(worker_idx - 1) % len(seeds)])
+            base["worker"] = worker_idx
+            base["round"] = round_no
+            base["layout_anchor"] = layout
+            base["seed"] = f"s{slide_no}-r{round_no}-w{worker_idx}-{layout}"
+            variants.append(base)
+        return variants
+
+    async def _prepare_scratch_visual_assets(
+        self,
+        *,
+        run: RunRecord,
+        node: OutlineNode,
+        slide_no: int,
+        slide_plan: dict[str, Any],
+        slides_dir: Path,
+    ) -> list[dict[str, Any]]:
+        if run.input.visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY:
+            return []
+        if node.page_type != SlidePageType.CONTENT:
+            return []
+        visual_plan = slide_plan.get("visual_plan", {}) if isinstance(slide_plan.get("visual_plan", {}), dict) else {}
+        kind = str(visual_plan.get("kind", ""))
+        requires_image = run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED or kind in {"image_or_showcase", "icon_rows"}
+        if not requires_image:
+            return []
+
+        slot_type = "icon" if kind == "icon_rows" else "image"
+        query = self._build_asset_query(node=node, slot_type=slot_type, slide_no=slide_no)
+        imgs_dir = slides_dir / "imgs"
+        imgs_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            asset_bytes, ext = await asyncio.to_thread(
+                self._fetch_slot_asset,
+                query=query,
+                slot_type=slot_type,
+                node=node,
+                slide_no=slide_no,
+                rel_id=f"scratch-{slide_no:02d}-{slot_type}",
+            )
+            local_path = imgs_dir / f"slide-{slide_no:02d}-{slot_type}.{ext}"
+            await asyncio.to_thread(local_path.write_bytes, asset_bytes)
+            rel_path = Path("imgs") / local_path.name
+            return [
+                {
+                    "slot": slot_type,
+                    "type": slot_type,
+                    "query": query,
+                    "path": rel_path.as_posix(),
+                    "provider": self.settings.asset_provider,
+                }
+            ]
+        except Exception as exc:
+            if run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED:
+                raise VisualPolicyUnsatisfiedError(
+                    f"slide {slide_no} requires media asset but fetch failed: {self._exception_reason(exc)}"
+                ) from exc
+            return []
+
     def _fallback_research_brief(self, *, topic: str, template_style: str, target_slide_count: int) -> dict[str, Any]:
+        focus: list[str] = []
+        for idx in range(1, target_slide_count + 1):
+            if idx == 1:
+                focus.append(f"{topic}: opening context and core claim")
+            elif idx == target_slide_count:
+                focus.append(f"{topic}: synthesis, decisions, and next steps")
+            else:
+                focus.append(f"{topic}: section {idx} with concrete evidence and visual takeaway")
         return {
             "audience": "general audience",
             "purpose": f"explain {topic} clearly with actionable insights",
             "tone": "professional and concise",
             "narrative_arc": "background -> key points -> evidence -> practical takeaways",
-            "page_focus": [f"Page {idx}: key message and supporting evidence" for idx in range(1, target_slide_count + 1)],
+            "page_focus": focus,
             "design_notes": [
                 f"Keep visual language consistent with template_style={template_style}.",
-                "Ensure strong title/body hierarchy.",
-                "Use visual anchors on content slides.",
+                "Enforce strong title/body hierarchy and left-aligned body text.",
+                "Ensure every content page has a meaningful non-text visual anchor.",
             ],
+            "style_intent": template_style,
+            "effective_template_style": template_style,
         }
+
+    def _slide_spec_from_generated(self, *, generated: GeneratedSlide, node: OutlineNode) -> SlideSpec:
+        return SlideSpec(
+            title=generated.title or node.title,
+            subtitle="",
+            bullets=list(generated.bullets or node.bullets),
+            page_type=node.page_type,
+            layout_hint=generated.layout_hint or node.layout_hint,
+            visual_kind="shape",
+            emphasis="",
+            citations=list(generated.citations),
+        )
+
+    def _generated_from_slide_spec(self, *, spec: SlideSpec, node: OutlineNode) -> GeneratedSlide:
+        return GeneratedSlide(
+            title=spec.title or node.title,
+            bullets=list(spec.bullets or node.bullets),
+            citations=list(spec.citations),
+            page_type=node.page_type,
+            layout_hint=spec.layout_hint or node.layout_hint,
+        )
 
     def _render_skill_slide_js(
         self,
@@ -1875,7 +2842,7 @@ class RunOrchestrator:
                 "function addBulletList(slide, items, opts, theme) {",
                 "  const maxItems = opts.maxItems || 6;",
                 "  const prepared = (items || []).map((x) => String(x || '').trim()).filter(Boolean).slice(0, maxItems);",
-                "  const payload = prepared.length ? prepared : ['Key point'];",
+                "  const payload = prepared.length ? prepared : [(slideConfig.title || 'Core takeaway')];",
                 "  const rows = payload.map((item, idx) => ({ text: item, options: { bullet: true, breakLine: idx < payload.length - 1 } }));",
                 "  slide.addText(rows, { x: opts.x, y: opts.y, w: opts.w, h: opts.h, fontSize: opts.fontSize || 15, fontFace: fonts.body, color: opts.color || theme.secondary, bold: false, align: 'left', margin: 0, paraSpaceAfterPt: 7, fit: 'shrink' });",
                 "}",
@@ -2100,7 +3067,7 @@ class RunOrchestrator:
                     "    slide.addText((cp.note || '').slice(0, 120), { x: 4.95, y: 3.7, w: 4.1, h: 0.5, fontSize: 11, fontFace: fonts.body, color: theme.secondary, bold: false, align: 'left', margin: 0, fit: 'shrink' });",
                     "  } else {",
                     "    slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 4.9, y: 1.45, w: 4.2, h: 2.1, fill: { color: theme.light, transparency: 12 }, line: { color: theme.secondary, pt: 1 }, rectRadius: style.cornerMedium });",
-                    "    slide.addText((cp.note || 'No verified numeric data; qualitative summary.').slice(0, 160), { x: 5.15, y: 1.92, w: 3.7, h: 1.0, fontSize: 13, fontFace: fonts.body, color: theme.secondary, bold: false, align: 'left', margin: 0, fit: 'shrink' });",
+                    "    slide.addText((cp.note || 'Qualitative trend summary.').slice(0, 160), { x: 5.15, y: 1.92, w: 3.7, h: 1.0, fontSize: 13, fontFace: fonts.body, color: theme.secondary, bold: false, align: 'left', margin: 0, fit: 'shrink' });",
                     "  }",
                     "  addBulletList(slide, bullets.slice(0, 5), { x: 4.9, y: 3.95, w: 4.2, h: 1.2, maxItems: 4, fontSize: 12 }, theme);",
                 ]
@@ -2166,7 +3133,11 @@ class RunOrchestrator:
         assert run is not None
         artifact_dir = Path(run.artifact_dir)
         issues: list[str] = []
-        verification_cycles = int(run.qa_report.get("verification_cycles", 0))
+        previous_report = run.qa_report if isinstance(run.qa_report, dict) else {}
+        verification_cycles = int(previous_report.get("verification_cycles", 0))
+        preview_cache_in = previous_report.get("preview_cache", {}) if isinstance(previous_report.get("preview_cache", {}), dict) else {}
+        preview_cache_out: dict[str, Any] = {}
+
         if mode == GenerationMode.SCRATCH:
             slides_dir = artifact_dir / "slides"
             slide_files = sorted(
@@ -2174,47 +3145,95 @@ class RunOrchestrator:
             )
             if not slide_files:
                 issues.append("no slide js files generated")
+
             observed_layouts: list[str] = []
+            unchanged_preview_candidates: list[tuple[Path, int, str]] = []
+            preview_runs = 0
+
             for idx, path in enumerate(slide_files, start=1):
                 text = path.read_text(encoding="utf-8")
+                page_type_match = re.search(r"type:\s*['\"]([^'\"]+)['\"]", text)
+                page_type = page_type_match.group(1) if page_type_match else ""
+                static_issues: list[str] = []
                 if "module.exports = { createSlide, slideConfig };" not in text:
-                    issues.append(f"{path.name}: missing export contract")
+                    static_issues.append(f"{path.name}: missing export contract")
                 if "function createSlide(pres, theme)" not in text:
-                    issues.append(f"{path.name}: createSlide signature invalid")
+                    static_issues.append(f"{path.name}: createSlide signature invalid")
                 if "async function createSlide" in text:
-                    issues.append(f"{path.name}: createSlide must be synchronous")
+                    static_issues.append(f"{path.name}: createSlide must be synchronous")
                 if re.search(r"['\"]#[0-9a-fA-F]{3,8}['\"]", text):
-                    issues.append(f"{path.name}: hex color with # is forbidden")
+                    static_issues.append(f"{path.name}: hex color with # is forbidden")
                 if re.search(r"['\"][0-9a-fA-F]{8}['\"]", text):
-                    issues.append(f"{path.name}: 8-char hex color is forbidden")
+                    static_issues.append(f"{path.name}: 8-char hex color is forbidden")
                 if idx > 1 and ("addPageBadge(pres, slide, theme" not in text or "x: 9.3, y: 5.1" not in text):
-                    issues.append(f"{path.name}: missing required page badge position")
+                    static_issues.append(f"{path.name}: missing required page badge position")
                 theme_hits = sum(1 for key in ("theme.primary", "theme.secondary", "theme.accent", "theme.light", "theme.bg") if key in text)
                 if "theme.primary" not in text or "theme.bg" not in text or theme_hits < 4:
-                    issues.append(f"{path.name}: theme key usage incomplete")
+                    static_issues.append(f"{path.name}: theme key usage incomplete")
                 if any(char in text for char in ("•", "✓", "▪", "◦")):
-                    issues.append(f"{path.name}: unicode bullet symbol detected")
+                    static_issues.append(f"{path.name}: unicode bullet symbol detected")
                 if re.search(r"addShape\(pres\.shapes\.LINE,[^\n]*y:\s*1\.[0-3]", text):
-                    issues.append(f"{path.name}: title accent line pattern detected")
-                type_match = re.search(r"type:\s*['\"]([^'\"]+)['\"]", text)
-                page_type = type_match.group(1) if type_match else ""
+                    static_issues.append(f"{path.name}: title accent line pattern detected")
                 if page_type == "content" and all(token not in text for token in ("addShape(", "addImage(", "addChart(")):
-                    issues.append(f"{path.name}: content slide missing non-text visual element")
+                    static_issues.append(f"{path.name}: content slide missing non-text visual element")
                 if page_type == "content" and run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED:
                     if "addImage(" not in text:
-                        issues.append(f"{path.name}: visual_policy media_required expects addImage()")
+                        static_issues.append(f"{path.name}: visual_policy media_required expects addImage()")
                     if all(token not in text for token in ("addShape(", "addChart(")):
-                        issues.append(f"{path.name}: visual_policy media_required expects shape/chart complement")
+                        static_issues.append(f"{path.name}: visual_policy media_required expects shape/chart complement")
                 if page_type == "content" and run.input.visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY and "addImage(" in text:
-                    issues.append(f"{path.name}: visual_policy basic_graphics_only forbids addImage()")
+                    static_issues.append(f"{path.name}: visual_policy basic_graphics_only forbids addImage()")
                 layout_match = re.search(r"layoutHint:\s*['\"]([^'\"]+)['\"]", text)
                 if layout_match:
                     observed_layouts.append(layout_match.group(1))
-                issues.extend(await self._run_slide_preview_qa(run_id=run_id, slide_js=path, slide_no=idx))
+
+                checksum = f"{zlib.crc32(text.encode('utf-8')):08x}"
+                cache_entry = preview_cache_in.get(path.name, {}) if isinstance(preview_cache_in.get(path.name, {}), dict) else {}
+                unchanged = str(cache_entry.get("hash", "")) == checksum
+                cached_preview_issues = [str(item) for item in cache_entry.get("issues", [])] if isinstance(cache_entry.get("issues", []), list) else []
+
+                preview_issues: list[str] = []
+                preview_checked = False
+                if static_issues:
+                    preview_issues = []
+                else:
+                    should_preview = verification_cycles == 0 or not unchanged
+                    if should_preview:
+                        preview_issues = await self._run_slide_preview_qa(run_id=run_id, slide_js=path, slide_no=idx)
+                        preview_checked = True
+                        preview_runs += 1
+                    else:
+                        unchanged_preview_candidates.append((path, idx, checksum))
+                        preview_issues = list(cached_preview_issues)
+
+                all_slide_issues = static_issues + preview_issues
+                issues.extend(all_slide_issues)
+                preview_cache_out[path.name] = {
+                    "hash": checksum,
+                    "issues": all_slide_issues if preview_checked else preview_issues,
+                    "checked": preview_checked,
+                }
+
+            if verification_cycles > 0 and preview_runs == 0 and unchanged_preview_candidates:
+                sample_path, sample_no, sample_checksum = unchanged_preview_candidates[0]
+                sample_issues = await self._run_slide_preview_qa(run_id=run_id, slide_js=sample_path, slide_no=sample_no)
+                preview_runs += 1
+                cached = preview_cache_out.get(sample_path.name, {})
+                prev_cached_issues = [str(item) for item in cached.get("issues", [])] if isinstance(cached.get("issues", []), list) else []
+                if sample_issues:
+                    issues.extend(sample_issues)
+                preview_cache_out[sample_path.name] = {
+                    "hash": sample_checksum,
+                    "issues": prev_cached_issues + sample_issues,
+                    "checked": True,
+                    "sampled": True,
+                }
+
             for i in range(1, len(observed_layouts)):
                 if observed_layouts[i] == observed_layouts[i - 1]:
                     issues.append(f"adjacent layout repetition: {observed_layouts[i]}")
                     break
+
             if run.pptx_path:
                 markitdown_ok, extract_issue = await self._markitdown_check(Path(run.pptx_path))
                 if not markitdown_ok and extract_issue:
@@ -2242,11 +3261,16 @@ class RunOrchestrator:
                 if not markitdown_ok and extract_issue:
                     issues.append(extract_issue)
 
-        report = {"passed": not issues, "issues": issues, "verification_cycles": verification_cycles}
+        deduped_issues = self._dedupe_preserve_order([str(item) for item in issues if str(item).strip()])
+        report = {
+            "passed": not deduped_issues,
+            "issues": deduped_issues,
+            "verification_cycles": verification_cycles,
+            "preview_cache": preview_cache_out,
+        }
         await self.store.update_run(run_id, lambda r: setattr(r, "qa_report", report))
         await self._publish(run_id, EventType.QA_COMPLETED, report)
-        return not issues
-
+        return not deduped_issues
     async def _markitdown_check(self, pptx_path: Path) -> tuple[bool, str | None]:
         result = await asyncio.to_thread(
             subprocess.run,
@@ -2283,6 +3307,25 @@ class RunOrchestrator:
             return text, "markitdown extracted too little content"
         return text, None
 
+    def _summarize_process_failure(self, *, stderr: str, stdout: str) -> tuple[str, str]:
+        combined = (stderr or stdout or "").strip()
+        if not combined:
+            return "preview compile failed", ""
+        lines = [line.strip() for line in combined.splitlines() if line.strip()]
+        lines = [
+            line
+            for line in lines
+            if "[UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental" not in line
+            and "Use `node --trace-warnings" not in line
+        ]
+        if not lines:
+            return "preview compile failed", ""
+        filtered = [line for line in lines if not re.fullmatch(r"Node\.js v\d+(?:\.\d+){1,3}", line)]
+        focus = filtered or lines
+        reason = focus[0][:240] if focus else "preview compile failed"
+        details = " | ".join(focus[:5])[:1200]
+        return reason, details
+
     async def _run_slide_preview_qa(self, *, run_id: str, slide_js: Path, slide_no: int) -> list[str]:
         issues, _ = await self._run_slide_preview_qa_with_text(run_id=run_id, slide_js=slide_js, slide_no=slide_no)
         return issues
@@ -2315,9 +3358,10 @@ class RunOrchestrator:
         finally:
             preview_runner.unlink(missing_ok=True)
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip().splitlines()
-            reason = detail[-1] if detail else "preview compile failed"
+            reason, details = self._summarize_process_failure(stderr=result.stderr or "", stdout=result.stdout or "")
             issues.append(f"{slide_js.name}: preview compile failed: {reason}")
+            if details:
+                issues.append(f"{slide_js.name}: preview compile details: {details}")
             await self._publish(
                 run_id,
                 EventType.SLIDE_PREVIEW_QA,
@@ -2450,7 +3494,9 @@ class RunOrchestrator:
                 "source": "latest_artifacts",
             },
         )
-        return qa_ok
+        # Mandatory polish is an execution step, not a hard quality gate.
+        # Even if qa_ok is False here, caller should continue into normal QA/repair flow.
+        return True
 
     async def _repair_loop(self, run_id: str, *, mode: GenerationMode, design: DesignProfile) -> bool:
         for repair_round in range(1, self.repair_rounds + 1):
@@ -2534,18 +3580,38 @@ class RunOrchestrator:
             for slide in sorted(run.slides, key=lambda x: x.slide_no):
                 node = run.outline.nodes[slide.slide_no - 1]
                 rule_issues = forced_issues or run.qa_report.get("issues", [])
-                revised_js = await self.llm_client.critique_slide_js(
-                    topic=run.input.topic,
-                    template_style=effective_template_style,
-                    slide_no=slide.slide_no,
-                    target_slide_count=run.input.target_slide_count,
-                    outline_node=node,
-                    candidate_js=slide.js_code,
-                    issues=[str(item) for item in rule_issues],
-                    visual_policy=run.input.visual_policy,
-                    slide_plan=self._build_slide_plan(node=node, design=design, slide_no=slide.slide_no),
-                    repair_directives=[str(item) for item in rule_issues],
-                )
+                slide_plan = self._build_slide_plan(node=node, design=design, slide_no=slide.slide_no)
+                slide_brief = self._build_slide_brief(run=run, node=node, slide_no=slide.slide_no, slide_plan=slide_plan)
+                try:
+                    revised_js = await self._call_llm_with_timeout_retry(
+                        run_id=run_id,
+                        phase=f"slide.{slide.slide_no}.polish.critic_js",
+                        action=lambda: self.llm_client.critique_slide_js(
+                            topic=run.input.topic,
+                            template_style=effective_template_style,
+                            slide_no=slide.slide_no,
+                            target_slide_count=run.input.target_slide_count,
+                            outline_node=node,
+                            candidate_js=slide.js_code,
+                            issues=[str(item) for item in rule_issues],
+                            visual_policy=run.input.visual_policy,
+                            slide_plan=slide_plan,
+                            repair_directives=[str(item) for item in rule_issues],
+                            slide_brief=slide_brief,
+                        ),
+                    )
+                except Exception as exc:
+                    await self._append_quality_entry(
+                        run_id=run_id,
+                        entry={
+                            "slide_no": slide.slide_no,
+                            "passed_round": 1,
+                            "issues_last_round": [f"polish skipped: {self._exception_reason(exc)}"],
+                            "engine": self.settings.generation_engine,
+                            "repair_mode": "critic_js_skipped",
+                        },
+                    )
+                    continue
                 slide_path = Path(run.artifact_dir) / "slides" / f"slide-{slide.slide_no:02d}.js"
                 slide_path.write_text(revised_js, encoding="utf-8")
                 slide.js_code = revised_js
@@ -2567,15 +3633,32 @@ class RunOrchestrator:
                 fallback_node=node,
                 citations=slide.citations,
             )
-            reviewed = await self.llm_client.review_slide(
-                topic=run.input.topic,
-                template_style=effective_template_style,
-                slide_no=slide.slide_no,
-                target_slide_count=run.input.target_slide_count,
-                outline_node=node,
-                candidate=candidate,
-                rule_violations=forced_issues or run.qa_report.get("issues", []),
-            )
+            try:
+                reviewed = await self._call_llm_with_timeout_retry(
+                    run_id=run_id,
+                    phase=f"slide.{slide.slide_no}.polish.review",
+                    action=lambda: self.llm_client.review_slide(
+                        topic=run.input.topic,
+                        template_style=effective_template_style,
+                        slide_no=slide.slide_no,
+                        target_slide_count=run.input.target_slide_count,
+                        outline_node=node,
+                        candidate=candidate,
+                        rule_violations=forced_issues or run.qa_report.get("issues", []),
+                    ),
+                )
+            except Exception as exc:
+                await self._append_quality_entry(
+                    run_id=run_id,
+                    entry={
+                        "slide_no": slide.slide_no,
+                        "passed_round": 1,
+                        "issues_last_round": [f"polish skipped: {self._exception_reason(exc)}"],
+                        "engine": self.settings.generation_engine,
+                        "repair_mode": "review_skipped",
+                    },
+                )
+                continue
             chart_plan = self._build_chart_plan_from_bullets(
                 node=OutlineNode(
                     title=reviewed.title,
@@ -2748,6 +3831,7 @@ class RunOrchestrator:
         payload: dict[str, Any] = {"error_code": error_code, "failed_stage": stage, "retryable": retryable}
         if error_details:
             payload["error_details"] = error_details
+        self._clear_run_llm_budget(run_id)
         await self._publish(
             run_id,
             EventType.RUN_FAILED,
@@ -3176,7 +4260,7 @@ class RunOrchestrator:
             labels=labels,
             values=[1.0 for _ in labels],
             unit="",
-            note="No verified numeric data; qualitative visual applied.",
+            note="Qualitative trend view; quantitative values not supplied in source bullets.",
             source="qualitative_fallback",
         )
 
@@ -4004,6 +5088,8 @@ def build_orchestrator(base_dir: Path) -> RunOrchestrator:
         outline_temperature=settings.llm_temperature_outline,
         slide_temperature=settings.llm_temperature_slide,
         outline_structured_output=settings.outline_structured_output,
+        sanitize_think_tags=settings.llm_sanitize_think_tags,
+        json_repair_retry=settings.llm_json_repair_retry,
     )
     return RunOrchestrator(
         store=RunStore(base_dir=base_dir),
@@ -4012,6 +5098,28 @@ def build_orchestrator(base_dir: Path) -> RunOrchestrator:
         llm_client=llm_client,
         settings=settings,
     )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

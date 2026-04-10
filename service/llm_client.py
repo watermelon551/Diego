@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
 import httpx
@@ -20,6 +21,18 @@ class GeneratedSlide:
     citations: list[str]
     page_type: SlidePageType
     layout_hint: str | None = None
+
+
+@dataclass
+class SlideSpec:
+    title: str
+    bullets: list[str]
+    page_type: SlidePageType
+    layout_hint: str | None = None
+    visual_kind: str = "shape"
+    subtitle: str = ""
+    emphasis: str = ""
+    citations: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -43,6 +56,15 @@ class LLMTimeoutError(RuntimeError):
         super().__init__(f"{self.phase} timeout after {self.attempts} attempts: {message}")
 
 
+@dataclass
+class LLMEmptyResponseError(RuntimeError):
+    phase: str
+    reason: str = "empty or invalid model response"
+
+    def __post_init__(self) -> None:
+        super().__init__(f"{self.phase}: {self.reason}")
+
+
 class LLMClient(Protocol):
     async def generate_research_brief(
         self,
@@ -53,6 +75,16 @@ class LLMClient(Protocol):
         template_style: str,
         target_slide_count: int,
     ) -> dict[str, Any]: ...
+
+    async def generate_design_intent(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        target_slide_count: int,
+        research_brief: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
 
     async def generate_outline(
         self,
@@ -125,6 +157,7 @@ class LLMClient(Protocol):
         rag_source_ids: list[str],
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
         slide_plan: dict[str, Any] | None = None,
+        slide_brief: dict[str, Any] | None = None,
     ) -> str: ...
 
     async def critique_slide_js(
@@ -141,6 +174,7 @@ class LLMClient(Protocol):
         slide_plan: dict[str, Any] | None = None,
         repair_directives: list[str] | None = None,
         preview_text: str = "",
+        slide_brief: dict[str, Any] | None = None,
     ) -> str: ...
 
     async def evaluate_slide_quality(
@@ -155,11 +189,42 @@ class LLMClient(Protocol):
         preview_text: str,
         hard_issues: list[str],
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_brief: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
+
+    async def generate_slide_spec(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        rag_source_ids: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+        slide_brief: dict[str, Any] | None = None,
+    ) -> SlideSpec: ...
+
+    async def repair_slide_spec(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        previous_spec: SlideSpec,
+        issues: list[str],
+        repair_directives: list[str] | None = None,
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+        slide_brief: dict[str, Any] | None = None,
+    ) -> SlideSpec: ...
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
-    stripped = text.strip()
+    stripped = _sanitize_llm_text(text)
     if stripped.startswith("```"):
         lines = [line for line in stripped.splitlines() if not line.strip().startswith("```")]
         stripped = "\n".join(lines).strip()
@@ -193,7 +258,7 @@ def _normalize_page_type(raw: str | None) -> SlidePageType:
 
 
 def _extract_code_block(text: str) -> str:
-    stripped = text.strip()
+    stripped = _sanitize_llm_text(text)
     if not stripped:
         return stripped
     if stripped.startswith("```"):
@@ -202,8 +267,36 @@ def _extract_code_block(text: str) -> str:
             lines = lines[1:]
         while lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
-        return "\n".join(lines).strip()
+        return _sanitize_llm_text("\n".join(lines))
     return stripped
+
+
+def _sanitize_llm_text(text: str) -> str:
+    cleaned = str(text or "").replace("\ufeff", "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"(?is)<think\b[^>]*>.*?</think>", "", cleaned)
+    cleaned = re.sub(r"(?is)</?think\b[^>]*>", "", cleaned)
+    return cleaned.strip()
+
+
+def _extract_js_module(text: str) -> str:
+    cleaned = _extract_code_block(text)
+    if not cleaned:
+        return cleaned
+
+    anchors = ("const pptxgen", "const slideConfig", "function createSlide", "module.exports")
+    start_indices = [cleaned.find(token) for token in anchors if cleaned.find(token) != -1]
+    start_idx = min(start_indices) if start_indices else 0
+    body = cleaned[start_idx:].strip()
+
+    module_idx = body.rfind("module.exports")
+    if module_idx != -1:
+        end_line = body.find("\n", module_idx)
+        if end_line == -1:
+            return body.strip()
+        return body[:end_line].strip() + "\n"
+    return body
 
 
 class OpenAICompatibleLLMClient:
@@ -218,6 +311,8 @@ class OpenAICompatibleLLMClient:
         outline_temperature: float = 0.3,
         slide_temperature: float = 0.6,
         outline_structured_output: bool = True,
+        sanitize_think_tags: bool = True,
+        json_repair_retry: int = 1,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -227,6 +322,8 @@ class OpenAICompatibleLLMClient:
         self.outline_temperature = outline_temperature
         self.slide_temperature = slide_temperature
         self.outline_structured_output = outline_structured_output
+        self.sanitize_think_tags = bool(sanitize_think_tags)
+        self.json_repair_retry = max(0, int(json_repair_retry))
 
     async def generate_research_brief(
         self,
@@ -254,7 +351,11 @@ class OpenAICompatibleLLMClient:
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=self.outline_temperature,
         )
-        payload = _extract_json_object(text)
+        payload = await self._extract_json_object_with_repair(
+            text=text,
+            expected_keys=["score", "issues", "repair_directives"],
+            temperature=self.outline_temperature,
+        )
         page_focus = payload.get("page_focus", [])
         if not isinstance(page_focus, list):
             page_focus = []
@@ -270,6 +371,44 @@ class OpenAICompatibleLLMClient:
             "design_notes": [str(item).strip() for item in notes if str(item).strip()][:8],
             "style_intent": str(payload.get("style_intent", "")).strip(),
             "effective_template_style": str(payload.get("effective_template_style", "")).strip(),
+        }
+
+    async def generate_design_intent(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        target_slide_count: int,
+        research_brief: dict[str, Any],
+    ) -> dict[str, Any]:
+        system_prompt = (
+            "You are a presentation design director. Return JSON only with keys: "
+            "palette_name, style_recipe, title_font, body_font, visual_strategy, density, rationale."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"template_style={template_style}\n"
+            f"target_slide_count={target_slide_count}\n"
+            f"research_brief={json.dumps(research_brief, ensure_ascii=False)}\n"
+            "Select a coherent design system that matches audience, tone, and narrative arc."
+        )
+        text = await self._chat_text(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=self.outline_temperature,
+        )
+        payload = await self._extract_json_object_with_repair(
+            text=text,
+            expected_keys=["score", "issues", "repair_directives"],
+            temperature=self.outline_temperature,
+        )
+        return {
+            "palette_name": str(payload.get("palette_name", "")).strip(),
+            "style_recipe": str(payload.get("style_recipe", "")).strip(),
+            "title_font": str(payload.get("title_font", "")).strip(),
+            "body_font": str(payload.get("body_font", "")).strip(),
+            "visual_strategy": str(payload.get("visual_strategy", "")).strip(),
+            "density": str(payload.get("density", "")).strip(),
+            "rationale": str(payload.get("rationale", "")).strip(),
         }
 
     async def generate_outline(
@@ -467,11 +606,14 @@ class OpenAICompatibleLLMClient:
         rag_source_ids: list[str],
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
         slide_plan: dict[str, Any] | None = None,
+        slide_brief: dict[str, Any] | None = None,
     ) -> str:
         system_prompt = (
             "You are a PPT code agent. Return JavaScript only (no markdown fences) for one runnable slide module. "
             "Must export synchronous createSlide(pres, theme) and slideConfig. "
             "Use only theme keys: primary, secondary, accent, light, bg. "
+            "Hard constraints: body text must be left-aligned, title must clearly dominate body text, content slides must include non-text visuals, "
+            "keep safe margins and readable spacing, and use fit:'shrink' on title plus long body blocks. "
             "Never output placeholders or pseudo code."
         )
         user_prompt = (
@@ -486,13 +628,19 @@ class OpenAICompatibleLLMClient:
             f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
-            "Requirements: LAYOUT_16x9, readable hierarchy, varied layout, natural language text, no hardcoded generic labels."
+            f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
+            "Requirements: LAYOUT_16x9; title 36pt+ (or equivalent dominant scale); body 14-16pt where possible; "
+            "body paragraphs/lists left-aligned; content slides include >=1 non-text visual; "
+            "safe margins >=0.5in on content slides; block gaps around 0.3-0.5in; "
+            "fit:'shrink' on title and long body text; natural-language content only."
         )
         text = await self._chat_text(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=self.slide_temperature,
         )
-        return _extract_code_block(text)
+        js_code = _extract_js_module(text)
+        self._ensure_js_executable_contract(js_code)
+        return js_code
 
     async def critique_slide_js(
         self,
@@ -508,10 +656,12 @@ class OpenAICompatibleLLMClient:
         slide_plan: dict[str, Any] | None = None,
         repair_directives: list[str] | None = None,
         preview_text: str = "",
+        slide_brief: dict[str, Any] | None = None,
     ) -> str:
         system_prompt = (
             "You are a strict PPT code reviewer. Rewrite and return full JavaScript module only. "
-            "Keep createSlide synchronous. Fix all listed issues while preserving content intent."
+            "Keep createSlide synchronous. Fix all listed issues while preserving content intent. "
+            "Prioritize hard layout constraints first: bounds, margins, spacing, body alignment, hierarchy, fit:'shrink', and visual-element requirements."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -523,14 +673,96 @@ class OpenAICompatibleLLMClient:
             f"repair_directives={json.dumps(repair_directives or [], ensure_ascii=False)}\n"
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
+            f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
             f"preview_text={preview_text[:2000]}\n"
+            "Must satisfy: body text left-aligned, clear title/body size contrast, fit:'shrink' on title and long body text, "
+            "safe margins and spacing, content slide must keep non-text visual element.\n"
             f"candidate_js=\n{candidate_js}\n"
         )
         text = await self._chat_text(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=self.slide_temperature,
         )
-        return _extract_code_block(text)
+        js_code = _extract_js_module(text)
+        self._ensure_js_executable_contract(js_code)
+        return js_code
+
+    async def generate_slide_spec(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        rag_source_ids: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+        slide_brief: dict[str, Any] | None = None,
+    ) -> SlideSpec:
+        system_prompt = (
+            "You are a PPT content planner. Return JSON only with keys: "
+            "title, subtitle, bullets, page_type, layout_hint, visual_kind, emphasis, citations. "
+            "Do not output JavaScript."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"template_style={template_style}\n"
+            f"slide_no={slide_no}\n"
+            f"target_slide_count={target_slide_count}\n"
+            f"outline_node={outline_node.model_dump_json()}\n"
+            f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"visual_policy={visual_policy.value}\n"
+            f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
+            f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
+            "Constraints: body content should be concise natural language, no placeholders, "
+            "content page should request a meaningful visual_kind among image/chart/shape."
+        )
+        text = await self._chat_text(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=self.slide_temperature,
+        )
+        return self._parse_slide_spec(text=text, fallback=outline_node)
+
+    async def repair_slide_spec(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        previous_spec: SlideSpec,
+        issues: list[str],
+        repair_directives: list[str] | None = None,
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+        slide_brief: dict[str, Any] | None = None,
+    ) -> SlideSpec:
+        system_prompt = (
+            "You repair PPT slide specs. Return JSON only with keys: "
+            "title, subtitle, bullets, page_type, layout_hint, visual_kind, emphasis, citations. "
+            "Do not output JavaScript."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"template_style={template_style}\n"
+            f"slide_no={slide_no}\n"
+            f"target_slide_count={target_slide_count}\n"
+            f"outline_node={outline_node.model_dump_json()}\n"
+            f"previous_spec={json.dumps(previous_spec.__dict__, ensure_ascii=False)}\n"
+            f"issues={json.dumps(issues, ensure_ascii=False)}\n"
+            f"repair_directives={json.dumps(repair_directives or [], ensure_ascii=False)}\n"
+            f"visual_policy={visual_policy.value}\n"
+            f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
+            f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
+            "Preserve intent while fixing quality/fit issues. Output JSON only."
+        )
+        text = await self._chat_text(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=self.slide_temperature,
+        )
+        return self._parse_slide_spec(text=text, fallback=outline_node)
 
     async def evaluate_slide_quality(
         self,
@@ -544,11 +776,14 @@ class OpenAICompatibleLLMClient:
         preview_text: str,
         hard_issues: list[str],
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_brief: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         system_prompt = (
             "You are a strict PPT slide QA judge. "
             "Return JSON only with keys: score(0-100 int), issues(list[str]), repair_directives(list[str]). "
-            "Focus on information hierarchy, layout clarity, language naturalness, and style consistency."
+            "Judge against concrete constraints: title/body hierarchy, left-aligned body text, safe margins, block spacing, no overflow/overlap, "
+            "required non-text visual elements on content slides, and natural-language quality. "
+            "repair_directives must be specific code-edit instructions."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -558,6 +793,7 @@ class OpenAICompatibleLLMClient:
             f"outline_node={outline_node.model_dump_json()}\n"
             f"visual_policy={visual_policy.value}\n"
             f"hard_issues={json.dumps(hard_issues, ensure_ascii=False)}\n"
+            f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
             f"preview_text={preview_text[:2000]}\n"
             f"candidate_js=\n{candidate_js[:16000]}\n"
         )
@@ -565,7 +801,11 @@ class OpenAICompatibleLLMClient:
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=self.outline_temperature,
         )
-        payload = _extract_json_object(text)
+        payload = await self._extract_json_object_with_repair(
+            text=text,
+            expected_keys=["score", "issues", "repair_directives"],
+            temperature=self.outline_temperature,
+        )
         raw_score = payload.get("score", 0)
         try:
             score = int(raw_score)
@@ -610,6 +850,93 @@ class OpenAICompatibleLLMClient:
             layout_hint=layout_hint,
         )
 
+    def _parse_slide_spec(self, *, text: str, fallback: OutlineNode) -> SlideSpec:
+        payload = _extract_json_object(text)
+        title = str(payload.get("title", "")).strip() or fallback.title
+        subtitle = str(payload.get("subtitle", "")).strip()
+        emphasis = str(payload.get("emphasis", "")).strip()
+        bullets_raw = payload.get("bullets", [])
+        if not isinstance(bullets_raw, list):
+            bullets_raw = []
+        bullets = [str(item).strip() for item in bullets_raw if str(item).strip()]
+        if not bullets:
+            bullets = list(fallback.bullets) if fallback.bullets else [f"{title} point 1", f"{title} point 2"]
+        citations_raw = payload.get("citations", [])
+        if not isinstance(citations_raw, list):
+            citations_raw = []
+        citations = [str(item).strip() for item in citations_raw if str(item).strip()]
+        page_type = _normalize_page_type(str(payload.get("page_type", ""))) or fallback.page_type
+        layout_hint = self._normalize_layout_hint(
+            raw=str(payload.get("layout_hint", "")).strip(),
+            page_type=page_type,
+            fallback=fallback.layout_hint,
+        )
+        visual_kind = str(payload.get("visual_kind", "")).strip().lower()
+        if visual_kind not in {"image", "chart", "shape"}:
+            visual_kind = "shape"
+        return SlideSpec(
+            title=title,
+            subtitle=subtitle,
+            bullets=bullets,
+            page_type=page_type,
+            layout_hint=layout_hint,
+            visual_kind=visual_kind,
+            emphasis=emphasis,
+            citations=citations,
+        )
+
+    async def _extract_json_object_with_repair(
+        self,
+        *,
+        text: str,
+        expected_keys: list[str],
+        temperature: float,
+    ) -> dict[str, Any]:
+        try:
+            return _extract_json_object(text)
+        except Exception as exc:
+            last_exc: Exception = exc
+
+        if self.json_repair_retry <= 0:
+            raise last_exc
+
+        expected = ", ".join(expected_keys)
+        prompt = (
+            "Return one valid JSON object only. Do not include markdown fences, explanations, or tags.\n"
+            f"Required keys: {expected}\n"
+            f"Previous parse error: {str(last_exc)[:500]}\n"
+            f"Raw model output:\n{text[:20000]}"
+        )
+        repaired_text = text
+        for _ in range(self.json_repair_retry):
+            repaired_text = await self._chat_text(
+                messages=[
+                    {"role": "system", "content": "You are a strict JSON repair assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=temperature,
+            )
+            try:
+                return _extract_json_object(repaired_text)
+            except Exception as inner_exc:
+                last_exc = inner_exc
+                prompt = (
+                    "Still invalid JSON. Return one valid JSON object only.\n"
+                    f"Required keys: {expected}\n"
+                    f"Parse error: {str(inner_exc)[:500]}\n"
+                    f"Raw model output:\n{repaired_text[:20000]}"
+                )
+        raise last_exc
+
+    def _ensure_js_executable_contract(self, js_code: str) -> None:
+        missing: list[str] = []
+        if not re.search(r"\bfunction\s+createSlide\s*\(", js_code):
+            missing.append("createSlide")
+        if "module.exports" not in js_code:
+            missing.append("module.exports")
+        if missing:
+            raise ValueError(f"LLM_OUTPUT_NOT_EXECUTABLE: missing {', '.join(missing)}")
+
     async def _chat_text(
         self,
         *,
@@ -638,7 +965,10 @@ class OpenAICompatibleLLMClient:
                     resp.raise_for_status()
                     body = resp.json()
                 content = body["choices"][0]["message"]["content"]
-                return self._response_content_to_text(content)
+                text = self._clean_response_text(self._response_content_to_text(content))
+                if not text:
+                    raise LLMEmptyResponseError(phase="chat.text", reason="provider returned empty text content")
+                return text
             except httpx.HTTPStatusError as exc:
                 if (
                     allow_response_format_fallback
@@ -659,7 +989,7 @@ class OpenAICompatibleLLMClient:
         on_token: TokenCallback,
     ) -> str:
         if self.api_style == "anthropic_messages":
-            text = await self._anthropic_text(messages=messages, temperature=temperature)
+            text = self._clean_response_text(await self._anthropic_text(messages=messages, temperature=temperature))
             for token in text.split():
                 await on_token(token + " ")
             return text
@@ -688,7 +1018,10 @@ class OpenAICompatibleLLMClient:
                     if token:
                         chunks.append(token)
                         await on_token(token)
-        return "".join(chunks)
+        text = self._clean_response_text("".join(chunks))
+        if not text:
+            raise LLMEmptyResponseError(phase="chat.stream", reason="stream completed without visible text")
+        return text
 
     async def _anthropic_text(self, *, messages: list[dict[str, str]], temperature: float) -> str:
         system = ""
@@ -738,6 +1071,11 @@ class OpenAICompatibleLLMClient:
             return "".join(chunks)
         return str(content)
 
+    def _clean_response_text(self, text: str) -> str:
+        if not self.sanitize_think_tags:
+            return str(text or "").replace("\ufeff", "").strip()
+        return _sanitize_llm_text(text)
+
     def _is_response_format_unsupported(self, exc: httpx.HTTPStatusError) -> bool:
         status = exc.response.status_code
         if status not in {400, 404, 415, 422}:
@@ -753,6 +1091,12 @@ class OpenAICompatibleLLMClient:
     def _outline_response_format(self, *, target_slide_count: int) -> dict[str, Any] | None:
         if not self.outline_structured_output or self.api_style == "anthropic_messages":
             return None
+        
+        # Minimax 不支持复杂的 json_schema 类型，使用简单的 json_object 类型
+        # 依靠 prompt 中的 JSON 格式示例来保证输出格式
+        if "minimax" in self.model.lower():
+            return {"type": "json_object"}
+        
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -902,6 +1246,34 @@ class MockLLMClient:
             ],
         }
 
+    async def generate_design_intent(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        target_slide_count: int,
+        research_brief: dict[str, Any],
+    ) -> dict[str, Any]:
+        style = template_style.strip().lower()
+        if "brutal" in style:
+            return {
+                "palette_name": "Platinum White Gold",
+                "style_recipe": "sharp",
+                "title_font": "Arial Black",
+                "body_font": "Arial",
+                "visual_strategy": "bold geometric contrast",
+                "density": "medium",
+                "rationale": "high-contrast, blocky composition for brutalist tone",
+            }
+        return {
+            "palette_name": "Pure Tech Blue",
+            "style_recipe": "soft",
+            "title_font": "Cambria",
+            "body_font": "Calibri",
+            "visual_strategy": "balanced text and visual anchors",
+            "density": "medium",
+            "rationale": "stable default design intent for deterministic tests",
+        }
     async def generate_outline(
         self,
         *,
@@ -1009,6 +1381,7 @@ class MockLLMClient:
         rag_source_ids: list[str],
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
         slide_plan: dict[str, Any] | None = None,
+        slide_brief: dict[str, Any] | None = None,
     ) -> str:
         title = json.dumps(outline_node.title, ensure_ascii=False)
         bullets = json.dumps(outline_node.bullets or [f"Point {slide_no}.1", f"Point {slide_no}.2"], ensure_ascii=False)
@@ -1060,6 +1433,7 @@ class MockLLMClient:
         slide_plan: dict[str, Any] | None = None,
         repair_directives: list[str] | None = None,
         preview_text: str = "",
+        slide_brief: dict[str, Any] | None = None,
     ) -> str:
         return candidate_js
 
@@ -1075,6 +1449,7 @@ class MockLLMClient:
         preview_text: str,
         hard_issues: list[str],
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_brief: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if hard_issues:
             return {
@@ -1083,6 +1458,62 @@ class MockLLMClient:
                 "repair_directives": ["Fix all hard issues before polishing visual quality."],
             }
         return {"score": 90, "issues": [], "repair_directives": []}
+
+    async def generate_slide_spec(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        rag_source_ids: list[str],
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+        slide_brief: dict[str, Any] | None = None,
+    ) -> SlideSpec:
+        visual_kind = "shape"
+        if outline_node.page_type == SlidePageType.CONTENT:
+            visual_kind = "image" if visual_policy == VisualPolicy.MEDIA_REQUIRED else "chart"
+        return SlideSpec(
+            title=outline_node.title,
+            subtitle="",
+            bullets=list(outline_node.bullets or [f"Point {slide_no}.1", f"Point {slide_no}.2"]),
+            page_type=outline_node.page_type,
+            layout_hint=outline_node.layout_hint,
+            visual_kind=visual_kind,
+            emphasis="",
+            citations=list(rag_source_ids[:2]),
+        )
+
+    async def repair_slide_spec(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        slide_no: int,
+        target_slide_count: int,
+        outline_node: OutlineNode,
+        previous_spec: SlideSpec,
+        issues: list[str],
+        repair_directives: list[str] | None = None,
+        visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
+        slide_brief: dict[str, Any] | None = None,
+    ) -> SlideSpec:
+        fixed = SlideSpec(
+            title=previous_spec.title or outline_node.title,
+            subtitle=previous_spec.subtitle,
+            bullets=list(previous_spec.bullets or outline_node.bullets),
+            page_type=outline_node.page_type,
+            layout_hint=outline_node.layout_hint or previous_spec.layout_hint,
+            visual_kind=previous_spec.visual_kind or "shape",
+            emphasis=previous_spec.emphasis,
+            citations=list(previous_spec.citations),
+        )
+        if len(fixed.bullets) < 2:
+            fixed.bullets = list(outline_node.bullets or [f"Point {slide_no}.1", f"Point {slide_no}.2"])
+        return fixed
 
     def _page_type_for_index(self, index: int, total: int) -> SlidePageType:
         if index == 1:

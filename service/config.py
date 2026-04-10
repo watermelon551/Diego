@@ -30,6 +30,14 @@ class Settings:
     outline_timeout_retries: int = 3
     outline_timeout_backoff_sec: float = 1.0
     outline_structured_output: bool = True
+    llm_request_concurrency: int = 6
+    slide_candidate_workers: int = 3
+    llm_timeout_jitter_sec: float = 0.2
+    llm_sanitize_think_tags: bool = True
+    llm_json_repair_retry: int = 1
+    slide_fatal_early_stop_rounds: int = 2
+    run_max_llm_calls: int = 0
+    keep_failed_candidate_js: bool = True
 
 
 def _require_env(name: str) -> str:
@@ -79,9 +87,14 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         raise ValueError("UNSPLASH_ACCESS_KEY or PEXELS_API_KEY is required when ASSET_PROVIDER=auto")
     if generation_engine not in {"agentic_v2", "legacy"}:
         raise ValueError(f"invalid GENERATION_ENGINE={generation_engine!r}")
+
     outline_timeout_backoff_sec = _env_float("OUTLINE_TIMEOUT_BACKOFF_SEC", 1.0)
     if outline_timeout_backoff_sec < 0:
         raise ValueError("OUTLINE_TIMEOUT_BACKOFF_SEC must be >= 0")
+    llm_timeout_jitter_sec = _env_float("LLM_TIMEOUT_JITTER_SEC", 0.2)
+    if llm_timeout_jitter_sec < 0:
+        raise ValueError("LLM_TIMEOUT_JITTER_SEC must be >= 0")
+
     return Settings(
         llm_api_style=os.getenv("LLM_API_STYLE", "openai_chat").strip().lower(),
         llm_base_url=_require_env("LLM_BASE_URL"),
@@ -91,9 +104,6 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         llm_max_retries=_env_int("LLM_MAX_RETRIES", 2),
         llm_temperature_outline=_env_float("LLM_TEMPERATURE_OUTLINE", 0.3),
         llm_temperature_slide=_env_float("LLM_TEMPERATURE_SLIDE", 0.6),
-        outline_timeout_retries=_env_int("OUTLINE_TIMEOUT_RETRIES", 3, min_value=0),
-        outline_timeout_backoff_sec=outline_timeout_backoff_sec,
-        outline_structured_output=_env_bool("OUTLINE_STRUCTURED_OUTPUT", True),
         slide_concurrency=_env_int("SLIDE_CONCURRENCY", 4),
         slide_retry=_env_int("SLIDE_RETRY", 2),
         qa_enabled=_env_bool("QA_ENABLED", True),
@@ -106,6 +116,17 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         generation_engine=generation_engine,
         debug_keep_previews=_env_bool("DEBUG_KEEP_PREVIEWS", False),
         max_slide_repair_rounds=_env_int("MAX_SLIDE_REPAIR_ROUNDS", 4),
+        outline_timeout_retries=_env_int("OUTLINE_TIMEOUT_RETRIES", 3, min_value=0),
+        outline_timeout_backoff_sec=outline_timeout_backoff_sec,
+        outline_structured_output=_env_bool("OUTLINE_STRUCTURED_OUTPUT", True),
+        llm_request_concurrency=_env_int("LLM_REQUEST_CONCURRENCY", 6),
+        slide_candidate_workers=_env_int("SLIDE_CANDIDATE_WORKERS", 3),
+        llm_timeout_jitter_sec=llm_timeout_jitter_sec,
+        llm_sanitize_think_tags=_env_bool("LLM_SANITIZE_THINK_TAGS", True),
+        llm_json_repair_retry=_env_int("LLM_JSON_REPAIR_RETRY", 1, min_value=0),
+        slide_fatal_early_stop_rounds=_env_int("SLIDE_FATAL_EARLY_STOP_ROUNDS", 2),
+        run_max_llm_calls=_env_int("RUN_MAX_LLM_CALLS", 0, min_value=0),
+        keep_failed_candidate_js=_env_bool("KEEP_FAILED_CANDIDATE_JS", True),
     )
 
 

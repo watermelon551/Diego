@@ -16,6 +16,8 @@ class RunStatus(str, Enum):
 
 
 class EventType(str, Enum):
+    REQUIREMENTS_ANALYZING_STARTED = "requirements.analyzing.started"
+    REQUIREMENTS_ANALYZING_COMPLETED = "requirements.analyzing.completed"
     REQUIREMENTS_ANALYZED = "requirements.analyzed"
     OUTLINE_TOKEN = "outline.token"
     OUTLINE_COMPLETED = "outline.completed"
@@ -35,6 +37,8 @@ class EventType(str, Enum):
     REPAIR_ROUND_COMPLETED = "repair.round.completed"
     SLIDE_CODEGEN_STARTED = "slide.codegen.started"
     SLIDE_CODEGEN_COMPLETED = "slide.codegen.completed"
+    SLIDE_SPEC_GENERATED = "slide.spec.generated"
+    SLIDE_SPEC_REPAIRED = "slide.spec.repaired"
     SLIDE_CRITIC_COMPLETED = "slide.critic.completed"
     SLIDE_REPAIR_COMPLETED = "slide.repair.completed"
     ARTIFACT_CLEANUP_COMPLETED = "artifact.cleanup.completed"

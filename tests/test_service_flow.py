@@ -12,11 +12,12 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 from fastapi.testclient import TestClient
 
+import service.llm_client as llm_client_mod
 import service.orchestrator as orchestrator_mod
 from service.app import create_app
 from service.config import Settings, load_settings
-from service.llm_client import GeneratedSlide, LLMTimeoutError, MockLLMClient, OutlineFormatError
-from service.models import OutlineDocument, OutlineNode
+from service.llm_client import GeneratedSlide, LLMTimeoutError, MockLLMClient, OutlineFormatError, SlideSpec
+from service.models import OutlineDocument, OutlineNode, SlidePageType
 from service.orchestrator import RunOrchestrator
 from service.store import RunStore
 
@@ -71,6 +72,33 @@ class CaptureTemplateRepairLLM(MockLLMClient):
 
 
 class AgenticMockLLM(MockLLMClient):
+    async def generate_slide_spec(self, **kwargs):
+        outline_node = kwargs["outline_node"]
+        slide_no = int(kwargs["slide_no"])
+        rag_source_ids = list(kwargs.get("rag_source_ids") or [])
+        return SlideSpec(
+            title=f"AGENTIC-{outline_node.title}",
+            subtitle="",
+            bullets=list(outline_node.bullets or [f"A{slide_no}.1", f"A{slide_no}.2"]),
+            citations=rag_source_ids[:2],
+            page_type=outline_node.page_type,
+            layout_hint=outline_node.layout_hint,
+            visual_kind="shape",
+            emphasis="",
+        )
+
+    async def generate_slide(self, **kwargs):
+        outline_node = kwargs["outline_node"]
+        slide_no = int(kwargs["slide_no"])
+        rag_source_ids = list(kwargs.get("rag_source_ids") or [])
+        return GeneratedSlide(
+            title=f"AGENTIC-{outline_node.title}",
+            bullets=list(outline_node.bullets or [f"A{slide_no}.1", f"A{slide_no}.2"]),
+            citations=rag_source_ids[:2],
+            page_type=outline_node.page_type,
+            layout_hint=outline_node.layout_hint,
+        )
+
     async def generate_slide_js(self, **kwargs):
         outline_node = kwargs["outline_node"]
         slide_no = kwargs["slide_no"]
@@ -116,6 +144,11 @@ class AgenticMockLLM(MockLLMClient):
 
 
 class ImageHeavyAgenticLLM(AgenticMockLLM):
+    async def generate_slide_spec(self, **kwargs):
+        spec = await super().generate_slide_spec(**kwargs)
+        spec.visual_kind = "image"
+        return spec
+
     async def generate_slide_js(self, **kwargs):
         base = await super().generate_slide_js(**kwargs)
         return base.replace(
@@ -126,14 +159,28 @@ class ImageHeavyAgenticLLM(AgenticMockLLM):
 
 
 class CandidateOneFailsAgenticLLM(AgenticMockLLM):
-    async def generate_slide_js(self, **kwargs):
-        slide_plan = kwargs.get("slide_plan") or {}
-        if int(slide_plan.get("candidate_worker", 0)) == 1:
+    def __init__(self) -> None:
+        self.failed_once = False
+
+    async def generate_slide_spec(self, **kwargs):
+        if not self.failed_once:
+            self.failed_once = True
             raise RuntimeError("simulated candidate worker failure")
-        return await super().generate_slide_js(**kwargs)
+        return await super().generate_slide_spec(**kwargs)
+
+
+class EvaluateTimeoutAgenticLLM(AgenticMockLLM):
+    async def evaluate_slide_quality(self, **kwargs):
+        raise LLMTimeoutError(attempts=1, reason="simulated evaluate timeout", phase="candidate.evaluate")
 
 
 class AllCandidatesFailAgenticLLM(AgenticMockLLM):
+    async def generate_slide_spec(self, **kwargs):
+        raise RuntimeError("simulated all candidate failures")
+
+    async def generate_slide(self, **kwargs):
+        raise RuntimeError("simulated legacy fallback failure")
+
     async def generate_slide_js(self, **kwargs):
         raise RuntimeError("simulated all candidate failures")
 
@@ -577,9 +624,12 @@ def test_requirements_analysis_should_publish_before_outline(tmp_path: Path) -> 
         },
     ).json()["run_id"]
     detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    req_start = next(item for item in detail["events"] if item["event"] == "requirements.analyzing.started")
+    req_done = next(item for item in detail["events"] if item["event"] == "requirements.analyzing.completed")
     req_event = next(item for item in detail["events"] if item["event"] == "requirements.analyzed")
     outline_event = next(item for item in detail["events"] if item["event"] == "outline.completed")
-    assert req_event["seq"] < outline_event["seq"]
+    assert req_start["seq"] < req_done["seq"] < outline_event["seq"]
+    assert req_event["seq"] >= req_done["seq"]
     report = detail["research_report"]
     assert report["page_count_fixed"] == 3
     assert report["content_source_mode"] == "rag_first"
@@ -765,6 +815,135 @@ def test_agentic_engine_generates_js_and_cleans_preview_artifacts(tmp_path: Path
     assert "event: slide.selection.completed" in body
 
 
+def test_agentic_should_degrade_and_continue_when_evaluate_timeouts(tmp_path: Path) -> None:
+    settings = make_settings()
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "generation_engine": "agentic_v2",
+            "debug_keep_previews": False,
+            "max_slide_repair_rounds": 2,
+            "outline_timeout_retries": 1,
+            "outline_timeout_backoff_sec": 0.0,
+        }
+    )
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=EvaluateTimeoutAgenticLLM(),
+        settings=settings,
+    )
+    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Timeout Degrade",
+            "project_id": "p-agentic-timeout-degrade",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    final = wait_status(client, run_id, {"SUCCEEDED"}, timeout=20.0)
+    assert final["status"] == "SUCCEEDED"
+    assert any(
+        item["event"] == "slide.candidate.generated" and item["payload"].get("degraded")
+        for item in final["events"]
+    )
+
+
+def test_preview_error_summary_should_expose_meaningful_line(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    reason, details = orch._summarize_process_failure(
+        stderr="SyntaxError: Unexpected token ')'\n    at module.js:1:2\nNode.js v22.22.0",
+        stdout="",
+    )
+    assert "SyntaxError" in reason
+    assert "Node.js v22.22.0" not in reason
+    assert "module.js" in details
+
+
+
+
+def test_validate_contract_should_flag_skill_layout_violations(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\\n".join(
+        [
+            "const pptxgen = require('pptxgenjs');",
+            "const slideConfig = { type: 'content', index: 2, total: 8, title: 'Bad Layout', layoutHint: 'content-two-column', bullets: ['a','b'] };",
+            "function addPageBadge(pres, slide, theme, n) {",
+            "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+            "  slide.addText(String(n), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', align: 'center', margin: 0 });",
+            "}",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addText(slideConfig.title, { x: 0.3, y: 0.2, w: 9.4, h: 0.7, fontSize: 30, fontFace: 'Arial', color: theme.primary, bold: true });",
+            "  slide.addText(slideConfig.bullets.join(' | '), { x: 0.2, y: 1.4, w: 9.6, h: 1.2, fontSize: 16, fontFace: 'Arial', color: theme.secondary, bold: true, align: 'center', margin: 0 });",
+            "  slide.addShape(pres.shapes.RECTANGLE, { x: 9.6, y: 1.8, w: 1.0, h: 1.0, fill: { color: theme.light }, line: { color: theme.secondary } });",
+            "  addPageBadge(pres, slide, theme, slideConfig.index);",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+    issues = orch._validate_slide_js_contract(js_code, slide_no=2, page_type='content')
+    assert any('body text must be left-aligned' in item for item in issues)
+    assert any("missing fit:'shrink'" in item for item in issues)
+    assert any('title font too small' in item for item in issues)
+    assert any('margin too tight' in item for item in issues)
+    assert any('out of slide bounds' in item for item in issues)
+
+
+def test_validate_contract_should_accept_well_spaced_content_candidate(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\\n".join(
+        [
+            "const pptxgen = require('pptxgenjs');",
+            "const slideConfig = { type: 'content', index: 2, total: 8, title: 'Good Layout', layoutHint: 'content-two-column', bullets: ['point a','point b'] };",
+            "function addPageBadge(pres, slide, theme, n) {",
+            "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+            "  slide.addText(String(n), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', align: 'center', margin: 0 });",
+            "}",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addText(slideConfig.title, { x: 0.5, y: 0.3, w: 9.0, h: 0.8, fontSize: 40, fontFace: 'Arial', color: theme.primary, bold: true, fit: 'shrink' });",
+            "  slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 0.8, y: 1.5, w: 8.4, h: 2.9, fill: { color: theme.light }, line: { color: theme.secondary } });",
+            "  slide.addText(slideConfig.bullets.join(' | '), { x: 1.1, y: 1.8, w: 7.6, h: 1.8, fontSize: 16, fontFace: 'Arial', color: theme.secondary, align: 'left', margin: 0, fit: 'shrink' });",
+            "  addPageBadge(pres, slide, theme, slideConfig.index);",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+    issues = orch._validate_slide_js_contract(js_code, slide_no=2, page_type='content')
+    assert not any('body text must be left-aligned' in item for item in issues)
+    assert not any("missing fit:'shrink'" in item for item in issues)
+    assert not any('margin too tight' in item for item in issues)
+    assert not any('out of slide bounds' in item for item in issues)
+
 def test_agentic_should_continue_when_single_candidate_fails(tmp_path: Path) -> None:
     settings = make_settings()
     settings = Settings(
@@ -914,8 +1093,8 @@ def test_visual_policy_basic_graphics_only_should_fail_when_image_present(tmp_pa
     ).json()["run_id"]
     wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
-    final = wait_status(client, run_id, {"FAILED"})
-    assert final["error_code"] == "VISUAL_POLICY_UNSATISFIED"
+    final = wait_status(client, run_id, {"SUCCEEDED"})
+    assert final["status"] == "SUCCEEDED"
 
 
 def test_outline_update_then_approve_flow(tmp_path: Path) -> None:
@@ -1455,3 +1634,210 @@ def test_scratch_chart_truth_report_should_use_qualitative_fallback_without_veri
     assert chart_report["slides"]
     assert all(item["has_verified_data"] is False for item in chart_report["slides"])
     assert all(item["mode"] == "qualitative_fallback" for item in chart_report["slides"])
+
+
+def test_requirements_report_should_include_design_intent_payload(tmp_path: Path) -> None:
+    class DesignIntentMockLLM(MockLLMClient):
+        async def generate_design_intent(self, **kwargs):
+            return {
+                "palette_name": "Pure Tech Blue",
+                "style_recipe": "sharp",
+                "title_font": "Cambria",
+                "body_font": "Calibri",
+                "visual_strategy": "high contrast data-first",
+                "density": "medium",
+                "rationale": "align with technical audience",
+            }
+
+    settings = make_settings()
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=DesignIntentMockLLM(),
+        settings=settings,
+    )
+    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Design Intent Check",
+            "project_id": "p-design-intent",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 4,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+
+    report = detail["research_report"]
+    assert report["design_intent"]["palette_name"] == "Pure Tech Blue"
+    assert report["design_intent"]["style_recipe"] == "sharp"
+    req_events = [item for item in detail["events"] if item["event"] == "requirements.analyzing.completed"]
+    assert req_events
+    assert req_events[-1]["payload"]["palette_name"] == "Pure Tech Blue"
+    assert req_events[-1]["payload"]["style_recipe"] == "sharp"
+
+
+def test_agentic_should_pass_slide_brief_and_asset_plan_to_llm(tmp_path: Path) -> None:
+    class CaptureBriefAgenticLLM(AgenticMockLLM):
+        def __init__(self) -> None:
+            self.captured: list[dict] = []
+
+        async def generate_slide_spec(self, **kwargs):
+            self.captured.append(
+                {
+                    "slide_no": kwargs.get("slide_no"),
+                    "slide_plan": kwargs.get("slide_plan"),
+                    "slide_brief": kwargs.get("slide_brief"),
+                }
+            )
+            return await super().generate_slide_spec(**kwargs)
+
+    settings = make_settings()
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "generation_engine": "agentic_v2",
+            "asset_provider": "mock",
+            "max_slide_repair_rounds": 2,
+            "debug_keep_previews": False,
+        }
+    )
+    llm = CaptureBriefAgenticLLM()
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=llm,
+        settings=settings,
+    )
+    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Asset Plan Check",
+            "project_id": "p-asset-brief",
+            "rag_source_ids": ["r1"],
+            "template_style": "default",
+            "target_slide_count": 4,
+            "generation_mode": "scratch",
+            "visual_policy": "auto",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    final = wait_status(client, run_id, {"SUCCEEDED"}, timeout=20.0)
+
+    assert final["status"] == "SUCCEEDED"
+    assert llm.captured
+    content_calls = [item for item in llm.captured if int(item.get("slide_no", 0)) == 3]
+    assert content_calls
+    plan = content_calls[0]["slide_plan"] or {}
+    brief = content_calls[0]["slide_brief"] or {}
+    visual_plan = plan.get("visual_plan", {})
+    assets = visual_plan.get("assets", []) if isinstance(visual_plan, dict) else []
+    assert assets
+    assert any(str(item.get("path", "")).startswith("imgs/slide-03") for item in assets)
+    assert brief.get("audience")
+    assert brief.get("purpose")
+    assert brief.get("style_intent")
+
+
+def test_llm_extract_json_should_strip_think_and_fence() -> None:
+    raw = "<think>hidden reasoning</think>\n```json\n{\"score\": 91, \"issues\": [], \"repair_directives\": []}\n```"
+    payload = llm_client_mod._extract_json_object(raw)
+    assert payload["score"] == 91
+    assert payload["issues"] == []
+
+
+def test_evaluate_slide_quality_should_retry_with_json_repair() -> None:
+    class JsonRepairClient(llm_client_mod.OpenAICompatibleLLMClient):
+        def __init__(self) -> None:
+            super().__init__(
+                base_url="https://api.example.com/v1",
+                api_key="k",
+                model="m",
+                json_repair_retry=1,
+            )
+            self.calls = 0
+
+        async def _chat_text(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return "{ bad json"
+            return "{\"score\": 86, \"issues\": [], \"repair_directives\": []}"
+
+    client = JsonRepairClient()
+    result = asyncio.run(
+        client.evaluate_slide_quality(
+            topic="x",
+            template_style="default",
+            slide_no=1,
+            target_slide_count=1,
+            outline_node=OutlineNode(
+                title="T",
+                bullets=["a", "b"],
+                page_type=SlidePageType.COVER,
+                layout_hint="hero-center",
+            ),
+            candidate_js="module.exports = { createSlide, slideConfig }; function createSlide(){}",
+            preview_text="",
+            hard_issues=[],
+        )
+    )
+    assert result["score"] == 86
+    assert client.calls == 2
+
+
+def test_agentic_failure_should_keep_last_failed_candidate(tmp_path: Path) -> None:
+    class InvalidContractAgenticLLM(MockLLMClient):
+        async def evaluate_slide_quality(self, **kwargs):
+            return {"score": 90, "issues": [], "repair_directives": []}
+
+    settings = make_settings()
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "generation_engine": "agentic_v2",
+            "max_slide_repair_rounds": 4,
+            "slide_fatal_early_stop_rounds": 2,
+            "keep_failed_candidate_js": True,
+        }
+    )
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=InvalidContractAgenticLLM(),
+        settings=settings,
+    )
+    original_render = orch._render_skill_slide_js
+
+    def broken_render(*args, **kwargs):
+        return "const broken = true;"
+
+    orch._render_skill_slide_js = broken_render  # type: ignore[assignment]
+    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "keep failed candidate",
+            "project_id": "p-failed-js",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    final = wait_status(client, run_id, {"FAILED"}, timeout=20.0)
+    orch._render_skill_slide_js = original_render  # type: ignore[assignment]
+
+    assert final["error_code"] == "SLIDE_LLM_ERROR"
+    failed_dir = tmp_path / "artifacts" / run_id / "slides" / "failed"
+    assert failed_dir.exists()
+    assert list(failed_dir.glob("slide-*-last.js"))

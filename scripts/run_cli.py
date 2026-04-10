@@ -108,6 +108,8 @@ async def _wait_for_status(
                     print("[大纲流式] " + "".join(token_buffer).strip())
                     token_buffer = []
             elif event.event.value in {
+                "requirements.analyzing.started",
+                "requirements.analyzing.completed",
                 "requirements.analyzed",
                 "outline.completed",
                 "outline.repair.started",
