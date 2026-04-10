@@ -1777,8 +1777,10 @@ class RunOrchestrator:
         best_js = ""
         best_generated: GeneratedSlide | None = None
         best_chart_plan: ChartPlan | None = None
+        best_citations: list[str] = []
         best_variant: dict[str, Any] = {}
         current_spec: SlideSpec | None = None
+        fatal_round_streak = 0
 
         for repair_round in range(1, self.max_slide_repair_rounds + 1):
             variant = {
@@ -1876,20 +1878,32 @@ class RunOrchestrator:
                     },
                 )
                 if repair_round == 1:
-                    legacy_generated = await self._call_llm_with_timeout_retry(
-                        run_id=run_id,
-                        phase=f"slide.{slide_no}.round.{repair_round}.legacy.generate",
-                        action=lambda: self.llm_client.generate_slide(
-                            topic=run.input.topic,
-                            project_id=run.input.project_id,
-                            template_style=effective_template_style,
-                            slide_no=slide_no,
-                            target_slide_count=run.input.target_slide_count,
-                            outline_node=node,
-                            rag_source_ids=run.input.rag_source_ids,
-                        ),
-                    )
-                    spec = self._slide_spec_from_generated(generated=legacy_generated, node=node)
+                    try:
+                        legacy_generated = await self._call_llm_with_timeout_retry(
+                            run_id=run_id,
+                            phase=f"slide.{slide_no}.round.{repair_round}.legacy.generate",
+                            action=lambda: self.llm_client.generate_slide(
+                                topic=run.input.topic,
+                                project_id=run.input.project_id,
+                                template_style=effective_template_style,
+                                slide_no=slide_no,
+                                target_slide_count=run.input.target_slide_count,
+                                outline_node=node,
+                                rag_source_ids=run.input.rag_source_ids,
+                            ),
+                        )
+                        spec = self._slide_spec_from_generated(generated=legacy_generated, node=node)
+                    except Exception:
+                        spec = self._slide_spec_from_generated(
+                            generated=GeneratedSlide(
+                                title=node.title,
+                                bullets=list(node.bullets),
+                                citations=[],
+                                page_type=node.page_type,
+                                layout_hint=node.layout_hint,
+                            ),
+                            node=node,
+                        )
                     current_spec = spec
                     await self._publish(
                         run_id,
@@ -1905,7 +1919,17 @@ class RunOrchestrator:
                         },
                     )
                 else:
-                    raise
+                    if current_spec is None:
+                        current_spec = self._slide_spec_from_generated(
+                            generated=GeneratedSlide(
+                                title=node.title,
+                                bullets=list(node.bullets),
+                                citations=[],
+                                page_type=node.page_type,
+                                layout_hint=node.layout_hint,
+                            ),
+                            node=node,
+                        )
 
             generated = self._generated_from_slide_spec(spec=current_spec, node=node)
             citations = self._normalize_citations(list(current_spec.citations), run.input.rag_source_ids, slide_no)
@@ -1985,15 +2009,31 @@ class RunOrchestrator:
             llm_score = int(llm_gate.get("score", 0))
             llm_issues = [str(item) for item in llm_gate.get("issues", [])]
             repair_directives = [str(item) for item in llm_gate.get("repair_directives", [])]
-            issues = list(hard_issues)
+            issues_1 = list(hard_issues)
             if llm_score < gate_threshold:
-                issues.append(f"quality score below threshold: {llm_score} < {gate_threshold}")
-            issues.extend(llm_issues)
-            issues = self._dedupe_preserve_order(issues)
-            selected_llm_issues = list(llm_issues)
-            selected_repair_directives = list(repair_directives)
-            selected_preview_text = preview_text
-
+                issues_1.append(f"quality score below threshold: {llm_score} < {gate_threshold}")
+            issues_1.extend(llm_issues)
+            issues_1 = self._dedupe_preserve_order(issues_1)
+            candidate_eval_items: list[dict[str, Any]] = [
+                {
+                    "candidate": 1,
+                    "mode": "spec_renderer",
+                    "variant": variant,
+                    "candidate_js": js_code,
+                    "generated": generated,
+                    "chart_plan": chart_plan,
+                    "citations": list(citations),
+                    "score": llm_score,
+                    "hard_issues": list(hard_issues),
+                    "llm_issues": list(llm_issues),
+                    "repair_directives": list(repair_directives),
+                    "issues": list(issues_1),
+                    "passed": not issues_1,
+                    "preview_text": preview_text,
+                    "preview_mode": preview_mode,
+                    "degraded": llm_eval_degraded,
+                }
+            ]
             await self._publish(
                 run_id,
                 EventType.SLIDE_CANDIDATE_GENERATED,
@@ -2002,7 +2042,7 @@ class RunOrchestrator:
                     "round": repair_round,
                     "candidate": 1,
                     "score": llm_score,
-                    "passed": not issues,
+                    "passed": not issues_1,
                     "hard_issue_count": len(hard_issues),
                     "llm_issue_count": len(llm_issues),
                     "degraded": llm_eval_degraded,
@@ -2010,29 +2050,224 @@ class RunOrchestrator:
                     "variant": variant,
                 },
             )
+
+            # Candidate 2: creative JS directly from LLM (recover high-ceiling generation).
+            creative_variant = {
+                "mode": "creative_js",
+                "round": repair_round,
+                "layout_anchor": str(slide_plan.get("layout", "")),
+                "seed": f"s{slide_no}-r{repair_round}-creative",
+            }
+            creative_plan = dict(slide_plan)
+            creative_plan["candidate_worker"] = 2
+            creative_plan["variant"] = creative_variant
+            creative_plan["repair_round"] = repair_round
+            creative_plan["previous_issues"] = issues_1[:8]
+            creative_citations = self._normalize_citations([], run.input.rag_source_ids, slide_no)
+            creative_chart_plan = self._build_chart_plan_from_bullets(
+                node=OutlineNode(
+                    title=node.title,
+                    bullets=list(node.bullets),
+                    page_type=node.page_type,
+                    layout_hint=node.layout_hint,
+                ),
+                source_refs=creative_citations,
+            )
+            try:
+                if repair_round == 1:
+                    creative_js = await self._call_llm_with_timeout_retry(
+                        run_id=run_id,
+                        phase=f"slide.{slide_no}.round.{repair_round}.candidate.2.build",
+                        action=lambda: self.llm_client.generate_slide_js(
+                            topic=run.input.topic,
+                            template_style=effective_template_style,
+                            slide_no=slide_no,
+                            target_slide_count=run.input.target_slide_count,
+                            outline_node=node,
+                            theme=design.theme,
+                            title_font=design.title_font,
+                            body_font=design.body_font,
+                            rag_source_ids=run.input.rag_source_ids,
+                            visual_policy=run.input.visual_policy,
+                            slide_plan=creative_plan,
+                            slide_brief=slide_brief,
+                        ),
+                    )
+                else:
+                    creative_directives = list(repair_directives) + ["candidate mode=creative_js"]
+                    creative_js = await self._call_llm_with_timeout_retry(
+                        run_id=run_id,
+                        phase=f"slide.{slide_no}.round.{repair_round}.candidate.2.repair",
+                        action=lambda: self.llm_client.critique_slide_js(
+                            topic=run.input.topic,
+                            template_style=effective_template_style,
+                            slide_no=slide_no,
+                            target_slide_count=run.input.target_slide_count,
+                            outline_node=node,
+                            candidate_js=best_js or js_code,
+                            issues=issues_1 if not issues else issues,
+                            visual_policy=run.input.visual_policy,
+                            slide_plan=creative_plan,
+                            repair_directives=creative_directives,
+                            preview_text=selected_preview_text or preview_text,
+                            slide_brief=slide_brief,
+                        ),
+                    )
+                creative_path = slides_dir / f"slide-{slide_no:02d}-cand-02.js"
+                creative_path.write_text(creative_js, encoding="utf-8")
+                hard_issues_2 = self._validate_slide_js_contract(
+                    creative_js,
+                    slide_no=slide_no,
+                    page_type=node.page_type.value,
+                    visual_policy=run.input.visual_policy,
+                )
+                fatal_contract_2 = any(
+                    issue in {"missing export contract", "createSlide signature invalid", "createSlide must be synchronous"}
+                    for issue in hard_issues_2
+                )
+                preview_mode_2 = "full"
+                preview_text_2 = ""
+                preview_issues_2: list[str] = []
+                if fatal_contract_2:
+                    preview_mode_2 = "skip_contract_failure"
+                    preview_issues_2.append("preview skipped due to fatal contract issue")
+                else:
+                    preview_issues_2, preview_text_2 = await self._run_slide_preview_qa_with_text(
+                        run_id=run_id,
+                        slide_js=creative_path,
+                        slide_no=slide_no,
+                    )
+                hard_issues_2.extend(preview_issues_2)
+                llm_eval_degraded_2 = False
+                try:
+                    llm_gate_2 = await self._call_llm_with_timeout_retry(
+                        run_id=run_id,
+                        phase=f"slide.{slide_no}.round.{repair_round}.candidate.2.evaluate",
+                        action=lambda: self.llm_client.evaluate_slide_quality(
+                            topic=run.input.topic,
+                            template_style=effective_template_style,
+                            slide_no=slide_no,
+                            target_slide_count=run.input.target_slide_count,
+                            outline_node=node,
+                            candidate_js=creative_js,
+                            preview_text=preview_text_2,
+                            hard_issues=hard_issues_2,
+                            visual_policy=run.input.visual_policy,
+                            slide_brief=slide_brief,
+                        ),
+                    )
+                except LLMTimeoutError:
+                    llm_eval_degraded_2 = True
+                    llm_gate_2 = self._fallback_quality_gate(
+                        hard_issues=hard_issues_2,
+                        preview_text=preview_text_2,
+                        candidate_js=creative_js,
+                    )
+                score_2 = int(llm_gate_2.get("score", 0))
+                llm_issues_2 = [str(item) for item in llm_gate_2.get("issues", [])]
+                repair_directives_2 = [str(item) for item in llm_gate_2.get("repair_directives", [])]
+                issues_2 = list(hard_issues_2)
+                if score_2 < gate_threshold:
+                    issues_2.append(f"quality score below threshold: {score_2} < {gate_threshold}")
+                issues_2.extend(llm_issues_2)
+                issues_2 = self._dedupe_preserve_order(issues_2)
+                candidate_eval_items.append(
+                    {
+                        "candidate": 2,
+                        "mode": "creative_js",
+                        "variant": creative_variant,
+                        "candidate_js": creative_js,
+                        "generated": None,
+                        "chart_plan": creative_chart_plan,
+                        "citations": list(creative_citations),
+                        "score": score_2,
+                        "hard_issues": list(hard_issues_2),
+                        "llm_issues": list(llm_issues_2),
+                        "repair_directives": list(repair_directives_2),
+                        "issues": list(issues_2),
+                        "passed": not issues_2,
+                        "preview_text": preview_text_2,
+                        "preview_mode": preview_mode_2,
+                        "degraded": llm_eval_degraded_2,
+                    }
+                )
+                await self._publish(
+                    run_id,
+                    EventType.SLIDE_CANDIDATE_GENERATED,
+                    {
+                        "slide_no": slide_no,
+                        "round": repair_round,
+                        "candidate": 2,
+                        "score": score_2,
+                        "passed": not issues_2,
+                        "hard_issue_count": len(hard_issues_2),
+                        "llm_issue_count": len(llm_issues_2),
+                        "degraded": llm_eval_degraded_2,
+                        "preview_mode": preview_mode_2,
+                        "variant": creative_variant,
+                    },
+                )
+                creative_path.unlink(missing_ok=True)
+            except Exception as exc:
+                await self._publish(
+                    run_id,
+                    EventType.SLIDE_CANDIDATE_GENERATED,
+                    {
+                        "slide_no": slide_no,
+                        "round": repair_round,
+                        "candidate": 2,
+                        "score": 0,
+                        "passed": False,
+                        "hard_issue_count": 1,
+                        "llm_issue_count": 0,
+                        "error": self._exception_reason(exc),
+                        "phase": "candidate.build",
+                        "variant": creative_variant,
+                    },
+                )
+
+            candidate_eval_items.sort(
+                key=lambda item: (
+                    len(item["hard_issues"]),
+                    0 if item["passed"] else 1,
+                    0 if not item.get("degraded", False) else 1,
+                    -int(item["score"]),
+                    len(item["issues"]),
+                )
+            )
+            best = candidate_eval_items[0]
+            llm_score = int(best["score"])
+            issues = [str(x) for x in best["issues"]]
+            selected_llm_issues = [str(x) for x in best["llm_issues"]]
+            selected_repair_directives = [str(x) for x in best["repair_directives"]]
+            selected_preview_text = str(best["preview_text"])
+            best_js = str(best["candidate_js"])
+            best_generated = best.get("generated")
+            best_chart_plan = best.get("chart_plan")
+            best_citations = [str(x) for x in best.get("citations", [])]
+            best_variant = dict(best.get("variant", {}))
             await self._append_candidate_selection_entry(
                 run_id=run_id,
                 entry={
                     "slide_no": slide_no,
                     "round": repair_round,
-                    "selected_candidate": 1,
+                    "selected_candidate": int(best["candidate"]),
                     "selected_score": llm_score,
-                    "selected_passed": not issues,
-                    "selected_degraded": llm_eval_degraded,
-                    "selected_variant": variant,
+                    "selected_passed": bool(best["passed"]),
+                    "selected_degraded": bool(best.get("degraded", False)),
+                    "selected_variant": best_variant,
                     "degraded_accept": False,
-                    "candidates": [
-                        {
-                            "candidate": 1,
-                            "variant": variant,
-                            "score": llm_score,
-                            "passed": not issues,
-                            "degraded": llm_eval_degraded,
-                            "hard_issue_count": len(hard_issues),
-                            "llm_issue_count": len(llm_issues),
-                            "preview_mode": preview_mode,
-                        }
-                    ],
+                    "candidates": [{
+                        "candidate": int(item["candidate"]),
+                        "mode": str(item.get("mode", "")),
+                        "variant": item.get("variant", {}),
+                        "score": int(item["score"]),
+                        "passed": bool(item["passed"]),
+                        "degraded": bool(item.get("degraded", False)),
+                        "hard_issue_count": len(item["hard_issues"]),
+                        "llm_issue_count": len(item["llm_issues"]),
+                        "preview_mode": item.get("preview_mode", "full"),
+                    } for item in candidate_eval_items],
                 },
             )
             await self._publish(
@@ -2041,11 +2276,11 @@ class RunOrchestrator:
                 {
                     "slide_no": slide_no,
                     "round": repair_round,
-                    "selected_candidate": 1,
+                    "selected_candidate": int(best["candidate"]),
                     "score": llm_score,
                     "passed": not issues,
-                    "degraded": llm_eval_degraded,
-                    "variant": variant,
+                    "degraded": bool(best.get("degraded", False)),
+                    "variant": best_variant,
                 },
             )
             await self._append_quality_gate_entry(
@@ -2056,9 +2291,9 @@ class RunOrchestrator:
                     "visual_policy": run.input.visual_policy.value,
                     "score": llm_score,
                     "threshold": gate_threshold,
-                    "hard_issues": list(hard_issues),
-                    "llm_issues": list(llm_issues),
-                    "repair_directives": list(repair_directives),
+                    "hard_issues": list(best["hard_issues"]),
+                    "llm_issues": selected_llm_issues,
+                    "repair_directives": selected_repair_directives,
                     "passed": not issues,
                 },
             )
@@ -2071,16 +2306,12 @@ class RunOrchestrator:
                     "score": llm_score,
                     "threshold": gate_threshold,
                     "passed": not issues,
-                    "hard_issue_count": len(hard_issues),
-                    "llm_issue_count": len(llm_issues),
-                    "degraded": llm_eval_degraded,
+                    "hard_issue_count": len(best["hard_issues"]),
+                    "llm_issue_count": len(selected_llm_issues),
+                    "degraded": bool(best.get("degraded", False)),
                 },
             )
 
-            best_js = js_code
-            best_generated = generated
-            best_chart_plan = chart_plan
-            best_variant = variant
             candidate_path.unlink(missing_ok=True)
 
             if not issues:
@@ -2108,6 +2339,27 @@ class RunOrchestrator:
                 EventType.SLIDE_REPAIR_COMPLETED,
                 {"slide_no": slide_no, "round": repair_round},
             )
+            if self._issues_have_fatal_markers(issues):
+                fatal_round_streak += 1
+            else:
+                fatal_round_streak = 0
+            early_stop_rounds = min(self.slide_fatal_early_stop_rounds, self.max_slide_repair_rounds)
+            if fatal_round_streak >= early_stop_rounds:
+                if self.keep_failed_candidate_js and best_js:
+                    self._persist_failed_candidate_js(
+                        slides_dir=slides_dir,
+                        slide_no=slide_no,
+                        js_code=best_js,
+                        round_no=repair_round,
+                        issues=issues[:20],
+                    )
+                raise SlideGenerationError(
+                    slide_no=slide_no,
+                    phase="candidate.fatal_early_stop",
+                    reason=f"fatal issues repeated for {fatal_round_streak} rounds",
+                    round_no=repair_round,
+                    details={"issues": issues[:20], "fatal_streak": fatal_round_streak},
+                )
 
         if round_passed == 0:
             if any("visual_policy" in issue for issue in issues):
@@ -2155,7 +2407,7 @@ class RunOrchestrator:
                 )
 
         final_js = slide_path.read_text(encoding="utf-8")
-        citations = list(best_generated.citations) if best_generated else self._normalize_citations([], run.input.rag_source_ids, slide_no)
+        citations = list(best_citations) if best_citations else self._normalize_citations([], run.input.rag_source_ids, slide_no)
         if best_chart_plan is not None:
             await self._append_chart_truth_report(
                 run_id=run_id,
