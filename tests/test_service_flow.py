@@ -17,7 +17,7 @@ import service.orchestrator as orchestrator_mod
 from service.app import create_app
 from service.config import Settings, load_settings
 from service.llm_client import GeneratedSlide, LLMTimeoutError, MockLLMClient, OutlineFormatError, SlideSpec
-from service.models import OutlineDocument, OutlineNode, SlidePageType
+from service.models import CreateRunRequest, GenerationMode, OutlineDocument, OutlineNode, RunRecord, RunStatus, SlidePageType
 from service.orchestrator import RunOrchestrator
 from service.store import RunStore
 
@@ -1066,6 +1066,84 @@ def test_validate_contract_should_ignore_visual_fallback_label_text(tmp_path: Pa
     assert not any("body text must be left-aligned" in item for item in issues)
 
 
+
+def test_validate_contract_should_accept_inline_badge_equivalent(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const pptxgen = require('pptxgenjs');",
+            "const slideConfig = { type: 'toc', index: 2, total: 8, title: 'TOC', layoutHint: 'toc-sidebar', bullets: ['a','b'] };",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addText(slideConfig.title, { x: 0.8, y: 0.5, w: 7.0, h: 0.8, fontSize: 40, fontFace: 'Arial', color: theme.primary, bold: true, fit: 'shrink' });",
+            "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+            "  slide.addText(String(slideConfig.index || 1), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', bold: true, align: 'center', valign: 'mid', margin: 0 });",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+    issues = orch._validate_slide_js_contract(js_code, slide_no=2, page_type='toc')
+    assert not any('missing required page badge position' in item for item in issues)
+
+
+def test_persist_qa_failure_artifacts_should_write_report_and_failed_js(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    run_id = "qa-fail-run"
+    artifact_dir = orch.artifacts_base / run_id
+    slides_dir = artifact_dir / "slides"
+    slides_dir.mkdir(parents=True, exist_ok=True)
+    (slides_dir / "slide-02.js").write_text("function createSlide(pres, theme){ const slide = pres.addSlide(); return slide; }\nconst slideConfig={index:2};\nmodule.exports = { createSlide, slideConfig };\n", encoding="utf-8")
+    (slides_dir / "slide-03.js").write_text("function createSlide(pres, theme){ const slide = pres.addSlide(); return slide; }\nconst slideConfig={index:3};\nmodule.exports = { createSlide, slideConfig };\n", encoding="utf-8")
+
+    req = CreateRunRequest(
+        topic="qa-fail",
+        project_id="qa-proj",
+        rag_source_ids=[],
+        template_style="default",
+        target_slide_count=3,
+        generation_mode=GenerationMode.SCRATCH,
+    )
+    run = RunRecord(
+        run_id=run_id,
+        trace_id="trace-qa-fail",
+        status=RunStatus.COMPILING,
+        input=req,
+        artifact_dir=str(artifact_dir),
+        qa_report={
+            "passed": False,
+            "issues": [
+                "slide-02.js: missing required page badge position",
+                "slide-03.js: createSlide signature invalid",
+                "markitdown qa failed",
+            ],
+        },
+    )
+    asyncio.run(orch.store.add_run(run))
+    details = asyncio.run(orch._persist_qa_failure_artifacts(run_id=run_id, mode=GenerationMode.SCRATCH))
+
+    report_path = artifact_dir / "qa_failed_issues.json"
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["issue_count"] == 3
+    assert report["issues_by_slide"]["2"][0].startswith("missing required page badge position")
+    assert report["issues_by_slide"]["3"][0].startswith("createSlide signature invalid")
+    assert len(details.get("failed_slide_js", [])) >= 2
+    assert (slides_dir / "failed" / "slide-02-last.js").exists()
+    assert (slides_dir / "failed" / "slide-03-last.js").exists()
+
 def test_agentic_should_continue_when_single_candidate_fails(tmp_path: Path) -> None:
     settings = make_settings()
     settings = Settings(
@@ -1969,4 +2047,6 @@ def test_agentic_failure_should_keep_last_failed_candidate(tmp_path: Path) -> No
         failed_dir = tmp_path / "artifacts" / run_id / "slides" / "failed"
         assert failed_dir.exists()
         assert list(failed_dir.glob("slide-*-last.js"))
+
+
 

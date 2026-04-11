@@ -1222,7 +1222,8 @@ class RunOrchestrator:
                 latest = await self.store.get_run(run_id)
                 if latest is not None and latest.status == RunStatus.FAILED:
                     return
-                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False)
+                qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=GenerationMode.SCRATCH)
+                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
                 return
             latest_after_polish = await self.store.get_run(run_id)
             qa_ok = bool(
@@ -1236,7 +1237,8 @@ class RunOrchestrator:
                 latest = await self.store.get_run(run_id)
                 if latest is not None and latest.status == RunStatus.FAILED:
                     return
-                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False)
+                qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=GenerationMode.SCRATCH)
+                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
                 return
         await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SUCCEEDED))
         self._clear_run_llm_budget(run_id)
@@ -1347,7 +1349,8 @@ class RunOrchestrator:
                 latest = await self.store.get_run(run_id)
                 if latest is not None and latest.status == RunStatus.FAILED:
                     return
-                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False)
+                qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=GenerationMode.TEMPLATE)
+                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
                 return
             latest_after_polish = await self.store.get_run(run_id)
             qa_ok = bool(
@@ -1361,7 +1364,8 @@ class RunOrchestrator:
                 latest = await self.store.get_run(run_id)
                 if latest is not None and latest.status == RunStatus.FAILED:
                     return
-                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False)
+                qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=GenerationMode.TEMPLATE)
+                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
                 return
         await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SUCCEEDED))
         self._clear_run_llm_budget(run_id)
@@ -2799,12 +2803,70 @@ class RunOrchestrator:
         page_type: SlidePageType,
     ) -> str:
         guarded = str(js_code or "")
+        guarded = self._ensure_create_slide_returns_slide(guarded)
+        guarded = self._ensure_slide_config_index(guarded, slide_no=slide_no)
         guarded = self._ensure_title_text_guardrails(guarded)
         guarded = self._ensure_rows_text_guardrails(guarded)
         guarded = self._ensure_line_positive_geometry(guarded)
         if page_type != SlidePageType.COVER and slide_no > 1:
-            guarded = self._ensure_page_badge_position(guarded)
+            guarded = self._ensure_page_badge_position(guarded, slide_no=slide_no)
         return guarded
+
+    def _has_valid_page_badge(self, *, js_code: str, slide_no: int) -> bool:
+        if slide_no <= 1:
+            return True
+        payload = str(js_code or "")
+        has_xy = "x: 9.3, y: 5.1" in payload
+        has_helper_call = bool(re.search(r"\baddPageBadge\s*\(\s*pres\s*,\s*slide\s*,\s*theme", payload))
+        has_inline = (
+            bool(re.search(r"slide\.addShape\(\s*pres\.shapes\.(?:OVAL|ROUNDED_RECTANGLE)\s*,\s*\{[^{}]*x\s*:\s*9\.3[^{}]*y\s*:\s*5\.1", payload, flags=re.S))
+            and bool(re.search(r"slide\.addText\([^)]*x\s*:\s*9\.3[^)]*y\s*:\s*5\.1", payload, flags=re.S))
+        )
+        return bool(has_xy and (has_helper_call or has_inline))
+
+    def _ensure_create_slide_returns_slide(self, js_code: str) -> str:
+        fixed = str(js_code or "")
+        fixed, count = re.subn(
+            r"(?m)^\s*return\s*\{\s*createSlide\s*,\s*slideConfig\s*\}\s*;\s*$",
+            "  return slide;",
+            fixed,
+        )
+        if count > 0:
+            return fixed
+        if not re.search(r"\bfunction\s+createSlide\s*\(", fixed):
+            return fixed
+        if re.search(r"(?m)^\s*return\s+slide\s*;\s*$", fixed):
+            return fixed
+        marker = "module.exports = { createSlide, slideConfig };"
+        if marker in fixed:
+            idx = fixed.find(marker)
+            prefix = fixed[:idx]
+            suffix = fixed[idx:]
+            if "}" in prefix:
+                last_brace = prefix.rfind("}")
+                if last_brace >= 0:
+                    prefix = prefix[:last_brace] + "  return slide;\n" + prefix[last_brace:]
+                    return prefix + suffix
+        return fixed
+
+    def _ensure_slide_config_index(self, js_code: str, *, slide_no: int) -> str:
+        fixed = str(js_code or "")
+        fixed, count = re.subn(
+            r"(\b(?:const|let|var)\s+slideConfig\s*=\s*\{[\s\S]*?\bindex\s*:\s*)\d+",
+            rf"\g<1>{slide_no}",
+            fixed,
+            count=1,
+        )
+        if count > 0:
+            return fixed
+        if re.search(r"\b(?:const|let|var)\s+slideConfig\s*=\s*\{", fixed):
+            fixed = re.sub(
+                r"(\b(?:const|let|var)\s+slideConfig\s*=\s*\{)",
+                rf"\1\n  index: {slide_no},",
+                fixed,
+                count=1,
+            )
+        return fixed
 
     def _ensure_title_text_guardrails(self, js_code: str) -> str:
         def repl(match: re.Match[str]) -> str:
@@ -2864,20 +2926,33 @@ class RunOrchestrator:
         )
         return fixed
 
-    def _ensure_page_badge_position(self, js_code: str) -> str:
-        if "x: 9.3, y: 5.1" in js_code:
+    def _ensure_page_badge_position(self, js_code: str, *, slide_no: int) -> str:
+        if self._has_valid_page_badge(js_code=js_code, slide_no=slide_no):
             return js_code
         if "function createSlide(" not in js_code:
             return js_code
+        updated = js_code
+        if "function addPageBadge(" not in updated:
+            badge_helper = "\n".join(
+                [
+                    "function addPageBadge(pres, slide, theme, n) {",
+                    "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+                    "  slide.addText(String(n), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', bold: true, align: 'center', valign: 'mid', margin: 0 });",
+                    "}",
+                    "",
+                ]
+            )
+            updated = updated.replace("function createSlide(", badge_helper + "function createSlide(", 1)
+        if re.search(r"\baddPageBadge\s*\(\s*pres\s*,\s*slide\s*,\s*theme", updated):
+            return updated
         badge_snippet = "\n".join(
             [
-                "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
-                "  slide.addText(String(slideConfig.index || 1), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, fontFace: 'Arial', color: 'FFFFFF', bold: true, align: 'center', valign: 'mid', margin: 0 });",
+                "  addPageBadge(pres, slide, theme, slideConfig.index || 1);",
             ]
         )
-        if "return slide;" in js_code:
-            return js_code.replace("return slide;", badge_snippet + "\n  return slide;", 1)
-        return js_code
+        if "return slide;" in updated:
+            return updated.replace("return slide;", badge_snippet + "\n  return slide;", 1)
+        return updated
 
     def _classify_slide_issues(self, issues: list[str]) -> dict[str, list[str]]:
         blocking_markers = (
@@ -3012,6 +3087,86 @@ class RunOrchestrator:
             encoding="utf-8",
         )
 
+    def _split_qa_issues_by_slide(self, issues: list[str]) -> tuple[dict[int, list[str]], list[str]]:
+        per_slide: dict[int, list[str]] = {}
+        global_issues: list[str] = []
+        for item in issues:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            match = re.match(r"slide-(\d{2})(?:-[^:]+)?\.js:\s*(.+)", text, flags=re.IGNORECASE)
+            if not match:
+                global_issues.append(text)
+                continue
+            slide_no = int(match.group(1))
+            reason = (match.group(2) or "").strip() or text
+            bucket = per_slide.setdefault(slide_no, [])
+            bucket.append(reason)
+        return {k: self._dedupe_preserve_order(v) for k, v in per_slide.items()}, self._dedupe_preserve_order(global_issues)
+
+    async def _persist_qa_failure_artifacts(self, *, run_id: str, mode: GenerationMode) -> dict[str, Any]:
+        run = await self.store.get_run(run_id)
+        if run is None:
+            return {}
+        qa_report = run.qa_report if isinstance(run.qa_report, dict) else {}
+        issues = [str(item) for item in qa_report.get("issues", []) if str(item).strip()] if isinstance(qa_report.get("issues", []), list) else []
+        issues_by_slide, global_issues = self._split_qa_issues_by_slide(issues)
+
+        artifact_dir = Path(run.artifact_dir)
+        report_path = artifact_dir / "qa_failed_issues.json"
+        payload = {
+            "run_id": run_id,
+            "mode": mode.value,
+            "issue_count": len(issues),
+            "issues": issues[:200],
+            "issues_by_slide": {str(k): v for k, v in sorted(issues_by_slide.items(), key=lambda x: x[0])},
+            "global_issues": global_issues[:80],
+            "qa_blocking_rules": [
+                {
+                    "slide_no": slide_no,
+                    "rule_name": reasons[0] if reasons else "",
+                    "source_stage": "final_qa",
+                }
+                for slide_no, reasons in sorted(issues_by_slide.items(), key=lambda x: x[0])
+                if reasons
+            ][:80],
+        }
+        report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        copied: list[str] = []
+        if mode == GenerationMode.SCRATCH:
+            slides_dir = artifact_dir / "slides"
+            failed_dir = slides_dir / "failed"
+            failed_dir.mkdir(parents=True, exist_ok=True)
+            for slide_no, reasons in sorted(issues_by_slide.items(), key=lambda x: x[0]):
+                src = slides_dir / f"slide-{slide_no:02d}.js"
+                if not src.exists():
+                    continue
+                dst = failed_dir / f"slide-{slide_no:02d}-last.js"
+                meta = failed_dir / f"slide-{slide_no:02d}-last.meta.json"
+                shutil.copy2(src, dst)
+                meta.write_text(
+                    json.dumps(
+                        {
+                            "slide_no": slide_no,
+                            "round": None,
+                            "issues": reasons[:40],
+                            "source": "final_qa",
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                copied.append(str(dst))
+
+        return {
+            "qa_failed_report": str(report_path),
+            "qa_issue_count": len(issues),
+            "qa_blocking_rule_count": len(payload["qa_blocking_rules"]),
+            "qa_blocking_rules": payload["qa_blocking_rules"],
+            "failed_slide_js": copied,
+        }
     def _collect_js_style_issues(self, *, js_code: str, page_type: str) -> list[str]:
         issues: list[str] = []
         boxes = self._collect_js_layout_boxes(js_code)
@@ -4086,7 +4241,10 @@ class RunOrchestrator:
             for idx, path in enumerate(slide_files, start=1):
                 text = path.read_text(encoding="utf-8")
                 page_type_match = re.search(r"type:\s*['\"]([^'\"]+)['\"]", text)
-                page_type = page_type_match.group(1) if page_type_match else ""
+                page_type = page_type_match.group(1).strip().lower() if page_type_match else ""
+                if not page_type:
+                    page_type_match = re.search(r"page_type:\s*['\"]([^'\"]+)['\"]", text)
+                    page_type = page_type_match.group(1).strip().lower() if page_type_match else ""
                 static_issues: list[str] = []
                 if "module.exports = { createSlide, slideConfig };" not in text:
                     static_issues.append(f"{path.name}: missing export contract")
@@ -4098,7 +4256,7 @@ class RunOrchestrator:
                     static_issues.append(f"{path.name}: hex color with # is forbidden")
                 if re.search(r"['\"][0-9a-fA-F]{8}['\"]", text):
                     static_issues.append(f"{path.name}: 8-char hex color is forbidden")
-                if idx > 1 and ("addPageBadge(pres, slide, theme" not in text or "x: 9.3, y: 5.1" not in text):
+                if idx > 1 and not self._has_valid_page_badge(js_code=text, slide_no=idx):
                     static_issues.append(f"{path.name}: missing required page badge position")
                 theme_hits = sum(1 for key in ("theme.primary", "theme.secondary", "theme.accent", "theme.light", "theme.bg") if key in text)
                 if "theme.primary" not in text or "theme.bg" not in text or theme_hits < 4:
@@ -4116,7 +4274,7 @@ class RunOrchestrator:
                         static_issues.append(f"{path.name}: visual_policy media_required expects shape/chart complement")
                 if page_type == "content" and run.input.visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY and "addImage(" in text:
                     static_issues.append(f"{path.name}: visual_policy basic_graphics_only forbids addImage()")
-                layout_match = re.search(r"layoutHint:\s*['\"]([^'\"]+)['\"]", text)
+                layout_match = re.search(r"(?:layoutHint|layout):\s*['\"]([^'\"]+)['\"]", text)
                 if layout_match:
                     observed_layouts.append(layout_match.group(1))
 
@@ -4195,9 +4353,12 @@ class RunOrchestrator:
                     issues.append(extract_issue)
 
         deduped_issues = self._dedupe_preserve_order([str(item) for item in issues if str(item).strip()])
+        issues_by_slide, global_issues = self._split_qa_issues_by_slide(deduped_issues)
         report = {
             "passed": not deduped_issues,
             "issues": deduped_issues,
+            "issues_by_slide": {str(k): v for k, v in sorted(issues_by_slide.items(), key=lambda x: x[0])},
+            "global_issues": global_issues,
             "verification_cycles": verification_cycles,
             "preview_cache": preview_cache_out,
         }
@@ -6173,6 +6334,18 @@ def build_orchestrator(base_dir: Path) -> RunOrchestrator:
         llm_client=llm_client,
         settings=settings,
     )
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
