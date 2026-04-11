@@ -124,10 +124,10 @@ class AgenticMockLLM(MockLLMClient):
                 "function createSlide(pres, theme) {",
                 "  const slide = pres.addSlide();",
                 "  slide.background = { color: theme.bg };",
-                "  slide.addText(slideConfig.title, { x: 0.5, y: 0.4, w: 9.0, h: 0.8, fontSize: 34, fontFace: 'Arial', color: theme.primary, bold: true, fit: 'shrink' });",
+                "  slide.addText(slideConfig.title, { x: 0.5, y: 0.4, w: 9.0, h: 0.8, fontSize: 40, fontFace: 'Arial', color: theme.primary, bold: true, align: 'left', fit: 'shrink' });",
                 "  slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 0.8, y: 1.5, w: 8.4, h: 3.5, fill: { color: theme.light, transparency: 10 }, line: { color: theme.secondary, pt: 1 } });",
                 "  const rows = (slideConfig.bullets || []).map((text, idx) => ({ text, options: { bullet: true, breakLine: idx < (slideConfig.bullets || []).length - 1 } }));",
-                "  slide.addText(rows, { x: 1.1, y: 1.9, w: 7.8, h: 2.7, fontSize: 16, fontFace: 'Arial', color: theme.secondary, margin: 0, fit: 'shrink' });",
+                "  slide.addText(rows, { x: 1.1, y: 1.9, w: 7.8, h: 2.7, fontSize: 16, fontFace: 'Arial', color: theme.secondary, bold: false, align: 'left', margin: 0, fit: 'shrink' });",
                 "  if (slideConfig.type !== 'cover') addPageBadge(pres, slide, theme, slideConfig.index);",
                 "  return slide;",
                 "}",
@@ -161,19 +161,27 @@ class ImageHeavyAgenticLLM(AgenticMockLLM):
             "  const rows = (slideConfig.bullets || []).map((text, idx) => ({ text, options: { bullet: true, breakLine: idx < (slideConfig.bullets || []).length - 1 } }));",
         )
 
+    async def critique_slide_js(self, **kwargs):
+        candidate_js = str(kwargs.get("candidate_js", ""))
+        issues = [str(item).lower() for item in (kwargs.get("issues") or [])]
+        if any("basic_graphics_only" in item or "forbids addimage" in item for item in issues):
+            candidate_js = re.sub(
+                r"(?m)^\s*slide\.addImage\(\{[^)]*\}\);\s*$",
+                "",
+                candidate_js,
+            )
+        return candidate_js
+
 
 class CandidateOneFailsAgenticLLM(AgenticMockLLM):
     def __init__(self) -> None:
         self.failed_once = False
 
     async def generate_slide_js(self, **kwargs):
-        slide_plan = kwargs.get("slide_plan") if isinstance(kwargs.get("slide_plan"), dict) else {}
-        worker = int(slide_plan.get("candidate_worker", 1))
-        if worker == 1 and not self.failed_once:
+        if not self.failed_once:
             self.failed_once = True
             raise RuntimeError("simulated candidate worker failure")
         return await super().generate_slide_js(**kwargs)
-
 
 class EvaluateTimeoutAgenticLLM(AgenticMockLLM):
     async def evaluate_slide_quality(self, **kwargs):
@@ -181,13 +189,13 @@ class EvaluateTimeoutAgenticLLM(AgenticMockLLM):
 
 
 class AllCandidatesFailAgenticLLM(AgenticMockLLM):
-    async def generate_slide_spec(self, **kwargs):
-        raise RuntimeError("simulated all candidate failures")
-
     async def generate_slide(self, **kwargs):
         raise RuntimeError("simulated legacy fallback failure")
 
     async def generate_slide_js(self, **kwargs):
+        raise RuntimeError("simulated all candidate failures")
+
+    async def critique_slide_js(self, **kwargs):
         raise RuntimeError("simulated all candidate failures")
 
 
@@ -950,6 +958,114 @@ def test_validate_contract_should_accept_well_spaced_content_candidate(tmp_path:
     assert not any('margin too tight' in item for item in issues)
     assert not any('out of slide bounds' in item for item in issues)
 
+
+def test_validate_contract_should_reject_zero_length_line_shape(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const pptxgen = require('pptxgenjs');",
+            "const slideConfig = { type: 'content', index: 2, total: 8, title: 'Line Test', layoutHint: 'content-timeline', bullets: ['a','b'] };",
+            "function addPageBadge(pres, slide, theme, n) {",
+            "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+            "  slide.addText(String(n), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', align: 'center', margin: 0 });",
+            "}",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addText(slideConfig.title, { x: 0.6, y: 0.4, w: 8.8, h: 0.7, fontSize: 38, fontFace: 'Arial', color: theme.primary, bold: true, fit: 'shrink' });",
+            "  slide.addShape(pres.shapes.LINE, { x: 1.0, y: 2.45, w: 8.0, h: 0, line: { color: theme.secondary, pt: 1 } });",
+            "  slide.addShape(pres.shapes.RECTANGLE, { x: 1.0, y: 2.7, w: 8.0, h: 1.0, fill: { color: theme.light }, line: { color: theme.secondary } });",
+            "  slide.addText('a | b', { x: 1.1, y: 2.85, w: 7.8, h: 0.6, fontSize: 14, fontFace: 'Arial', color: theme.secondary, align: 'left', margin: 0, fit: 'shrink' });",
+            "  addPageBadge(pres, slide, theme, slideConfig.index);",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+    issues = orch._validate_slide_js_contract(js_code, slide_no=2, page_type="content")
+    assert any("line shape geometry invalid" in item for item in issues)
+
+
+def test_validate_contract_should_not_treat_short_labels_as_body_text(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const pptxgen = require('pptxgenjs');",
+            "const slideConfig = { type: 'content', index: 7, total: 8, title: 'Future', layoutHint: 'content-comparison', bullets: ['a','b','c','d'] };",
+            "function addPageBadge(pres, slide, theme, n) {",
+            "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+            "  slide.addText(String(n), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', align: 'center', margin: 0 });",
+            "}",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addText(slideConfig.title, { x: 0.5, y: 0.3, w: 9.0, h: 0.8, fontSize: 40, fontFace: 'Arial', color: theme.primary, bold: true, fit: 'shrink' });",
+            "  slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 0.8, y: 1.25, w: 4.1, h: 3.7, fill: { color: theme.light }, line: { color: theme.secondary } });",
+            "  slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 5.1, y: 1.25, w: 4.1, h: 3.7, fill: { color: theme.bg }, line: { color: theme.secondary } });",
+            "  slide.addText('Track A', { x: 1.1, y: 1.53, w: 3.3, h: 0.45, fontSize: 20, fontFace: 'Arial', color: theme.primary, bold: true, margin: 0 });",
+            "  slide.addText('Track B', { x: 5.4, y: 1.53, w: 3.3, h: 0.45, fontSize: 20, fontFace: 'Arial', color: theme.primary, bold: true, margin: 0 });",
+            "  slide.addText('body text one | body text two', { x: 1.1, y: 2.2, w: 7.5, h: 0.7, fontSize: 14, fontFace: 'Arial', color: theme.secondary, align: 'left', margin: 0, fit: 'shrink' });",
+            "  addPageBadge(pres, slide, theme, slideConfig.index);",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+    issues = orch._validate_slide_js_contract(js_code, slide_no=7, page_type="content")
+    assert not any("body text should not use bold" in item for item in issues)
+    assert not any("body text missing fit:'shrink'" in item for item in issues)
+    assert not any("body text must be left-aligned" in item for item in issues)
+
+
+def test_validate_contract_should_ignore_visual_fallback_label_text(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const pptxgen = require('pptxgenjs');",
+            "const slideConfig = { type: 'content', index: 4, total: 8, title: 'Origin', layoutHint: 'content-two-column', bullets: ['a','b'] };",
+            "function addPageBadge(pres, slide, theme, n) {",
+            "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+            "  slide.addText(String(n), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', align: 'center', margin: 0 });",
+            "}",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  const visualKind = 'image';",
+            "  const visualAsset = { path: 'imgs/pic.png' };",
+            "  slide.addText(slideConfig.title, { x: 0.5, y: 0.3, w: 9.0, h: 0.8, fontSize: 40, fontFace: 'Arial', color: theme.primary, bold: true, fit: 'shrink' });",
+            "  if (visualKind === 'image' && visualAsset && visualAsset.path) {",
+            "    slide.addImage({ path: visualAsset.path, x: 1.0, y: 1.55, w: 3.6, h: 3.05 });",
+            "  } else {",
+            "    slide.addText('Visual', { x: 1.0, y: 2.9, w: 3.5, h: 0.45, fontSize: 18, fontFace: 'Arial', color: theme.primary, bold: true, align: 'center', margin: 0 });",
+            "  }",
+            "  slide.addText('body text one | body text two', { x: 5.35, y: 1.6, w: 3.75, h: 0.8, fontSize: 14, fontFace: 'Arial', color: theme.secondary, align: 'left', margin: 0, fit: 'shrink' });",
+            "  addPageBadge(pres, slide, theme, slideConfig.index);",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+    issues = orch._validate_slide_js_contract(js_code, slide_no=4, page_type="content")
+    assert not any("body text should not use bold" in item for item in issues)
+    assert not any("body text missing fit:'shrink'" in item for item in issues)
+    assert not any("body text must be left-aligned" in item for item in issues)
+
+
 def test_agentic_should_continue_when_single_candidate_fails(tmp_path: Path) -> None:
     settings = make_settings()
     settings = Settings(
@@ -1696,10 +1812,21 @@ def test_agentic_should_pass_slide_brief_and_asset_plan_to_llm(tmp_path: Path) -
                     "slide_no": kwargs.get("slide_no"),
                     "slide_plan": kwargs.get("slide_plan"),
                     "slide_brief": kwargs.get("slide_brief"),
+                    "phase": "build",
                 }
             )
             return await super().generate_slide_js(**kwargs)
 
+        async def critique_slide_js(self, **kwargs):
+            self.captured.append(
+                {
+                    "slide_no": kwargs.get("slide_no"),
+                    "slide_plan": kwargs.get("slide_plan"),
+                    "slide_brief": kwargs.get("slide_brief"),
+                    "phase": "repair",
+                }
+            )
+            return await super().critique_slide_js(**kwargs)
     settings = make_settings()
     settings = Settings(
         **{
@@ -1799,8 +1926,11 @@ def test_evaluate_slide_quality_should_retry_with_json_repair() -> None:
 
 def test_agentic_failure_should_keep_last_failed_candidate(tmp_path: Path) -> None:
     class InvalidContractAgenticLLM(MockLLMClient):
-        async def evaluate_slide_quality(self, **kwargs):
-            return {"score": 90, "issues": [], "repair_directives": []}
+        async def generate_slide_js(self, **kwargs):
+            return "const broken = true;"
+
+        async def critique_slide_js(self, **kwargs):
+            return "const broken = true;"
 
     settings = make_settings()
     settings = Settings(
@@ -1819,12 +1949,6 @@ def test_agentic_failure_should_keep_last_failed_candidate(tmp_path: Path) -> No
         llm_client=InvalidContractAgenticLLM(),
         settings=settings,
     )
-    original_render = orch._render_skill_slide_js
-
-    def broken_render(*args, **kwargs):
-        return "const broken = true;"
-
-    orch._render_skill_slide_js = broken_render  # type: ignore[assignment]
     client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
 
     run_id = client.post(
@@ -1839,10 +1963,10 @@ def test_agentic_failure_should_keep_last_failed_candidate(tmp_path: Path) -> No
     wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"FAILED"}, timeout=20.0)
-    orch._render_skill_slide_js = original_render  # type: ignore[assignment]
 
     assert final["error_code"] in {"SLIDE_LLM_ERROR", "QA_FAILED"}
     if final["error_code"] == "SLIDE_LLM_ERROR":
         failed_dir = tmp_path / "artifacts" / run_id / "slides" / "failed"
         assert failed_dir.exists()
         assert list(failed_dir.glob("slide-*-last.js"))
+

@@ -38,6 +38,11 @@ class Settings:
     slide_fatal_early_stop_rounds: int = 2
     run_max_llm_calls: int = 0
     keep_failed_candidate_js: bool = True
+    slide_auto_canonicalize: bool = True
+    slide_diag_max_js_lines: int = 260
+    slide_diag_max_stderr_chars: int = 12000
+    preview_qa_concurrency: int = 4
+    asset_fetch_concurrency: int = 2
 
 
 def _require_env(name: str) -> str:
@@ -127,6 +132,11 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         slide_fatal_early_stop_rounds=_env_int("SLIDE_FATAL_EARLY_STOP_ROUNDS", 2),
         run_max_llm_calls=_env_int("RUN_MAX_LLM_CALLS", 0, min_value=0),
         keep_failed_candidate_js=_env_bool("KEEP_FAILED_CANDIDATE_JS", True),
+        slide_auto_canonicalize=_env_bool("SLIDE_AUTO_CANONICALIZE", True),
+        slide_diag_max_js_lines=_env_int("SLIDE_DIAG_MAX_JS_LINES", 260),
+        slide_diag_max_stderr_chars=_env_int("SLIDE_DIAG_MAX_STDERR_CHARS", 12000),
+        preview_qa_concurrency=_env_int("PREVIEW_QA_CONCURRENCY", 4),
+        asset_fetch_concurrency=_env_int("ASSET_FETCH_CONCURRENCY", 2),
     )
 
 

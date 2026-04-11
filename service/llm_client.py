@@ -170,6 +170,7 @@ class LLMClient(Protocol):
         outline_node: OutlineNode,
         candidate_js: str,
         issues: list[str],
+        failure_context: dict[str, Any] | None = None,
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
         slide_plan: dict[str, Any] | None = None,
         repair_directives: list[str] | None = None,
@@ -631,6 +632,7 @@ class OpenAICompatibleLLMClient:
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
             f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
+            "If slide_plan.api_contract is present, treat it as the highest-priority runtime contract.\n"
             "Requirements: LAYOUT_16x9; title 36pt+ (or equivalent dominant scale); body 14-16pt where possible; "
             "body paragraphs/lists left-aligned; content slides include >=1 non-text visual; "
             "safe margins >=0.5in on content slides; block gaps around 0.3-0.5in; "
@@ -654,6 +656,7 @@ class OpenAICompatibleLLMClient:
         outline_node: OutlineNode,
         candidate_js: str,
         issues: list[str],
+        failure_context: dict[str, Any] | None = None,
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
         slide_plan: dict[str, Any] | None = None,
         repair_directives: list[str] | None = None,
@@ -673,11 +676,15 @@ class OpenAICompatibleLLMClient:
             f"target_slide_count={target_slide_count}\n"
             f"outline_node={outline_node.model_dump_json()}\n"
             f"issues={json.dumps(issues, ensure_ascii=False)}\n"
+            f"failure_context={json.dumps(failure_context or {}, ensure_ascii=False)}\n"
             f"repair_directives={json.dumps(repair_directives or [], ensure_ascii=False)}\n"
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
             f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
             f"preview_text={preview_text[:2000]}\n"
+            "Follow slide_plan.api_contract exactly when present.\n"
+            "If failure_context includes compile/runtime diagnostics, treat them as authoritative and fix them first. "
+            "Example: pres.shapes.ELLIPSE is invalid in PptxGenJS, use pres.shapes.OVAL.\n"
             "Must satisfy: body text left-aligned, clear title/body size contrast, fit:'shrink' on title and long body text, "
             "safe margins and spacing, content slide must keep non-text visual element, non-cover slides must include page badge.\n"
             f"candidate_js=\n{candidate_js}\n"
@@ -702,9 +709,9 @@ class OpenAICompatibleLLMClient:
         slide_brief: dict[str, Any] | None = None,
     ) -> SlideSpec:
         system_prompt = (
-            "You are a PPT content planner. Return JSON only with keys: "
-            "title, subtitle, bullets, page_type, layout_hint, visual_kind, emphasis, citations. "
-            "Do not output JavaScript."
+            "You are a PPT slide planner following skill-level constraints. "
+            "Return JSON only with keys: title, subtitle, bullets, page_type, layout_hint, visual_kind, emphasis, citations. "
+            "Do not output JavaScript, markdown fences, pseudo code, or placeholders."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -716,14 +723,26 @@ class OpenAICompatibleLLMClient:
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
             f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
-            "Constraints: body content should be concise natural language, no placeholders, "
-            "content page should request a meaningful visual_kind among image/chart/shape."
+            "Hard constraints:\n"
+            "- natural language only, concise and specific; no API names/code snippets\n"
+            "- keep strong title/body hierarchy intent (title short, bullets informative)\n"
+            "- bullets: 3-6 preferred on content pages, avoid empty fluff\n"
+            "- respect layout_hint/page_type and keep citations as short source ids\n"
+            "- visual_kind in {image, chart, shape}; if visual_policy=media_required use image; if basic_graphics_only avoid image"
         )
+        response_format = self._slide_spec_response_format()
         text = await self._chat_text(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=self.slide_temperature,
+            response_format=response_format,
+            allow_response_format_fallback=True,
         )
-        return self._parse_slide_spec(text=text, fallback=outline_node)
+        payload = await self._extract_json_object_with_repair(
+            text=text,
+            expected_keys=["title", "subtitle", "bullets", "page_type", "layout_hint", "visual_kind", "emphasis", "citations"],
+            temperature=self.slide_temperature,
+        )
+        return self._parse_slide_spec(text=json.dumps(payload, ensure_ascii=False), fallback=outline_node)
 
     async def repair_slide_spec(
         self,
@@ -741,9 +760,9 @@ class OpenAICompatibleLLMClient:
         slide_brief: dict[str, Any] | None = None,
     ) -> SlideSpec:
         system_prompt = (
-            "You repair PPT slide specs. Return JSON only with keys: "
-            "title, subtitle, bullets, page_type, layout_hint, visual_kind, emphasis, citations. "
-            "Do not output JavaScript."
+            "You repair PPT slide specs under strict quality constraints. "
+            "Return JSON only with keys: title, subtitle, bullets, page_type, layout_hint, visual_kind, emphasis, citations. "
+            "Do not output JavaScript or explanations."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -757,13 +776,25 @@ class OpenAICompatibleLLMClient:
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
             f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
-            "Preserve intent while fixing quality/fit issues. Output JSON only."
+            "Repair goals:\n"
+            "- keep intent, but make text clearer and denser where needed\n"
+            "- remove vague filler and any non-natural-language artifacts\n"
+            "- keep layout/page type valid and match visual policy constraints\n"
+            "- if issues mention overflow/fit/spacing, shorten bullets and prioritize readability"
         )
+        response_format = self._slide_spec_response_format()
         text = await self._chat_text(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=self.slide_temperature,
+            response_format=response_format,
+            allow_response_format_fallback=True,
         )
-        return self._parse_slide_spec(text=text, fallback=outline_node)
+        payload = await self._extract_json_object_with_repair(
+            text=text,
+            expected_keys=["title", "subtitle", "bullets", "page_type", "layout_hint", "visual_kind", "emphasis", "citations"],
+            temperature=self.slide_temperature,
+        )
+        return self._parse_slide_spec(text=json.dumps(payload, ensure_ascii=False), fallback=outline_node)
 
     async def evaluate_slide_quality(
         self,
@@ -1141,6 +1172,46 @@ class OpenAICompatibleLLMClient:
             },
         }
 
+    def _slide_spec_response_format(self) -> dict[str, Any] | None:
+        if not self.outline_structured_output or self.api_style == "anthropic_messages":
+            return None
+
+        if "minimax" in self.model.lower():
+            return {"type": "json_object"}
+
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "title": {"type": "string"},
+                "subtitle": {"type": "string"},
+                "bullets": {"type": "array", "items": {"type": "string"}},
+                "page_type": {
+                    "type": "string",
+                    "enum": [
+                        SlidePageType.COVER.value,
+                        SlidePageType.TOC.value,
+                        SlidePageType.SECTION.value,
+                        SlidePageType.CONTENT.value,
+                        SlidePageType.SUMMARY.value,
+                    ],
+                },
+                "layout_hint": {"type": ["string", "null"]},
+                "visual_kind": {"type": "string", "enum": ["image", "chart", "shape"]},
+                "emphasis": {"type": "string"},
+                "citations": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["title", "subtitle", "bullets", "page_type", "layout_hint", "visual_kind", "emphasis", "citations"],
+        }
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "slide_spec",
+                "strict": True,
+                "schema": schema,
+            },
+        }
+
     def _openai_completions_endpoint(self) -> str:
         if self.base_url.endswith("/v1"):
             return f"{self.base_url}/chat/completions"
@@ -1430,6 +1501,7 @@ class MockLLMClient:
         outline_node: OutlineNode,
         candidate_js: str,
         issues: list[str],
+        failure_context: dict[str, Any] | None = None,
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
         slide_plan: dict[str, Any] | None = None,
         repair_directives: list[str] | None = None,

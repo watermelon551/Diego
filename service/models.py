@@ -56,6 +56,9 @@ class EventType(str, Enum):
     LLM_REQUEST_RETRY = "llm.request.retry"
     LLM_REQUEST_TIMEOUT = "llm.request.timeout"
     SLIDE_FAILED = "slide.failed"
+    SLIDE_FAILURE_DIAGNOSTICS = "slide.failure.diagnostics"
+    SLIDE_AUTO_FIX_APPLIED = "slide.auto.fix.applied"
+    SLIDE_RETRY_CONTEXT_BUILT = "slide.retry.context.built"
 
 
 class GenerationMode(str, Enum):

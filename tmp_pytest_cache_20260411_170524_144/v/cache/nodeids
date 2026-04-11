@@ -1,0 +1,3 @@
+[
+  "tests/test_service_flow.py::test_agentic_should_continue_when_single_candidate_fails"
+]
