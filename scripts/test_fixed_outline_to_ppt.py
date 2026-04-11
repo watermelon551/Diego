@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import time
@@ -20,6 +21,13 @@ from service.models import (
     VisualPolicy,
 )
 from service.orchestrator import build_orchestrator
+from service.style_catalog import (
+    STYLE_PRESET_AUTO,
+    is_valid_style_choice,
+    list_style_presets,
+    normalize_style_choice,
+    resolve_style_choice,
+)
 
 DEFAULT_PROJECT_ID = "fixed-outline-e2e"
 DEFAULT_TOPIC = "区块链技术发展历程"
@@ -28,6 +36,42 @@ DEFAULT_VISUAL_POLICY = VisualPolicy.AUTO
 DEFAULT_RAG_SOURCE_IDS: list[str] = []
 DEFAULT_MAX_WAIT_SEC = 60 * 30
 DEFAULT_IDLE_AFTER_COMPILE_SEC = 15
+def _build_cli_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="固定大纲 -> PPT 端到端测试（支持内置20风格预设）")
+    parser.add_argument("--style", default=STYLE_PRESET_AUTO, help="风格（auto/预设id/中文名/序号）")
+    parser.add_argument("--style-prompt", default="", help="直接覆盖风格提示词（仅测试使用）")
+    parser.add_argument("--template-style", default="", help="覆盖 template_style；不传则使用预设 hint")
+    parser.add_argument("--list-styles", action="store_true", help="列出可用风格并退出")
+    parser.add_argument("--topic", default=DEFAULT_TOPIC, help="测试主题")
+    return parser.parse_args()
+
+
+def _resolve_style_inputs(args: argparse.Namespace) -> tuple[str, str, str, str]:
+    presets = list_style_presets()
+    raw_style = (args.style or "").strip()
+    if raw_style.isdigit():
+        idx = int(raw_style)
+        if 1 <= idx <= len(presets):
+            style_choice = presets[idx - 1].id
+        else:
+            raise ValueError(f"--style 序号越界，范围 1-{len(presets)}")
+    else:
+        style_choice = normalize_style_choice(raw_style)
+
+    if not is_valid_style_choice(style_choice):
+        raise ValueError(f"无效 --style: {raw_style!r}，可先用 --list-styles 查看选项")
+
+    preset = resolve_style_choice(style_choice)
+    if preset is None:
+        style_name = "自动分析风格"
+        style_prompt = (args.style_prompt or "").strip()
+        template_style = (args.template_style or DEFAULT_TEMPLATE_STYLE).strip()
+        return style_choice, style_name, style_prompt, template_style
+
+    style_name = preset.name
+    style_prompt = (args.style_prompt or preset.prompt).strip()
+    template_style = (args.template_style or preset.template_style_hint).strip()
+    return style_choice, style_name, style_prompt, template_style
 
 
 def _fixed_outline(version: int) -> OutlineDocument:
@@ -121,29 +165,25 @@ def _fixed_outline(version: int) -> OutlineDocument:
     )
 
 
-def _fixed_requirements_report(*, target_slide_count: int, image_source_mode: str) -> dict:
+def _fixed_requirements_report(
+    *,
+    target_slide_count: int,
+    image_source_mode: str,
+    style_name: str,
+    style_prompt: str,
+    effective_template_style: str,
+) -> dict:
     audience = "技术从业者、投资者、企业决策者及对区块链感兴趣的泛科技人群，以25-45岁中青年为主，具备一定技术认知或商业敏感度"
     purpose = "系统梳理区块链技术从诞生到当下的演进脉络，展示技术迭代路径与应用生态全景，帮助受众建立对区块链发展阶段的清晰认知，洞察未来趋势"
     tone = "科技感、专业而不晦涩、前瞻性、理性克制中带有创新活力"
-    style_intent = (
-        "暗黑科技风(Dark Mode Tech) × 极简主义，大量使用渐变、几何图形、发光效果传递Web3/加密美学，"
-        "信息密度适中，强调视觉冲击与信息传达的平衡"
-    )
-    style_recipe_long = (
-        "dark mode tech minimalism — deep space backgrounds (#0d1117) with luminous gradient accents (cyan→violet), "
-        "geometric node patterns, subtle glow effects, and high-contrast data visualization. inspired by web3/defi interfaces and space-tech aesthetics."
-    )
+    style_intent = style_prompt.strip() or f"使用“{style_name}”风格生成整套PPT，强调风格一致性和高可读性。"
+    style_recipe_long = style_intent
     visual_strategy = (
-        "Progressive visual layering: P1 establishes mood with abstract network topology; P2 uses interconnected node diagram "
-        "to demystify blockchain structure; P3 anchors timeline with glowing milestone markers; P4 employs three-tier card gradient "
-        "(deep→bright) for tech generation contrast; P5 applies icon-grid with subtle heat mapping; P6 transitions to radial/hub topology "
-        "for ecosystem hierarchy; P7 uses tension contrast (opportunities vs challenges) with split visual treatment; "
-        "P8 returns to open network pattern for forward-looking optimism."
+        f"统一采用“{style_name}”的视觉语汇：每页保持单一主视觉焦点，"
+        "并通过标题层级、留白和图文节奏保证信息传达效率。"
     )
     density = (
-        "Medium-high — generous margins and line-height (1.6) create breathing room within content blocks. "
-        "Data points are few but impactful. Visual weight concentrated in focal areas, leaving peripheral negative space. "
-        "Each slide carries one dominant visual metaphor plus 3-5 supporting text elements."
+        "Medium-high — 保持足够留白和稳定的版式密度，避免文字拥挤与信息过载。"
     )
     page_focus = [
         "封面：区块链技术发展历程的主题建立",
@@ -157,27 +197,29 @@ def _fixed_requirements_report(*, target_slide_count: int, image_source_mode: st
     ]
     return {
         "page_count_fixed": target_slide_count,
-        "effective_template_style": "modern-dark-tech",
+        "effective_template_style": effective_template_style,
         "style_intent": style_intent,
+        "style_reference_name": style_name,
+        "style_reference_prompt": style_prompt,
         "content_source_mode": "model_only",
         "image_source_mode": image_source_mode,
         "audience": audience,
         "purpose": purpose,
         "tone": tone,
-        "palette_name": "Cosmic Void",
+        "palette_name": style_name,
         "style_recipe": style_recipe_long,
         "visual_strategy": visual_strategy,
         "density": density,
         "page_focus": page_focus[:target_slide_count],
         "design_notes": [style_recipe_long, visual_strategy, density],
         "design_intent": {
-            "palette_name": "Cosmic Void",
+            "palette_name": style_name,
             "style_recipe": "sharp",
             "title_font": "Arial Black",
             "body_font": "Calibri",
             "visual_strategy": visual_strategy,
             "density": "medium",
-            "rationale": "dark-tech high contrast with geometric rhythm and controlled density",
+            "rationale": f"{style_name}风格优先，保证一致性、可读性和演示表达效率",
             "theme": {
                 "primary": "E6F1FF",
                 "secondary": "8AA0B8",
@@ -382,6 +424,10 @@ def _write_generation_log(*, artifact_dir: Path, detail, analysis: dict) -> Path
     lines.append(f"- failed_stage: `{detail.failed_stage or ''}`")
     lines.append(f"- pptx_path: `{detail.pptx_path or ''}`")
     lines.append(f"- compile_js_path: `{detail.compile_js_path or ''}`")
+    lines.append(f"- effective_template_style: `{str((detail.research_report or {}).get('effective_template_style', '')).strip()}`")
+    style_ref_name = str((detail.research_report or {}).get("style_reference_name", "")).strip()
+    if style_ref_name:
+        lines.append(f"- style_reference_name: `{style_ref_name}`")
     lines.append("")
     lines.append("## Important Events")
     for name in key_events:
@@ -410,16 +456,33 @@ def _write_generation_log(*, artifact_dir: Path, detail, analysis: dict) -> Path
     return path
 
 
-async def main() -> int:
+async def main(args: argparse.Namespace) -> int:
     base_dir = Path.cwd() / ".runtime"
     base_dir.mkdir(parents=True, exist_ok=True)
     orchestrator = build_orchestrator(base_dir)
 
+    presets = list_style_presets()
+    if args.list_styles:
+        print("可选风格预设：")
+        for idx, item in enumerate(presets, start=1):
+            print(f"{idx:02d}. {item.name} ({item.id})")
+        print(f"{STYLE_PRESET_AUTO}. 自动分析风格")
+        return 0
+
+    try:
+        style_choice, style_name, style_prompt, template_style = _resolve_style_inputs(args)
+    except ValueError as exc:
+        print(str(exc))
+        print("可先运行: python scripts/test_fixed_outline_to_ppt.py --list-styles")
+        return 1
+    topic = (args.topic or DEFAULT_TOPIC).strip() or DEFAULT_TOPIC
+
     create_req = CreateRunRequest(
-        topic=DEFAULT_TOPIC,
+        topic=topic,
         project_id=DEFAULT_PROJECT_ID,
         rag_source_ids=list(DEFAULT_RAG_SOURCE_IDS),
-        template_style=DEFAULT_TEMPLATE_STYLE,
+        template_style=template_style,
+        style_preset=style_choice,
         target_slide_count=8,
         generation_mode=GenerationMode.SCRATCH,
         visual_policy=DEFAULT_VISUAL_POLICY,
@@ -432,6 +495,9 @@ async def main() -> int:
     requirements_report = _fixed_requirements_report(
         target_slide_count=create_req.target_slide_count,
         image_source_mode=("mock" if orchestrator.settings.asset_provider == "mock" else "model_only"),
+        style_name=style_name,
+        style_prompt=style_prompt,
+        effective_template_style=template_style,
     )
     run = RunRecord(
         run_id=run_id,
@@ -457,6 +523,8 @@ async def main() -> int:
         EventType.REQUIREMENTS_ANALYZED,
         {
             "page_count_fixed": requirements_report["page_count_fixed"],
+            "style_preset": style_choice,
+            "style_reference_name": style_name,
             "effective_template_style": requirements_report["effective_template_style"],
             "style_intent": requirements_report["style_intent"],
             "content_source_mode": requirements_report["content_source_mode"],
@@ -477,6 +545,7 @@ async def main() -> int:
     )
     print(f"run_id={run_id}")
     print(f"trace_id={trace_id}")
+    print(f"[风格] style_preset={style_choice}, style_name={style_name}, template_style={template_style}")
     print("[流程] 已直接注入固定大纲与固定需求分析结果，跳过草稿大纲生成。")
 
     await orchestrator.confirm_outline(run_id, ConfirmOutlineRequest(approved=True))
@@ -522,4 +591,5 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    cli_args = _build_cli_args()
+    raise SystemExit(asyncio.run(main(cli_args)))

@@ -5,6 +5,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from .style_catalog import (
+    STYLE_PRESET_AUTO,
+    is_valid_style_choice,
+    normalize_style_choice,
+)
 
 class RunStatus(str, Enum):
     OUTLINE_DRAFTING = "OUTLINE_DRAFTING"
@@ -86,6 +91,7 @@ class CreateRunRequest(BaseModel):
     project_id: str = Field(min_length=1)
     rag_source_ids: list[str] = Field(default_factory=list)
     template_style: str = Field(default="default")
+    style_preset: str = Field(default=STYLE_PRESET_AUTO)
     target_slide_count: int = Field(default=8, ge=1, le=50)
     generation_mode: GenerationMode = GenerationMode.SCRATCH
     template_id: str | None = None
@@ -93,6 +99,9 @@ class CreateRunRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode(self) -> "CreateRunRequest":
+        self.style_preset = normalize_style_choice(self.style_preset)
+        if not is_valid_style_choice(self.style_preset):
+            raise ValueError(f"invalid style_preset={self.style_preset!r}")
         if self.generation_mode == GenerationMode.TEMPLATE and not self.template_id:
             raise ValueError("template_id is required when generation_mode=template")
         return self
@@ -103,6 +112,7 @@ class PromptRunRequest(BaseModel):
     project_id: str = Field(default="default-project", min_length=1)
     rag_source_ids: list[str] = Field(default_factory=list)
     template_style: str = Field(default="default")
+    style_preset: str = Field(default=STYLE_PRESET_AUTO)
     target_slide_count: int = Field(default=8, ge=1, le=50)
     generation_mode: GenerationMode = GenerationMode.SCRATCH
     template_id: str | None = None
@@ -110,6 +120,9 @@ class PromptRunRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode(self) -> "PromptRunRequest":
+        self.style_preset = normalize_style_choice(self.style_preset)
+        if not is_valid_style_choice(self.style_preset):
+            raise ValueError(f"invalid style_preset={self.style_preset!r}")
         if self.generation_mode == GenerationMode.TEMPLATE and not self.template_id:
             raise ValueError("template_id is required when generation_mode=template")
         return self
@@ -120,6 +133,7 @@ class PromptRunRequest(BaseModel):
             project_id=self.project_id,
             rag_source_ids=self.rag_source_ids,
             template_style=self.template_style,
+            style_preset=self.style_preset,
             target_slide_count=self.target_slide_count,
             generation_mode=self.generation_mode,
             template_id=self.template_id,

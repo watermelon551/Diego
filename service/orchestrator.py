@@ -51,6 +51,7 @@ from .models import (
     VisualPolicy,
 )
 from .skill_profile import PALETTES, FONT_PAIRS, STYLE_RECIPES, DesignProfile, StyleRecipe, allowed_layouts_for, choose_design_profile, enforce_layout_variety
+from .style_catalog import STYLE_PRESET_AUTO, resolve_style_choice
 from .store import RunStore, now_iso
 
 
@@ -615,6 +616,44 @@ class RunOrchestrator:
             return "mock"
         return provider or "auto"
 
+    def _selected_style_preset(self, run: RunRecord):
+        if run.input.generation_mode != GenerationMode.SCRATCH:
+            return None
+        return resolve_style_choice(getattr(run.input, "style_preset", STYLE_PRESET_AUTO))
+
+    def _requested_template_style(self, run: RunRecord) -> str:
+        preset = self._selected_style_preset(run)
+        if preset is not None:
+            return preset.template_style_hint
+        return run.input.template_style
+
+    def _apply_style_preset_to_requirements(self, *, run: RunRecord, report: dict[str, Any]) -> dict[str, Any]:
+        preset = self._selected_style_preset(run)
+        normalized = dict(report or {})
+        normalized["style_preset"] = getattr(run.input, "style_preset", STYLE_PRESET_AUTO)
+        if preset is None:
+            normalized["style_reference_name"] = ""
+            return normalized
+
+        normalized["style_reference_name"] = preset.name
+        normalized["style_intent"] = preset.prompt
+        normalized["effective_template_style"] = preset.template_style_hint
+
+        notes_raw = normalized.get("design_notes", [])
+        notes = [str(item).strip() for item in notes_raw if str(item).strip()] if isinstance(notes_raw, list) else []
+        notes = [preset.prompt] + [item for item in notes if item != preset.prompt]
+        normalized["design_notes"] = notes[:8]
+
+        design_intent = normalized.get("design_intent", {})
+        if not isinstance(design_intent, dict):
+            design_intent = {}
+        if not str(design_intent.get("style_recipe", "")).strip():
+            design_intent["style_recipe"] = preset.style_recipe_hint
+        if not str(design_intent.get("rationale", "")).strip():
+            design_intent["rationale"] = f"apply selected style preset: {preset.name}"
+        normalized["design_intent"] = design_intent
+        return normalized
+
     def _compose_requirements_report(
         self,
         *,
@@ -664,6 +703,7 @@ class RunOrchestrator:
                 "style_intent": style_intent,
                 "effective_template_style": effective_template_style,
                 "design_intent": design_intent_norm,
+                "style_preset": getattr(run.input, "style_preset", STYLE_PRESET_AUTO),
                 "page_count_fixed": run.input.target_slide_count,
                 "content_source_mode": self._resolve_content_source_mode(run),
                 "image_source_mode": self._resolve_image_source_mode(run),
@@ -844,6 +884,7 @@ class RunOrchestrator:
         if run is None:
             return
         try:
+            requested_template_style = self._requested_template_style(run)
             await self._publish(
                 run_id,
                 EventType.REQUIREMENTS_ANALYZING_STARTED,
@@ -861,14 +902,14 @@ class RunOrchestrator:
                         topic=run.input.topic,
                         project_id=run.input.project_id,
                         rag_source_ids=run.input.rag_source_ids,
-                        template_style=run.input.template_style,
+                        template_style=requested_template_style,
                         target_slide_count=run.input.target_slide_count,
                     ),
                 )
             except Exception:
                 base_research = self._fallback_research_brief(
                     topic=run.input.topic,
-                    template_style=run.input.template_style,
+                    template_style=requested_template_style,
                     target_slide_count=run.input.target_slide_count,
                 )
             design_intent: dict[str, Any] = {}
@@ -878,7 +919,7 @@ class RunOrchestrator:
                     phase="requirements.design_intent",
                     action=lambda: self.llm_client.generate_design_intent(
                         topic=run.input.topic,
-                        template_style=run.input.template_style,
+                        template_style=requested_template_style,
                         target_slide_count=run.input.target_slide_count,
                         research_brief=base_research,
                     ),
@@ -890,11 +931,14 @@ class RunOrchestrator:
                 research_brief=base_research,
                 design_intent=design_intent,
             )
+            requirements_report = self._apply_style_preset_to_requirements(run=run, report=requirements_report)
             effective_template_style = str(requirements_report.get("effective_template_style", "")).strip() or run.input.template_style
             await self.store.update_run(run_id, lambda r: setattr(r, "research_report", requirements_report))
             design_intent_payload = requirements_report.get("design_intent", {}) if isinstance(requirements_report.get("design_intent", {}), dict) else {}
             requirements_payload = {
                 "page_count_fixed": requirements_report.get("page_count_fixed", run.input.target_slide_count),
+                "style_preset": requirements_report.get("style_preset", STYLE_PRESET_AUTO),
+                "style_reference_name": requirements_report.get("style_reference_name", ""),
                 "effective_template_style": effective_template_style,
                 "style_intent": requirements_report.get("style_intent", ""),
                 "content_source_mode": requirements_report.get("content_source_mode", ""),

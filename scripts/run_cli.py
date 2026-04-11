@@ -13,6 +13,12 @@ from service.models import (
     VisualPolicy,
 )
 from service.orchestrator import build_orchestrator
+from service.style_catalog import (
+    STYLE_PRESET_AUTO,
+    is_valid_style_choice,
+    list_style_presets,
+    normalize_style_choice,
+)
 
 
 def _ask(prompt: str, default: str | None = None) -> str:
@@ -35,6 +41,34 @@ def _ask_int(prompt: str, default: int, min_value: int, max_value: int) -> int:
             print(f"超出范围，请输入 {min_value}-{max_value}")
             continue
         return value
+
+
+def _print_style_presets() -> None:
+    presets = list_style_presets()
+    print("\n可选风格预设（自由模式可用）：")
+    for idx, item in enumerate(presets, start=1):
+        print(f"  {idx:02d}. {item.name} ({item.id})")
+    print(f"  {STYLE_PRESET_AUTO}. 自动分析风格")
+
+
+def _ask_style_preset() -> str:
+    presets = list_style_presets()
+    while True:
+        raw = _ask("style_preset (auto/序号/id/中文名，输入 list 查看)", STYLE_PRESET_AUTO)
+        lowered = raw.strip().lower()
+        if lowered == "list":
+            _print_style_presets()
+            continue
+        if raw.strip().isdigit():
+            idx = int(raw.strip())
+            if 1 <= idx <= len(presets):
+                return presets[idx - 1].id
+            print(f"序号越界，范围 1-{len(presets)}")
+            continue
+        normalized = normalize_style_choice(raw)
+        if is_valid_style_choice(normalized):
+            return normalized
+        print("无效风格；输入 list 查看可选项。")
 
 
 def _print_outline(outline: OutlineDocument) -> None:
@@ -182,6 +216,9 @@ async def main() -> None:
         template_style = _ask("template_style", "default")
         mode_raw = _ask("generation_mode (scratch/template)", "scratch").lower()
         generation_mode = GenerationMode.TEMPLATE if mode_raw == "template" else GenerationMode.SCRATCH
+        style_preset = STYLE_PRESET_AUTO
+        if generation_mode == GenerationMode.SCRATCH:
+            style_preset = _ask_style_preset()
         visual_raw = _ask(
             "visual_policy (auto/media_required/basic_graphics_only)",
             "auto",
@@ -205,6 +242,7 @@ async def main() -> None:
             project_id=project_id,
             rag_source_ids=rag_source_ids,
             template_style=template_style,
+            style_preset=style_preset,
             target_slide_count=target_slide_count,
             generation_mode=generation_mode,
             template_id=template_id,
