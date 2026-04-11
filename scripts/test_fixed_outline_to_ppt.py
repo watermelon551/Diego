@@ -23,6 +23,7 @@ from service.models import (
 from service.orchestrator import build_orchestrator
 from service.style_catalog import (
     STYLE_PRESET_AUTO,
+    get_style_theme_hint,
     is_valid_style_choice,
     list_style_presets,
     normalize_style_choice,
@@ -46,7 +47,7 @@ def _build_cli_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _resolve_style_inputs(args: argparse.Namespace) -> tuple[str, str, str, str]:
+def _resolve_style_inputs(args: argparse.Namespace) -> tuple[str, str, str, str, str]:
     presets = list_style_presets()
     raw_style = (args.style or "").strip()
     if raw_style.isdigit():
@@ -66,12 +67,12 @@ def _resolve_style_inputs(args: argparse.Namespace) -> tuple[str, str, str, str]
         style_name = "自动分析风格"
         style_prompt = (args.style_prompt or "").strip()
         template_style = (args.template_style or DEFAULT_TEMPLATE_STYLE).strip()
-        return style_choice, style_name, style_prompt, template_style
+        return style_choice, style_name, style_prompt, template_style, "soft"
 
     style_name = preset.name
     style_prompt = (args.style_prompt or preset.prompt).strip()
     template_style = (args.template_style or preset.template_style_hint).strip()
-    return style_choice, style_name, style_prompt, template_style
+    return style_choice, style_name, style_prompt, template_style, preset.style_recipe_hint
 
 
 def _fixed_outline(version: int) -> OutlineDocument:
@@ -170,8 +171,10 @@ def _fixed_requirements_report(
     target_slide_count: int,
     image_source_mode: str,
     style_name: str,
+    style_choice: str,
     style_prompt: str,
     effective_template_style: str,
+    style_recipe_hint: str,
 ) -> dict:
     audience = "技术从业者、投资者、企业决策者及对区块链感兴趣的泛科技人群，以25-45岁中青年为主，具备一定技术认知或商业敏感度"
     purpose = "系统梳理区块链技术从诞生到当下的演进脉络，展示技术迭代路径与应用生态全景，帮助受众建立对区块链发展阶段的清晰认知，洞察未来趋势"
@@ -214,13 +217,14 @@ def _fixed_requirements_report(
         "design_notes": [style_recipe_long, visual_strategy, density],
         "design_intent": {
             "palette_name": style_name,
-            "style_recipe": "sharp",
+            "style_recipe": style_recipe_hint or "soft",
             "title_font": "Arial Black",
             "body_font": "Calibri",
             "visual_strategy": visual_strategy,
             "density": "medium",
             "rationale": f"{style_name}风格优先，保证一致性、可读性和演示表达效率",
-            "theme": {
+            "theme": get_style_theme_hint(style_choice)
+            or {
                 "primary": "E6F1FF",
                 "secondary": "8AA0B8",
                 "accent": "00E5FF",
@@ -496,6 +500,7 @@ async def main(args: argparse.Namespace) -> int:
         target_slide_count=create_req.target_slide_count,
         image_source_mode=("mock" if orchestrator.settings.asset_provider == "mock" else "model_only"),
         style_name=style_name,
+        style_choice=style_choice,
         style_prompt=style_prompt,
         effective_template_style=template_style,
     )

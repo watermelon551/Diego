@@ -37,6 +37,29 @@ STYLE_PRESETS: tuple[StylePreset, ...] = (
     StylePreset("academic-curation", "学术策展", "学术策展风格，轻盈克制、展签式排版，强调图文并置。", "preset:academic-curation education soft", "soft"),
 )
 
+STYLE_THEME_HINTS: dict[str, dict[str, str]] = {
+    "minimal-teaching": {"primary": "1F3A5F", "secondary": "4E6A8E", "accent": "2E86DE", "light": "E9EEF5", "bg": "F7FAFC"},
+    "academic": {"primary": "1F2937", "secondary": "4B5563", "accent": "2563EB", "light": "E5E7EB", "bg": "F9FAFB"},
+    "minimal": {"primary": "1A1A1A", "secondary": "666666", "accent": "3B82F6", "light": "EDEDED", "bg": "FFFFFF"},
+    "professional": {"primary": "0B1F3A", "secondary": "1E3A5F", "accent": "00A3FF", "light": "E8EEF5", "bg": "F4F7FB"},
+    "botanical": {"primary": "2F5D50", "secondary": "5E8B7E", "accent": "8CBF5A", "light": "E9F2EB", "bg": "F7FBF7"},
+    "wabi-sabi": {"primary": "4A3F35", "secondary": "7B6D5D", "accent": "B08B67", "light": "EDE6DE", "bg": "F7F3ED"},
+    "memphis": {"primary": "111111", "secondary": "2A2A2A", "accent": "FF3D81", "light": "FFE66D", "bg": "FFF6EC"},
+    "constructivism": {"primary": "111111", "secondary": "2E2E2E", "accent": "E10600", "light": "F5F5F5", "bg": "FFF8E1"},
+    "neo-brutalism": {"primary": "0A0A0A", "secondary": "1D1D1D", "accent": "00D1FF", "light": "F4F4F4", "bg": "FFFFFF"},
+    "8bit": {"primary": "1A1A1A", "secondary": "3A3A3A", "accent": "00E676", "light": "F9D65C", "bg": "F5F7FF"},
+    "electro-pop": {"primary": "120024", "secondary": "3A0B63", "accent": "FF00C8", "light": "00E5FF", "bg": "0E0A1F"},
+    "geo-bold": {"primary": "111111", "secondary": "2B2B2B", "accent": "FF6B00", "light": "E8F0FF", "bg": "FFFFFF"},
+    "morandi": {"primary": "6E6A67", "secondary": "8F8A86", "accent": "BCA89F", "light": "E8E2DC", "bg": "F7F4F1"},
+    "nordic-research": {"primary": "223344", "secondary": "4A5F70", "accent": "5FA8D3", "light": "E8EEF2", "bg": "F7FAFC"},
+    "emotional-flow": {"primary": "5A4E7C", "secondary": "7E6FAE", "accent": "F08AA6", "light": "F5EAF3", "bg": "FFF7FB"},
+    "cinema-minimal": {"primary": "F2F2F2", "secondary": "BFBFBF", "accent": "F5C16C", "light": "2A2A2A", "bg": "111111"},
+    "rational-blue": {"primary": "1B2A4A", "secondary": "345A8A", "accent": "4DA3FF", "light": "E7EEF8", "bg": "F5F8FD"},
+    "warm-vc": {"primary": "4A2E22", "secondary": "7A4F3A", "accent": "F28C52", "light": "F9E7DA", "bg": "FFF9F4"},
+    "contemporary-academic": {"primary": "1E2430", "secondary": "4A5568", "accent": "6B8AF5", "light": "E8EBF2", "bg": "FAFBFD"},
+    "academic-curation": {"primary": "2F3542", "secondary": "57606F", "accent": "70A1FF", "light": "EAF0F6", "bg": "FCFDFF"},
+}
+
 
 _PRESET_BY_ID = {item.id.lower(): item for item in STYLE_PRESETS}
 _PRESET_BY_NAME = {item.name.lower(): item for item in STYLE_PRESETS}
@@ -71,3 +94,10 @@ def resolve_style_choice(value: str | None) -> StylePreset | None:
 def list_style_presets() -> list[StylePreset]:
     return list(STYLE_PRESETS)
 
+
+def get_style_theme_hint(style_choice: str | None) -> dict[str, str] | None:
+    normalized = normalize_style_choice(style_choice)
+    if normalized == STYLE_PRESET_AUTO:
+        return None
+    theme = STYLE_THEME_HINTS.get(normalized.lower())
+    return dict(theme) if isinstance(theme, dict) else None

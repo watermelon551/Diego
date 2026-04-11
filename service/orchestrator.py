@@ -51,7 +51,7 @@ from .models import (
     VisualPolicy,
 )
 from .skill_profile import PALETTES, FONT_PAIRS, STYLE_RECIPES, DesignProfile, StyleRecipe, allowed_layouts_for, choose_design_profile, enforce_layout_variety
-from .style_catalog import STYLE_PRESET_AUTO, resolve_style_choice
+from .style_catalog import STYLE_PRESET_AUTO, get_style_theme_hint, resolve_style_choice
 from .store import RunStore, now_iso
 
 
@@ -651,6 +651,24 @@ class RunOrchestrator:
             design_intent["style_recipe"] = preset.style_recipe_hint
         if not str(design_intent.get("rationale", "")).strip():
             design_intent["rationale"] = f"apply selected style preset: {preset.name}"
+        style_theme = get_style_theme_hint(preset.id)
+        if style_theme:
+            existing_theme_raw = design_intent.get("theme") if isinstance(design_intent.get("theme"), dict) else {}
+            existing_theme: dict[str, str] = {}
+            for key in ("primary", "secondary", "accent", "light", "bg"):
+                candidate = self._normalize_hex6(str(existing_theme_raw.get(key, "")))
+                if candidate:
+                    existing_theme[key] = candidate
+            if len(existing_theme) >= 5:
+                # Keep LLM-analyzed colors when analysis phase already produced a full theme.
+                design_intent["theme"] = existing_theme
+            else:
+                # Fallback/patch only missing colors from style preset.
+                merged_theme = dict(style_theme)
+                merged_theme.update(existing_theme)
+                design_intent["theme"] = merged_theme
+            design_intent["palette_name"] = preset.name
+            normalized["palette_name"] = preset.name
         normalized["design_intent"] = design_intent
         return normalized
 
