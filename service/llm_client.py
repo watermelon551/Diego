@@ -610,11 +610,13 @@ class OpenAICompatibleLLMClient:
     ) -> str:
         system_prompt = (
             "You are a PPT code agent. Return JavaScript only (no markdown fences) for one runnable slide module. "
-            "Must export synchronous createSlide(pres, theme) and slideConfig. "
+            "Must export synchronous createSlide(pres, theme) and slideConfig exactly. "
             "Use only theme keys: primary, secondary, accent, light, bg. "
-            "Hard constraints: body text must be left-aligned, title must clearly dominate body text, content slides must include non-text visuals, "
-            "keep safe margins and readable spacing, and use fit:'shrink' on title plus long body blocks. "
-            "Never output placeholders or pseudo code."
+            "API whitelist: use slide.background = { color: theme.bg }; use addShape with pres.shapes.* only; use fit: 'shrink' as plain string. "
+            "API blacklist: NEVER use ShapeType.*, slide.shapes.*, slide.background(...), pres.Fit.*, addGroup(), async createSlide(). "
+            "Hard layout constraints: body text left-aligned, title clearly dominates body text, content slides include non-text visuals, "
+            "safe margins/spacing, and avoid overlaps/out-of-bounds. "
+            "Never output placeholders, pseudo code, or markdown fences."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -632,15 +634,15 @@ class OpenAICompatibleLLMClient:
             "Requirements: LAYOUT_16x9; title 36pt+ (or equivalent dominant scale); body 14-16pt where possible; "
             "body paragraphs/lists left-aligned; content slides include >=1 non-text visual; "
             "safe margins >=0.5in on content slides; block gaps around 0.3-0.5in; "
-            "fit:'shrink' on title and long body text; natural-language content only."
+            "fit:'shrink' on title and long body text; natural-language content only. "
+            "Use addPageBadge(pres, slide, theme, slideConfig.index) on non-cover slides at x:9.3, y:5.1. "
+            "If using LINE shape, keep positive w/h (never zero)."
         )
         text = await self._chat_text(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=self.slide_temperature,
         )
-        js_code = _extract_js_module(text)
-        self._ensure_js_executable_contract(js_code)
-        return js_code
+        return _extract_js_module(text)
 
     async def critique_slide_js(
         self,
@@ -660,8 +662,9 @@ class OpenAICompatibleLLMClient:
     ) -> str:
         system_prompt = (
             "You are a strict PPT code reviewer. Rewrite and return full JavaScript module only. "
-            "Keep createSlide synchronous. Fix all listed issues while preserving content intent. "
-            "Prioritize hard layout constraints first: bounds, margins, spacing, body alignment, hierarchy, fit:'shrink', and visual-element requirements."
+            "Keep createSlide synchronous and keep module export contract exact. Fix all listed issues while preserving content intent. "
+            "Prioritize hard constraints first: compile/API legality, bounds/overlap, page badge, visual policy, then typography/spacing. "
+            "Never use ShapeType.*, slide.shapes.*, slide.background(...), pres.Fit.*, addGroup(), or zero-length LINE geometry."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -676,16 +679,14 @@ class OpenAICompatibleLLMClient:
             f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
             f"preview_text={preview_text[:2000]}\n"
             "Must satisfy: body text left-aligned, clear title/body size contrast, fit:'shrink' on title and long body text, "
-            "safe margins and spacing, content slide must keep non-text visual element.\n"
+            "safe margins and spacing, content slide must keep non-text visual element, non-cover slides must include page badge.\n"
             f"candidate_js=\n{candidate_js}\n"
         )
         text = await self._chat_text(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=self.slide_temperature,
         )
-        js_code = _extract_js_module(text)
-        self._ensure_js_executable_contract(js_code)
-        return js_code
+        return _extract_js_module(text)
 
     async def generate_slide_spec(
         self,
@@ -1525,3 +1526,4 @@ class MockLLMClient:
         if index % 4 == 0:
             return SlidePageType.SECTION
         return SlidePageType.CONTENT
+

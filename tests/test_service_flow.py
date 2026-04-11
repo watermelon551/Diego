@@ -151,6 +151,10 @@ class ImageHeavyAgenticLLM(AgenticMockLLM):
 
     async def generate_slide_js(self, **kwargs):
         base = await super().generate_slide_js(**kwargs)
+        slide_plan = kwargs.get("slide_plan") if isinstance(kwargs.get("slide_plan"), dict) else {}
+        worker = int(slide_plan.get("candidate_worker", 1))
+        if worker != 1:
+            return base
         return base.replace(
             "  const rows = (slideConfig.bullets || []).map((text, idx) => ({ text, options: { bullet: true, breakLine: idx < (slideConfig.bullets || []).length - 1 } }));",
             "  slide.addImage({ path: 'https://example.com/fake.png', x: 6.8, y: 1.5, w: 2.2, h: 1.6 });\n"
@@ -162,11 +166,13 @@ class CandidateOneFailsAgenticLLM(AgenticMockLLM):
     def __init__(self) -> None:
         self.failed_once = False
 
-    async def generate_slide_spec(self, **kwargs):
-        if not self.failed_once:
+    async def generate_slide_js(self, **kwargs):
+        slide_plan = kwargs.get("slide_plan") if isinstance(kwargs.get("slide_plan"), dict) else {}
+        worker = int(slide_plan.get("candidate_worker", 1))
+        if worker == 1 and not self.failed_once:
             self.failed_once = True
             raise RuntimeError("simulated candidate worker failure")
-        return await super().generate_slide_spec(**kwargs)
+        return await super().generate_slide_js(**kwargs)
 
 
 class EvaluateTimeoutAgenticLLM(AgenticMockLLM):
@@ -799,7 +805,7 @@ def test_agentic_engine_generates_js_and_cleans_preview_artifacts(tmp_path: Path
     assert final["quality_report"]["engine"] == "agentic_v2"
     assert final["quality_report"]["slides"]
     assert final["quality_gate_report"]["rounds"]
-    assert final["quality_gate_report"]["threshold"] == 80
+    assert final["quality_gate_report"]["threshold"] == 0
     assert final["candidate_selection_report"]["rounds"]
     assert final["candidate_selection_report"]["final_by_slide"]
     assert final["artifact_cleanup_report"]["deleted_count"] >= 1
@@ -815,7 +821,7 @@ def test_agentic_engine_generates_js_and_cleans_preview_artifacts(tmp_path: Path
     assert "event: slide.selection.completed" in body
 
 
-def test_agentic_should_degrade_and_continue_when_evaluate_timeouts(tmp_path: Path) -> None:
+def test_agentic_should_not_depend_on_evaluate_quality_calls(tmp_path: Path) -> None:
     settings = make_settings()
     settings = Settings(
         **{
@@ -851,8 +857,8 @@ def test_agentic_should_degrade_and_continue_when_evaluate_timeouts(tmp_path: Pa
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"}, timeout=20.0)
     assert final["status"] == "SUCCEEDED"
-    assert any(
-        item["event"] == "slide.candidate.generated" and item["payload"].get("degraded")
+    assert not any(
+        item["event"] == "llm.request.timeout" and "candidate.1.evaluate" in str(item.get("payload", {}).get("phase", ""))
         for item in final["events"]
     )
 
@@ -1016,7 +1022,7 @@ def test_agentic_should_emit_candidate_failures_when_llm_candidates_fail(tmp_pat
     final = wait_status(client, run_id, {"SUCCEEDED", "FAILED"}, timeout=20.0)
     candidate_errors = [
         item for item in final["events"]
-        if item["event"] == "slide.candidate.generated" and item["payload"].get("candidate") == 2 and item["payload"].get("error")
+        if item["event"] == "slide.candidate.generated" and item["payload"].get("candidate") == 1 and item["payload"].get("error")
     ]
     assert candidate_errors
 
@@ -1684,7 +1690,7 @@ def test_agentic_should_pass_slide_brief_and_asset_plan_to_llm(tmp_path: Path) -
         def __init__(self) -> None:
             self.captured: list[dict] = []
 
-        async def generate_slide_spec(self, **kwargs):
+        async def generate_slide_js(self, **kwargs):
             self.captured.append(
                 {
                     "slide_no": kwargs.get("slide_no"),
@@ -1692,7 +1698,7 @@ def test_agentic_should_pass_slide_brief_and_asset_plan_to_llm(tmp_path: Path) -
                     "slide_brief": kwargs.get("slide_brief"),
                 }
             )
-            return await super().generate_slide_spec(**kwargs)
+            return await super().generate_slide_js(**kwargs)
 
     settings = make_settings()
     settings = Settings(

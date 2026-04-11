@@ -1,0 +1,3 @@
+{
+  "tests/test_service_flow.py::test_agentic_engine_generates_js_and_cleans_preview_artifacts": true
+}

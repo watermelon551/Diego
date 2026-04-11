@@ -1,0 +1,377 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from collections import Counter, defaultdict
+from pathlib import Path
+from uuid import uuid4
+
+from service.models import (
+    ConfirmOutlineRequest,
+    CreateRunRequest,
+    EventType,
+    GenerationMode,
+    OutlineDocument,
+    OutlineNode,
+    RunRecord,
+    RunStatus,
+    SlidePageType,
+    VisualPolicy,
+)
+from service.orchestrator import build_orchestrator
+
+DEFAULT_PROJECT_ID = "fixed-outline-e2e"
+DEFAULT_TOPIC = "区块链技术发展历程"
+DEFAULT_TEMPLATE_STYLE = "modern"
+DEFAULT_VISUAL_POLICY = VisualPolicy.AUTO
+DEFAULT_RAG_SOURCE_IDS: list[str] = []
+
+
+def _fixed_outline(version: int) -> OutlineDocument:
+    return OutlineDocument(
+        version=version,
+        summary=(
+            "一份8页现代高级风格的区块链技术发展历程PPT，涵盖从2008年至今的关键里程碑，"
+            "采用深色科技风配色，展现区块链从诞生到Web3时代的演进。"
+        ),
+        nodes=[
+            OutlineNode(
+                title="区块链技术发展历程",
+                bullets=["从比特币到Web3的革命之旅", "探索去中心化技术的演进与未来"],
+                page_type=SlidePageType.COVER,
+                layout_hint="cover-asymmetric",
+            ),
+            OutlineNode(
+                title="目录",
+                bullets=["一、起源：2008-2013", "二、成长：2014-2017", "三、繁荣：2018-2021", "四、未来：2022-至今"],
+                page_type=SlidePageType.TOC,
+                layout_hint="toc-sidebar",
+            ),
+            OutlineNode(
+                title="区块链发展时间线",
+                bullets=[
+                    "2008 — 比特币白皮书发布",
+                    "2013 — 智能合约概念兴起",
+                    "2017 — ICO热潮与监管探索",
+                    "2020 — DeFi Summer爆发",
+                    "2022 — Web3与元宇宙融合",
+                ],
+                page_type=SlidePageType.SECTION,
+                layout_hint="section-center",
+            ),
+            OutlineNode(
+                title="起源：2008-2013",
+                bullets=[
+                    "2008年：中本聪发布比特币白皮书",
+                    "2009年：比特币主网正式上线，创世区块诞生",
+                    "2010年：第一笔比特币实物交易（10000 BTC买披萨）",
+                    "2013年：以太坊概念提出，智能合约初现",
+                ],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-two-column",
+            ),
+            OutlineNode(
+                title="成长：2014-2017",
+                bullets=[
+                    "2014年：以太坊正式成立，募集到1800万美元",
+                    "2015年：以太坊主网上线，开启区块链2.0时代",
+                    "2016年：DAO事件引发硬分叉，行业开始重视安全",
+                    "2017年：ICO狂潮，BTC突破20000美元",
+                ],
+                page_type=SlidePageType.SECTION,
+                layout_hint="section-center",
+            ),
+            OutlineNode(
+                title="繁荣：2018-2021",
+                bullets=[
+                    "2018年：公链竞争激烈，EOS、TRON等崛起",
+                    "2019年：Libra（后更名Diem）引发全球监管关注",
+                    "2020年：DeFi Summer，锁仓量从10亿飙升至300亿",
+                    "2021年：NFT爆发，元宇宙概念兴起，Web3加速",
+                ],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-icon-rows",
+            ),
+            OutlineNode(
+                title="未来：2022-至今",
+                bullets=[
+                    "2022年：加密市场降温，监管框架逐步完善",
+                    "2023年：Layer2扩容方案成熟，ZK-Rollup成为焦点",
+                    "2024年：RWA代币化，机构采用加速，AI+区块链融合",
+                    "趋势：互操作性、去中心化身份、可持续能源",
+                ],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-comparison",
+            ),
+            OutlineNode(
+                title="总结与展望",
+                bullets=[
+                    "从比特币到智能合约，区块链已走过16年",
+                    "去中心化技术正在重塑金融、版权、身份等各领域",
+                    "Layer2、AI集成、RWA代币化是下一个增长引擎",
+                    "构建可信互联网，Web3将持续改变数字经济格局",
+                ],
+                page_type=SlidePageType.SUMMARY,
+                layout_hint="summary-takeaways",
+            ),
+        ],
+    )
+
+
+def _fixed_requirements_report(*, target_slide_count: int, image_source_mode: str) -> dict:
+    audience = "技术从业者、投资者、企业决策者及对区块链感兴趣的泛科技人群，以25-45岁中青年为主，具备一定技术认知或商业敏感度"
+    purpose = "系统梳理区块链技术从诞生到当下的演进脉络，展示技术迭代路径与应用生态全景，帮助受众建立对区块链发展阶段的清晰认知，洞察未来趋势"
+    tone = "科技感、专业而不晦涩、前瞻性、理性克制中带有创新活力"
+    style_intent = (
+        "暗黑科技风(Dark Mode Tech) × 极简主义，大量使用渐变、几何图形、发光效果传递Web3/加密美学，"
+        "信息密度适中，强调视觉冲击与信息传达的平衡"
+    )
+    style_recipe_long = (
+        "dark mode tech minimalism — deep space backgrounds (#0d1117) with luminous gradient accents (cyan→violet), "
+        "geometric node patterns, subtle glow effects, and high-contrast data visualization. inspired by web3/defi interfaces and space-tech aesthetics."
+    )
+    visual_strategy = (
+        "Progressive visual layering: P1 establishes mood with abstract network topology; P2 uses interconnected node diagram "
+        "to demystify blockchain structure; P3 anchors timeline with glowing milestone markers; P4 employs three-tier card gradient "
+        "(deep→bright) for tech generation contrast; P5 applies icon-grid with subtle heat mapping; P6 transitions to radial/hub topology "
+        "for ecosystem hierarchy; P7 uses tension contrast (opportunities vs challenges) with split visual treatment; "
+        "P8 returns to open network pattern for forward-looking optimism."
+    )
+    density = (
+        "Medium-high — generous margins and line-height (1.6) create breathing room within content blocks. "
+        "Data points are few but impactful. Visual weight concentrated in focal areas, leaving peripheral negative space. "
+        "Each slide carries one dominant visual metaphor plus 3-5 supporting text elements."
+    )
+    page_focus = [
+        "封面：区块链技术发展历程的主题建立",
+        "目录：四阶段演进总览",
+        "时间线：关键里程碑串联",
+        "起源：2008-2013",
+        "成长：2014-2017",
+        "繁荣：2018-2021",
+        "未来：2022-至今",
+        "总结与展望",
+    ]
+    return {
+        "page_count_fixed": target_slide_count,
+        "effective_template_style": "modern-dark-tech",
+        "style_intent": style_intent,
+        "content_source_mode": "model_only",
+        "image_source_mode": image_source_mode,
+        "audience": audience,
+        "purpose": purpose,
+        "tone": tone,
+        "palette_name": "Cosmic Void",
+        "style_recipe": style_recipe_long,
+        "visual_strategy": visual_strategy,
+        "density": density,
+        "page_focus": page_focus[:target_slide_count],
+        "design_notes": [style_recipe_long, visual_strategy, density],
+        "design_intent": {
+            "palette_name": "Cosmic Void",
+            "style_recipe": "sharp",
+            "title_font": "Arial Black",
+            "body_font": "Calibri",
+            "visual_strategy": visual_strategy,
+            "density": "medium",
+            "rationale": "dark-tech high contrast with geometric rhythm and controlled density",
+            "theme": {
+                "primary": "E6F1FF",
+                "secondary": "8AA0B8",
+                "accent": "00E5FF",
+                "light": "1B2633",
+                "bg": "0D1117",
+            },
+        },
+    }
+
+
+async def _wait(orchestrator, run_id: str, expected: set[RunStatus], *, show_events: bool = True):
+    last_seq = 0
+    last_status: RunStatus | None = None
+    while True:
+        detail = await orchestrator.get_run_detail(run_id)
+        if detail is None:
+            raise RuntimeError(f"run 不存在: {run_id}")
+        if detail.status != last_status:
+            print(f"[状态] {detail.status.value}")
+            last_status = detail.status
+        if show_events:
+            for event in detail.events:
+                if event.seq <= last_seq:
+                    continue
+                last_seq = event.seq
+                if event.event.value in {
+                    "run.failed",
+                    "outline.completed",
+                    "slide.generated",
+                    "slide.failed",
+                    "slide.candidate.generated",
+                    "slide.selection.completed",
+                    "compile.completed",
+                }:
+                    print(f"[事件] {event.event.value} {json.dumps(event.payload, ensure_ascii=False)}")
+        if detail.status in expected:
+            return detail
+        await asyncio.sleep(0.5)
+
+
+def _analyze_events(detail) -> dict:
+    counter: Counter[str] = Counter()
+    llm_timeout_count = 0
+    llm_retry_count = 0
+    candidate_stats: list[dict] = []
+    selected_by_slide: dict[int, dict] = {}
+    failed_payload: dict | None = None
+    issue_counter: Counter[str] = Counter()
+    score_by_slide: defaultdict[int, list[int]] = defaultdict(list)
+
+    for event in detail.events:
+        et = event.event.value
+        payload = event.payload or {}
+        counter[et] += 1
+        if et == "llm.request.timeout":
+            llm_timeout_count += 1
+        elif et == "llm.request.retry":
+            llm_retry_count += 1
+        elif et == "slide.preview.qa":
+            for issue in payload.get("issues", []) or []:
+                issue_counter[str(issue)] += 1
+        elif et == "slide.candidate.generated":
+            slide_no = int(payload.get("slide_no", 0))
+            score = int(payload.get("score", 0))
+            score_by_slide[slide_no].append(score)
+            candidate_stats.append(
+                {
+                    "slide_no": slide_no,
+                    "round": int(payload.get("round", 0)),
+                    "candidate": int(payload.get("candidate", 0)),
+                    "score": score,
+                    "passed": bool(payload.get("passed", False)),
+                    "degraded": bool(payload.get("degraded", False)),
+                    "error": str(payload.get("error", "")),
+                    "variant": payload.get("variant", {}),
+                }
+            )
+        elif et == "slide.selection.completed":
+            slide_no = int(payload.get("slide_no", 0))
+            selected_by_slide[slide_no] = payload
+        elif et == "run.failed":
+            failed_payload = payload
+
+    avg_score_by_slide = {
+        str(slide): (sum(vals) / len(vals) if vals else 0.0)
+        for slide, vals in sorted(score_by_slide.items(), key=lambda x: x[0])
+    }
+    top_issues = [{"issue": k, "count": v} for k, v in issue_counter.most_common(12)]
+    return {
+        "status": detail.status.value,
+        "event_counts": dict(sorted(counter.items(), key=lambda x: x[0])),
+        "llm_timeout_count": llm_timeout_count,
+        "llm_retry_count": llm_retry_count,
+        "candidate_event_count": len(candidate_stats),
+        "candidate_stats": candidate_stats,
+        "selected_by_slide": {str(k): v for k, v in sorted(selected_by_slide.items(), key=lambda x: x[0])},
+        "avg_score_by_slide": avg_score_by_slide,
+        "top_preview_issues": top_issues,
+        "run_failed_payload": failed_payload,
+    }
+
+
+async def main() -> int:
+    base_dir = Path.cwd() / ".runtime"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    orchestrator = build_orchestrator(base_dir)
+
+    create_req = CreateRunRequest(
+        topic=DEFAULT_TOPIC,
+        project_id=DEFAULT_PROJECT_ID,
+        rag_source_ids=list(DEFAULT_RAG_SOURCE_IDS),
+        template_style=DEFAULT_TEMPLATE_STYLE,
+        target_slide_count=8,
+        generation_mode=GenerationMode.SCRATCH,
+        visual_policy=DEFAULT_VISUAL_POLICY,
+    )
+    run_id = str(uuid4())
+    trace_id = str(uuid4())
+    artifact_dir = orchestrator.artifacts_base / run_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    fixed = _fixed_outline(version=1)
+    requirements_report = _fixed_requirements_report(
+        target_slide_count=create_req.target_slide_count,
+        image_source_mode=("mock" if orchestrator.settings.asset_provider == "mock" else "model_only"),
+    )
+    run = RunRecord(
+        run_id=run_id,
+        trace_id=trace_id,
+        status=RunStatus.AWAITING_OUTLINE_CONFIRM,
+        input=create_req,
+        outline=fixed,
+        research_report=requirements_report,
+        artifact_dir=str(artifact_dir),
+    )
+    await orchestrator.store.add_run(run)
+    await orchestrator._publish(
+        run_id,
+        EventType.RESEARCH_COMPLETED,
+        {
+            "audience": requirements_report["audience"],
+            "purpose": requirements_report["purpose"],
+            "tone": requirements_report["tone"],
+        },
+    )
+    await orchestrator._publish(
+        run_id,
+        EventType.REQUIREMENTS_ANALYZED,
+        {
+            "page_count_fixed": requirements_report["page_count_fixed"],
+            "effective_template_style": requirements_report["effective_template_style"],
+            "style_intent": requirements_report["style_intent"],
+            "content_source_mode": requirements_report["content_source_mode"],
+            "image_source_mode": requirements_report["image_source_mode"],
+            "audience": requirements_report["audience"],
+            "purpose": requirements_report["purpose"],
+            "tone": requirements_report["tone"],
+            "palette_name": requirements_report["palette_name"],
+            "style_recipe": requirements_report["style_recipe"],
+            "visual_strategy": requirements_report["visual_strategy"],
+            "density": requirements_report["density"],
+        },
+    )
+    await orchestrator._publish(
+        run_id,
+        EventType.OUTLINE_COMPLETED,
+        {"version": fixed.version, "sections": len(fixed.nodes), "source": "fixed_outline"},
+    )
+    print(f"run_id={run_id}")
+    print(f"trace_id={trace_id}")
+    print("[流程] 已直接注入固定大纲与固定需求分析结果，跳过草稿大纲生成。")
+
+    await orchestrator.confirm_outline(run_id, ConfirmOutlineRequest(approved=True))
+
+    final = await _wait(orchestrator, run_id, {RunStatus.SUCCEEDED, RunStatus.FAILED})
+    if final.status == RunStatus.FAILED:
+        print(f"运行失败: error_code={final.error_code}, stage={final.failed_stage}, retryable={final.retryable}")
+        if final.error_details:
+            print(json.dumps(final.error_details, ensure_ascii=False, indent=2))
+        analysis = _analyze_events(final)
+        analysis_path = artifact_dir / "event_analysis.json"
+        analysis_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[分析] 事件分析已写入: {analysis_path}")
+        return 2
+
+    print("\n[结果] 运行成功")
+    print(f"pptx_path: {final.pptx_path}")
+    print(f"compile_js_path: {final.compile_js_path}")
+    print("slides:")
+    for slide in final.slides:
+        print(f"  - slide-{slide.slide_no:02d}: {slide.js_path}")
+    analysis = _analyze_events(final)
+    analysis_path = artifact_dir / "event_analysis.json"
+    analysis_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[分析] 事件分析已写入: {analysis_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))
