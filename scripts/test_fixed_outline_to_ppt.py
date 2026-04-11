@@ -243,6 +243,7 @@ async def _wait(
     show_events: bool = True,
     max_wait_sec: int = DEFAULT_MAX_WAIT_SEC,
     idle_after_compile_sec: int = DEFAULT_IDLE_AFTER_COMPILE_SEC,
+    llm_timeout_sec: float | None = None,
 ):
     last_seq = 0
     last_status: RunStatus | None = None
@@ -303,7 +304,11 @@ async def _wait(
                     )
                     return detail.model_copy(update={"status": RunStatus.SUCCEEDED, "pptx_path": str(pptx_path)})
 
-        if (now - last_progress_at) >= max(idle_after_compile_sec * 8, 120):
+        # Keep watchdog aligned with provider timeout to avoid false "stuck" exits.
+        # When LLM timeout is high (e.g. 300s), per-request silence can legitimately exceed 120s.
+        effective_llm_timeout = float(llm_timeout_sec or 0.0)
+        dynamic_idle_floor = max(idle_after_compile_sec * 8, int(effective_llm_timeout * 1.2) if effective_llm_timeout > 0 else 120)
+        if (now - last_progress_at) >= dynamic_idle_floor:
             raise TimeoutError(
                 f"长时间无进展（{int(now - last_progress_at)}s），当前状态={detail.status.value}，last_seq={last_seq}"
             )
@@ -557,7 +562,12 @@ async def main(args: argparse.Namespace) -> int:
     await orchestrator.confirm_outline(run_id, ConfirmOutlineRequest(approved=True))
 
     try:
-        final = await _wait(orchestrator, run_id, {RunStatus.SUCCEEDED, RunStatus.FAILED})
+        final = await _wait(
+            orchestrator,
+            run_id,
+            {RunStatus.SUCCEEDED, RunStatus.FAILED},
+            llm_timeout_sec=float(getattr(orchestrator.settings, "llm_timeout_sec", 0.0) or 0.0),
+        )
     except TimeoutError as exc:
         latest = await orchestrator.get_run_detail(run_id)
         if latest is None:
