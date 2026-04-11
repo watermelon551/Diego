@@ -17,7 +17,7 @@ import service.orchestrator as orchestrator_mod
 from service.app import create_app
 from service.config import Settings, load_settings
 from service.llm_client import GeneratedSlide, LLMTimeoutError, MockLLMClient, OutlineFormatError, SlideSpec
-from service.models import CreateRunRequest, GenerationMode, OutlineDocument, OutlineNode, RunRecord, RunStatus, SlidePageType
+from service.models import CreateRunRequest, EventType, GenerationMode, OutlineDocument, OutlineNode, RunRecord, RunStatus, SlidePageType
 from service.orchestrator import RunOrchestrator
 from service.store import RunStore
 
@@ -1093,6 +1093,63 @@ def test_validate_contract_should_accept_inline_badge_equivalent(tmp_path: Path)
     assert not any('missing required page badge position' in item for item in issues)
 
 
+def test_validate_contract_should_flag_addtext_array_options_signature(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const slideConfig = { type: 'content', index: 2, title: 'Bad AddText', bullets: ['a', 'b'] };",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  const titleStyle = { fontSize: 38, fontFace: 'Arial', color: theme.primary, bold: true };",
+            "  const titleOpts = { x: 0.5, y: 0.4, w: 9.0, h: 0.8, fit: 'shrink' };",
+            "  slide.addText(slideConfig.title, [titleStyle, titleOpts]);",
+            "  slide.addShape(pres.shapes.RECTANGLE, { x: 0.8, y: 1.5, w: 8.4, h: 2.9, fill: { color: theme.light }, line: { color: theme.secondary } });",
+            "  slide.addText(slideConfig.bullets.join(' | '), { x: 1.1, y: 1.8, w: 7.6, h: 1.8, fontSize: 16, fontFace: 'Arial', color: theme.secondary, align: 'left', margin: 0, fit: 'shrink' });",
+            "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+            "  slide.addText(String(slideConfig.index), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', bold: true, align: 'center', valign: 'mid', margin: 0 });",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+    issues = orch._validate_slide_js_contract(js_code, slide_no=2, page_type='content')
+    assert any('addText call signature invalid' in item for item in issues)
+
+
+
+def test_validate_contract_should_flag_addshape_positional_signature(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const slideConfig = { type: 'content', index: 2, title: 'Bad AddShape', bullets: ['a', 'b'] };",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addText(slideConfig.title, { x: 0.5, y: 0.3, w: 9.0, h: 0.8, fontSize: 40, fontFace: 'Arial', color: theme.primary, bold: true, fit: 'shrink' });",
+            "  slide.addShape(pres.shapes.RECTANGLE, 0.8, 1.5, 8.4, 2.9);",
+            "  slide.addText(slideConfig.bullets.join(' | '), { x: 1.1, y: 1.8, w: 7.6, h: 1.8, fontSize: 16, fontFace: 'Arial', color: theme.secondary, align: 'left', margin: 0, fit: 'shrink' });",
+            "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent } });",
+            "  slide.addText(String(slideConfig.index), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', bold: true, align: 'center', valign: 'mid', margin: 0 });",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+    issues = orch._validate_slide_js_contract(js_code, slide_no=2, page_type='content')
+    assert any('addShape call signature invalid' in item for item in issues)
+
+
 def test_persist_qa_failure_artifacts_should_write_report_and_failed_js(tmp_path: Path) -> None:
     orch = RunOrchestrator(
         store=RunStore(base_dir=tmp_path),
@@ -2047,6 +2104,86 @@ def test_agentic_failure_should_keep_last_failed_candidate(tmp_path: Path) -> No
         failed_dir = tmp_path / "artifacts" / run_id / "slides" / "failed"
         assert failed_dir.exists()
         assert list(failed_dir.glob("slide-*-last.js"))
+
+
+def test_build_slide_failure_context_should_include_structured_debug_fields(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    sample_js = "\n".join(
+        [
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addShape(pres.shapes.LINE, { x: 1, y: 1, w: 2, h: 0.01, line: { color: theme.accent } });",
+            "  return slide;",
+            "}",
+        ]
+    )
+    context = orch._build_slide_failure_context(
+        phase="candidate.preview",
+        slide_js_path=tmp_path / "slide-01-cand-01.js",
+        candidate_js=sample_js,
+        issues=["preview compile failed: slide-01-cand-01.js:3"],
+        diagnostics={
+            "stderr": "slide-01-cand-01.js:3 TypeError: bad call",
+            "stdout": "",
+            "error_message": "TypeError: bad call",
+            "attempt": 2,
+            "gate_summary": {"blocking": 1, "high_risk": 0, "warnings": 1},
+        },
+    )
+    assert context["slide_js_path"].endswith("slide-01-cand-01.js")
+    assert context["stderr_excerpt"]
+    assert context["error_location"].get("line") == 3
+    assert context["gate_summary"]["blocking"] == 1
+    assert context["attempt"] == 2
+
+
+def test_fail_run_should_emit_run_finalized_failed_event(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    req = CreateRunRequest(topic="t", project_id="p", generation_mode=GenerationMode.SCRATCH)
+    run = RunRecord(run_id="r1", trace_id="tr1", status=RunStatus.SLIDES_GENERATING, input=req, artifact_dir=str(tmp_path / "artifacts" / "r1"))
+    asyncio.run(orch.store.add_run(run))
+
+    asyncio.run(orch._fail_run("r1", "COMPILING", "QA_FAILED", retryable=False, error_details={"reason": "x"}))
+    detail = asyncio.run(orch.get_run_detail("r1"))
+    assert detail is not None
+    assert detail.status == RunStatus.FAILED
+    event_names = [event.event for event in detail.events]
+    assert EventType.RUN_FAILED in event_names
+    assert EventType.RUN_FINALIZED in event_names
+    finalized_payloads = [event.payload for event in detail.events if event.event == EventType.RUN_FINALIZED]
+    assert finalized_payloads and finalized_payloads[-1]["final_status"] == RunStatus.FAILED.value
+
+
+def test_finalize_run_success_should_emit_run_finalized_success_event(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    req = CreateRunRequest(topic="t2", project_id="p2", generation_mode=GenerationMode.SCRATCH)
+    run = RunRecord(run_id="r2", trace_id="tr2", status=RunStatus.COMPILING, input=req, artifact_dir=str(tmp_path / "artifacts" / "r2"))
+    asyncio.run(orch.store.add_run(run))
+
+    asyncio.run(orch._finalize_run_success("r2", from_stage="COMPILING", reason="unit-test"))
+    detail = asyncio.run(orch.get_run_detail("r2"))
+    assert detail is not None
+    assert detail.status == RunStatus.SUCCEEDED
+    finalized_payloads = [event.payload for event in detail.events if event.event == EventType.RUN_FINALIZED]
+    assert finalized_payloads and finalized_payloads[-1]["final_status"] == RunStatus.SUCCEEDED.value
 
 
 

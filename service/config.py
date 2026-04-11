@@ -43,6 +43,12 @@ class Settings:
     slide_diag_max_stderr_chars: int = 12000
     preview_qa_concurrency: int = 4
     asset_fetch_concurrency: int = 2
+    llm_concurrency_build: int = 3
+    llm_concurrency_evaluate: int = 2
+    llm_concurrency_repair: int = 1
+    timeout_streak_degrade_threshold: int = 3
+    timeout_streak_recover_window_sec: float = 120.0
+    qa_finalize_timeout_sec: float = 300.0
 
 
 def _require_env(name: str) -> str:
@@ -99,6 +105,12 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     llm_timeout_jitter_sec = _env_float("LLM_TIMEOUT_JITTER_SEC", 0.2)
     if llm_timeout_jitter_sec < 0:
         raise ValueError("LLM_TIMEOUT_JITTER_SEC must be >= 0")
+    timeout_streak_recover_window_sec = _env_float("TIMEOUT_STREAK_RECOVER_WINDOW_SEC", 120.0)
+    if timeout_streak_recover_window_sec < 0:
+        raise ValueError("TIMEOUT_STREAK_RECOVER_WINDOW_SEC must be >= 0")
+    qa_finalize_timeout_sec = _env_float("QA_FINALIZE_TIMEOUT_SEC", 300.0)
+    if qa_finalize_timeout_sec <= 0:
+        raise ValueError("QA_FINALIZE_TIMEOUT_SEC must be > 0")
 
     return Settings(
         llm_api_style=os.getenv("LLM_API_STYLE", "openai_chat").strip().lower(),
@@ -137,6 +149,12 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         slide_diag_max_stderr_chars=_env_int("SLIDE_DIAG_MAX_STDERR_CHARS", 12000),
         preview_qa_concurrency=_env_int("PREVIEW_QA_CONCURRENCY", 4),
         asset_fetch_concurrency=_env_int("ASSET_FETCH_CONCURRENCY", 2),
+        llm_concurrency_build=_env_int("LLM_CONCURRENCY_BUILD", 3),
+        llm_concurrency_evaluate=_env_int("LLM_CONCURRENCY_EVALUATE", 2),
+        llm_concurrency_repair=_env_int("LLM_CONCURRENCY_REPAIR", 1),
+        timeout_streak_degrade_threshold=_env_int("TIMEOUT_STREAK_DEGRADE_THRESHOLD", 3),
+        timeout_streak_recover_window_sec=timeout_streak_recover_window_sec,
+        qa_finalize_timeout_sec=qa_finalize_timeout_sec,
     )
 
 

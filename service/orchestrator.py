@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import html
@@ -233,11 +233,21 @@ class RunOrchestrator:
         self.slide_diag_max_stderr_chars = max(2000, int(getattr(settings, "slide_diag_max_stderr_chars", 12000)))
         self.preview_qa_concurrency = max(1, int(getattr(settings, "preview_qa_concurrency", self.slide_concurrency)))
         self.asset_fetch_concurrency = max(1, int(getattr(settings, "asset_fetch_concurrency", 2)))
+        self.llm_concurrency_build = max(1, int(getattr(settings, "llm_concurrency_build", 3)))
+        self.llm_concurrency_evaluate = max(1, int(getattr(settings, "llm_concurrency_evaluate", 2)))
+        self.llm_concurrency_repair = max(1, int(getattr(settings, "llm_concurrency_repair", 1)))
+        self.timeout_streak_degrade_threshold = max(1, int(getattr(settings, "timeout_streak_degrade_threshold", 3)))
+        self.timeout_streak_recover_window_sec = max(0.0, float(getattr(settings, "timeout_streak_recover_window_sec", 120.0)))
         self._llm_request_gate = threading.BoundedSemaphore(self.llm_request_concurrency)
+        self._llm_phase_build_gate = threading.BoundedSemaphore(min(self.llm_request_concurrency, self.llm_concurrency_build))
+        self._llm_phase_evaluate_gate = threading.BoundedSemaphore(min(self.llm_request_concurrency, self.llm_concurrency_evaluate))
+        self._llm_phase_repair_gate = threading.BoundedSemaphore(min(self.llm_request_concurrency, self.llm_concurrency_repair))
+        self._llm_pressure_gate = threading.BoundedSemaphore(1)
         self._preview_qa_gate = threading.BoundedSemaphore(self.preview_qa_concurrency)
         self._asset_fetch_gate = threading.BoundedSemaphore(self.asset_fetch_concurrency)
         self._timeout_lock = threading.Lock()
         self._timeout_streak = 0
+        self._last_timeout_monotonic = 0.0
         self._run_budget_lock = threading.Lock()
         self._run_llm_call_counts: dict[str, int] = {}
         self._run_llm_call_limits: dict[str, int] = {}
@@ -502,9 +512,37 @@ class RunOrchestrator:
         if self._is_retryable_http_status_error(exc):
             return True
         return False
+
+    def _llm_phase_bucket(self, phase: str) -> str:
+        lowered = str(phase or "").lower()
+        if any(token in lowered for token in (".repair", "repair", ".revise", "polish")):
+            return "repair"
+        if any(token in lowered for token in (".evaluate", ".review", "critic", "quality", "qa")):
+            return "evaluate"
+        return "build"
+
+    def _llm_phase_gate(self, phase: str) -> threading.BoundedSemaphore:
+        bucket = self._llm_phase_bucket(phase)
+        if bucket == "repair":
+            return self._llm_phase_repair_gate
+        if bucket == "evaluate":
+            return self._llm_phase_evaluate_gate
+        return self._llm_phase_build_gate
+
+    def _is_under_timeout_pressure(self) -> bool:
+        with self._timeout_lock:
+            streak = self._timeout_streak
+            last_timeout = self._last_timeout_monotonic
+        if streak < self.timeout_streak_degrade_threshold:
+            return False
+        if self.timeout_streak_recover_window_sec <= 0:
+            return True
+        return (time.monotonic() - last_timeout) <= self.timeout_streak_recover_window_sec
+
     def _note_timeout(self) -> None:
         with self._timeout_lock:
             self._timeout_streak = min(100, self._timeout_streak + 1)
+            self._last_timeout_monotonic = time.monotonic()
 
     def _note_llm_success(self) -> None:
         with self._timeout_lock:
@@ -727,13 +765,23 @@ class RunOrchestrator:
     ) -> Any:
         max_attempts = self.outline_timeout_retries + 1
         gate_timeout_sec = max(1.0, float(self.settings.llm_timeout_sec) + 5.0)
+        phase_gate = self._llm_phase_gate(phase)
         for attempt in range(1, max_attempts + 1):
-            acquired = False
+            acquired_global = False
+            acquired_phase = False
+            acquired_pressure = False
             try:
                 self._consume_run_llm_budget(run_id=run_id, phase=phase)
-                acquired = await asyncio.to_thread(self._llm_request_gate.acquire, True, gate_timeout_sec)
-                if not acquired:
+                acquired_global = await asyncio.to_thread(self._llm_request_gate.acquire, True, gate_timeout_sec)
+                if not acquired_global:
                     raise TimeoutError("llm request concurrency gate timeout")
+                acquired_phase = await asyncio.to_thread(phase_gate.acquire, True, gate_timeout_sec)
+                if not acquired_phase:
+                    raise TimeoutError("llm phase concurrency gate timeout")
+                if self._is_under_timeout_pressure():
+                    acquired_pressure = await asyncio.to_thread(self._llm_pressure_gate.acquire, True, gate_timeout_sec)
+                    if not acquired_pressure:
+                        raise TimeoutError("llm pressure gate timeout")
                 result = await action()
                 self._note_llm_success()
                 return result
@@ -773,7 +821,11 @@ class RunOrchestrator:
                 if delay > 0:
                     await asyncio.sleep(delay)
             finally:
-                if acquired:
+                if acquired_pressure:
+                    self._llm_pressure_gate.release()
+                if acquired_phase:
+                    phase_gate.release()
+                if acquired_global:
                     self._llm_request_gate.release()
         raise RuntimeError("unreachable timeout retry loop")
 
@@ -1215,33 +1267,74 @@ class RunOrchestrator:
 
         await self.store.update_run(run_id, apply_compile)
         await self._publish(run_id, EventType.COMPILE_COMPLETED, {"file": str(pptx_path)})
-
-        if self.settings.qa_enabled:
-            polish_ok = await self._mandatory_polish_cycle(run_id, mode=GenerationMode.SCRATCH, design=design)
-            if not polish_ok:
-                latest = await self.store.get_run(run_id)
-                if latest is not None and latest.status == RunStatus.FAILED:
-                    return
-                qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=GenerationMode.SCRATCH)
-                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
-                return
-            latest_after_polish = await self.store.get_run(run_id)
-            qa_ok = bool(
-                latest_after_polish
-                and isinstance(latest_after_polish.qa_report, dict)
-                and latest_after_polish.qa_report.get("passed", False)
+        qa_timeout_sec = max(1.0, float(self.settings.qa_finalize_timeout_sec))
+        try:
+            post_compile_ok = await asyncio.wait_for(
+                self._complete_post_compile_quality(run_id=run_id, mode=GenerationMode.SCRATCH, design=design),
+                timeout=qa_timeout_sec,
             )
-            if not qa_ok:
-                qa_ok = await self._repair_loop(run_id, mode=GenerationMode.SCRATCH, design=design)
-            if not qa_ok:
-                latest = await self.store.get_run(run_id)
-                if latest is not None and latest.status == RunStatus.FAILED:
-                    return
-                qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=GenerationMode.SCRATCH)
-                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
-                return
-        await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SUCCEEDED))
+        except asyncio.TimeoutError:
+            await self._fail_run(
+                run_id,
+                "COMPILING",
+                "FINALIZE_TIMEOUT",
+                retryable=True,
+                error_details={"reason": f"post-compile QA exceeded {qa_timeout_sec:.0f}s", "mode": "scratch"},
+            )
+            return
+        if not post_compile_ok:
+            return
+        await self._finalize_run_success(run_id, from_stage="COMPILING", reason="scratch compile+qa completed")
+
+    async def _complete_post_compile_quality(
+        self,
+        *,
+        run_id: str,
+        mode: GenerationMode,
+        design: DesignProfile,
+    ) -> bool:
+        if not self.settings.qa_enabled:
+            return True
+        polish_ok = await self._mandatory_polish_cycle(run_id, mode=mode, design=design)
+        if not polish_ok:
+            latest = await self.store.get_run(run_id)
+            if latest is not None and latest.status == RunStatus.FAILED:
+                return False
+            qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=mode)
+            await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
+            return False
+        latest_after_polish = await self.store.get_run(run_id)
+        qa_ok = bool(
+            latest_after_polish
+            and isinstance(latest_after_polish.qa_report, dict)
+            and latest_after_polish.qa_report.get("passed", False)
+        )
+        if not qa_ok:
+            qa_ok = await self._repair_loop(run_id, mode=mode, design=design)
+        if qa_ok:
+            return True
+        latest = await self.store.get_run(run_id)
+        if latest is not None and latest.status == RunStatus.FAILED:
+            return False
+        qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=mode)
+        await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
+        return False
+
+    async def _finalize_run_success(self, run_id: str, *, from_stage: str, reason: str) -> None:
+        def apply_success(r: RunRecord) -> None:
+            r.status = RunStatus.SUCCEEDED
+            r.error_code = None
+            r.failed_stage = None
+            r.retryable = False
+            r.error_details = {}
+
+        await self.store.update_run(run_id, apply_success)
         self._clear_run_llm_budget(run_id)
+        await self._publish(
+            run_id,
+            EventType.RUN_FINALIZED,
+            {"final_status": RunStatus.SUCCEEDED.value, "from_stage": from_stage, "reason": reason},
+        )
 
     async def _generate_from_template(self, run_id: str) -> None:
         run = await self.store.get_run(run_id)
@@ -1342,33 +1435,24 @@ class RunOrchestrator:
             EventType.COMPILE_COMPLETED,
             {"file": str(edited), "mode": "template", "compile_js": str(template_compile_js)},
         )
-
-        if self.settings.qa_enabled:
-            polish_ok = await self._mandatory_polish_cycle(run_id, mode=GenerationMode.TEMPLATE, design=design)
-            if not polish_ok:
-                latest = await self.store.get_run(run_id)
-                if latest is not None and latest.status == RunStatus.FAILED:
-                    return
-                qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=GenerationMode.TEMPLATE)
-                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
-                return
-            latest_after_polish = await self.store.get_run(run_id)
-            qa_ok = bool(
-                latest_after_polish
-                and isinstance(latest_after_polish.qa_report, dict)
-                and latest_after_polish.qa_report.get("passed", False)
+        qa_timeout_sec = max(1.0, float(self.settings.qa_finalize_timeout_sec))
+        try:
+            post_compile_ok = await asyncio.wait_for(
+                self._complete_post_compile_quality(run_id=run_id, mode=GenerationMode.TEMPLATE, design=design),
+                timeout=qa_timeout_sec,
             )
-            if not qa_ok:
-                qa_ok = await self._repair_loop(run_id, mode=GenerationMode.TEMPLATE, design=design)
-            if not qa_ok:
-                latest = await self.store.get_run(run_id)
-                if latest is not None and latest.status == RunStatus.FAILED:
-                    return
-                qa_details = await self._persist_qa_failure_artifacts(run_id=run_id, mode=GenerationMode.TEMPLATE)
-                await self._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
-                return
-        await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SUCCEEDED))
-        self._clear_run_llm_budget(run_id)
+        except asyncio.TimeoutError:
+            await self._fail_run(
+                run_id,
+                "COMPILING",
+                "FINALIZE_TIMEOUT",
+                retryable=True,
+                error_details={"reason": f"post-compile QA exceeded {qa_timeout_sec:.0f}s", "mode": "template"},
+            )
+            return
+        if not post_compile_ok:
+            return
+        await self._finalize_run_success(run_id, from_stage="COMPILING", reason="template compile+qa completed")
 
     def _template_work_paths(self, artifact_dir: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
         template_dir = artifact_dir / "template_edit"
@@ -1878,6 +1962,8 @@ class RunOrchestrator:
             "missing export contract",
             "createslide signature invalid",
             "createslide must be synchronous",
+            "addtext call signature invalid",
+            "addshape call signature invalid",
             "preview compile failed",
             "preview skipped due to fatal contract issue",
             "preview pptx missing",
@@ -2001,6 +2087,12 @@ class RunOrchestrator:
                     diagnostics={
                         "error_class": type(exc).__name__,
                         "error_message": self._exception_reason(exc),
+                        "attempt": repair_round,
+                        "gate_summary": {
+                            "blocking": len(classified["blocking"]),
+                            "high_risk": len(classified["high_risk"]),
+                            "warnings": len(classified["warnings"]),
+                        },
                     },
                 )
                 await self._publish(
@@ -2012,18 +2104,20 @@ class RunOrchestrator:
                         "candidate": 1,
                         "phase": llm_phase,
                         "context": last_failure_context,
+                        "error_type": type(exc).__name__,
+                        "stderr_excerpt": last_failure_context.get("stderr_excerpt", ""),
+                        "error_location": last_failure_context.get("error_location", {}),
+                        "repair_hint": selected_repair_directives[:5],
                     },
                 )
-                await self._publish(
-                    run_id,
-                    EventType.SLIDE_RETRY_CONTEXT_BUILT,
-                    {
-                        "slide_no": slide_no,
-                        "round": repair_round,
-                        "candidate": 1,
-                        "phase": llm_phase,
-                        "issue_count": 1,
-                    },
+                await self._publish_retry_context_event(
+                    run_id=run_id,
+                    slide_no=slide_no,
+                    repair_round=repair_round,
+                    candidate_no=1,
+                    phase=llm_phase,
+                    issues=[build_issue],
+                    context=last_failure_context,
                 )
                 await self._publish(
                     run_id,
@@ -2105,6 +2199,12 @@ class RunOrchestrator:
             if needs_repair:
                 diagnostics = dict(preview_diag or {})
                 diagnostics.setdefault("preview_mode", preview_mode)
+                diagnostics["attempt"] = repair_round
+                diagnostics["gate_summary"] = {
+                    "blocking": len(blocking),
+                    "high_risk": len(high_risk),
+                    "warnings": len(warnings),
+                }
                 last_failure_context = self._build_slide_failure_context(
                     phase=("candidate.contract" if fatal_contract else "candidate.preview"),
                     slide_js_path=candidate_path,
@@ -2121,18 +2221,20 @@ class RunOrchestrator:
                         "candidate": 1,
                         "phase": ("candidate.contract" if fatal_contract else "candidate.preview"),
                         "context": last_failure_context,
+                        "error_type": str(last_failure_context.get("error_class", "")),
+                        "stderr_excerpt": last_failure_context.get("stderr_excerpt", ""),
+                        "error_location": last_failure_context.get("error_location", {}),
+                        "repair_hint": selected_repair_directives[:5],
                     },
                 )
-                await self._publish(
-                    run_id,
-                    EventType.SLIDE_RETRY_CONTEXT_BUILT,
-                    {
-                        "slide_no": slide_no,
-                        "round": repair_round,
-                        "candidate": 1,
-                        "phase": ("candidate.contract" if fatal_contract else "candidate.preview"),
-                        "issue_count": len(all_issues),
-                    },
+                await self._publish_retry_context_event(
+                    run_id=run_id,
+                    slide_no=slide_no,
+                    repair_round=repair_round,
+                    candidate_no=1,
+                    phase=("candidate.contract" if fatal_contract else "candidate.preview"),
+                    issues=all_issues,
+                    context=last_failure_context,
                 )
 
             await self._publish(
@@ -2707,24 +2809,64 @@ class RunOrchestrator:
         numbered = self._render_js_with_line_numbers(candidate_js)
         line_numbers = self._extract_line_numbers("\n".join([stderr, stdout, error_message, "\n".join(issues or [])]))
         focus = self._extract_js_focus_windows(candidate_js, line_numbers=line_numbers)
+        first_line = line_numbers[0] if line_numbers else None
+        error_location = {"line": first_line} if first_line else {}
+        gate_summary = diag.get("gate_summary") if isinstance(diag.get("gate_summary"), dict) else {}
         context = {
             "phase": phase,
             "slide_js": slide_js_path.name if slide_js_path else "",
+            "slide_js_path": str(slide_js_path) if slide_js_path else "",
             "issues": self._dedupe_preserve_order([str(item) for item in (issues or []) if str(item).strip()])[:24],
             "command": command,
             "exit_code": exit_code,
             "stderr": stderr,
             "stdout": stdout,
+            "stderr_excerpt": self._truncate_diag_text(stderr, limit=1200),
+            "stdout_excerpt": self._truncate_diag_text(stdout, limit=1200),
             "error_class": error_class,
             "error_message": error_message,
+            "error_location": error_location,
             "failed_js_full": self._truncate_diag_text(candidate_js, limit=50000),
             "failed_js_with_line_no": numbered,
             "focus_windows": focus,
             "detected_api_violations": self._collect_detected_api_violations(candidate_js),
+            "gate_summary": gate_summary,
         }
         if "preview_mode" in diag:
             context["preview_mode"] = diag.get("preview_mode")
+        if "attempt" in diag:
+            context["attempt"] = diag.get("attempt")
         return context
+
+    async def _publish_retry_context_event(
+        self,
+        *,
+        run_id: str,
+        slide_no: int,
+        repair_round: int,
+        candidate_no: int,
+        phase: str,
+        issues: list[str],
+        context: dict[str, Any],
+    ) -> None:
+        error_location = context.get("error_location", {}) if isinstance(context.get("error_location", {}), dict) else {}
+        gate_summary = context.get("gate_summary", {}) if isinstance(context.get("gate_summary", {}), dict) else {}
+        await self._publish(
+            run_id,
+            EventType.SLIDE_RETRY_CONTEXT_BUILT,
+            {
+                "slide_no": slide_no,
+                "round": repair_round,
+                "candidate": candidate_no,
+                "phase": phase,
+                "issue_count": len(issues or []),
+                "failing_js_path": context.get("slide_js_path", ""),
+                "stderr_excerpt": context.get("stderr_excerpt", ""),
+                "error_location": error_location,
+                "gate_summary": gate_summary,
+                "attempt": context.get("attempt"),
+            },
+        )
 
     def _collect_detected_api_violations(self, js_code: str) -> list[str]:
         checks = [
@@ -2771,6 +2913,8 @@ class RunOrchestrator:
             issues.append("forbidden runtime dependency: createCanvas()")
         if re.search(r"addShape\(\s*['\"][a-zA-Z0-9_-]+['\"]", js_code):
             issues.append("addShape must use pres.shapes enum, not string literal")
+        issues.extend(self._collect_addshape_signature_issues(js_code))
+        issues.extend(self._collect_addtext_signature_issues(js_code))
         if re.search(r"addShape\(\s*pres\.shapes\.LINE[\s\S]*?\{[\s\S]*?\b(?:w|h)\s*:\s*0(?:\.0+)?\b", js_code):
             issues.append("line shape geometry invalid: w/h must be > 0")
         if re.search(r"['\"]#[0-9a-fA-F]{3,8}['\"]", js_code):
@@ -2793,6 +2937,108 @@ class RunOrchestrator:
                 if "addImage(" in js_code:
                     issues.append("visual_policy violation: basic_graphics_only forbids addImage()")
         issues.extend(self._collect_js_style_issues(js_code=js_code, page_type=page_type))
+        return self._dedupe_preserve_order(issues)
+
+    def _extract_method_call_args(self, js_code: str, *, method_expr: str) -> list[list[str]]:
+        payload = str(js_code or "")
+        pattern = re.compile(method_expr)
+        calls: list[list[str]] = []
+        idx = 0
+        n = len(payload)
+        while idx < n:
+            match = pattern.search(payload, idx)
+            if not match:
+                break
+            open_idx = payload.find("(", match.start())
+            if open_idx < 0:
+                idx = match.end()
+                continue
+
+            depth = 0
+            in_single = False
+            in_double = False
+            in_backtick = False
+            escaped = False
+            close_idx = -1
+            pos = open_idx
+            while pos < n:
+                ch = payload[pos]
+                if escaped:
+                    escaped = False
+                    pos += 1
+                    continue
+                if ch == "\\":
+                    escaped = True
+                    pos += 1
+                    continue
+                if in_single:
+                    if ch == "'":
+                        in_single = False
+                    pos += 1
+                    continue
+                if in_double:
+                    if ch == '"':
+                        in_double = False
+                    pos += 1
+                    continue
+                if in_backtick:
+                    if ch == "`":
+                        in_backtick = False
+                    pos += 1
+                    continue
+                if ch == "'":
+                    in_single = True
+                    pos += 1
+                    continue
+                if ch == '"':
+                    in_double = True
+                    pos += 1
+                    continue
+                if ch == "`":
+                    in_backtick = True
+                    pos += 1
+                    continue
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        close_idx = pos
+                        break
+                pos += 1
+
+            if close_idx <= open_idx:
+                idx = match.end()
+                continue
+
+            raw_args = payload[open_idx + 1 : close_idx]
+            calls.append(self._split_top_level_args(raw_args))
+            idx = close_idx + 1
+
+        return calls
+
+    def _collect_addtext_signature_issues(self, js_code: str) -> list[str]:
+        issues: list[str] = []
+        calls = self._extract_method_call_args(js_code, method_expr=r"\bslide\.addText\s*\(")
+        for args in calls:
+            if len(args) != 2:
+                issues.append("addText call signature invalid: use addText(textOrRuns, { ...options })")
+                continue
+            options = str(args[1]).strip()
+            if not options.startswith("{"):
+                issues.append("addText call signature invalid: options must be object literal")
+        return self._dedupe_preserve_order(issues)
+
+    def _collect_addshape_signature_issues(self, js_code: str) -> list[str]:
+        issues: list[str] = []
+        calls = self._extract_method_call_args(js_code, method_expr=r"\bslide\.addShape\s*\(")
+        for args in calls:
+            if len(args) != 2:
+                issues.append("addShape call signature invalid: use addShape(pres.shapes.X, { ...options })")
+                continue
+            options = str(args[1]).strip()
+            if not options.startswith("{"):
+                issues.append("addShape call signature invalid: options must be object literal")
         return self._dedupe_preserve_order(issues)
 
     def _apply_local_js_guardrails(
@@ -2969,6 +3215,8 @@ class RunOrchestrator:
             "forbidden api detected",
             "forbidden runtime dependency",
             "addShape must use pres.shapes enum",
+            "addText call signature invalid",
+            "addShape call signature invalid",
             "line shape geometry invalid",
             "hex color with # is forbidden",
             "8-char hex color is forbidden",
@@ -3026,6 +3274,8 @@ class RunOrchestrator:
             directives.append("Use pptxgenjs legal API only: slide.background = { color: theme.bg }; addShape with pres.shapes.*; never ShapeType/slide.shapes/addGroup.")
         if any("line shape geometry invalid" in item.lower() for item in blocking):
             directives.append("For pres.shapes.LINE always keep both w and h > 0 (e.g., h: 0.01), never zero-length geometry.")
+        if any("addtext call signature invalid" in item.lower() or "addshape call signature invalid" in item.lower() for item in blocking):
+            directives.append("Call signatures must be strict: addText(textOrRuns, { ...opts }) and addShape(pres.shapes.X, { ...opts }); never pass style as 3rd arg or positional x,y,w,h.")
         if any("out of slide bounds" in item.lower() or "overlaps" in item.lower() for item in blocking + high_risk):
             directives.append("Reflow layout with safe margins and non-overlap: content margins >=0.5in, preserve 0.22in+ block gap.")
         if any("page badge" in item.lower() for item in blocking):
@@ -5073,6 +5323,11 @@ class RunOrchestrator:
             EventType.RUN_FAILED,
             payload,
         )
+        await self._publish(
+            run_id,
+            EventType.RUN_FINALIZED,
+            {"final_status": RunStatus.FAILED.value, "from_stage": stage, "reason": error_code},
+        )
 
     def _check_slide_content_rules(self, candidate: GeneratedSlide, node: OutlineNode) -> list[str]:
         issues: list[str] = []
@@ -5503,11 +5758,11 @@ class RunOrchestrator:
     def _extract_chart_facts(self, *, node: OutlineNode, source_refs: list[str]) -> list[ChartFact]:
         facts: list[ChartFact] = []
         colon_re = re.compile(
-            r"(?P<label>[^:：]{1,60})[:：]\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?P<unit>%|万元|万|亿|k|m|b|人|次|个)?",
+            r"(?P<label>[^:]{1,60})[:]?\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?P<unit>%|k|m|b)?",
             flags=re.IGNORECASE,
         )
         unit_re = re.compile(
-            r"(?P<label>[^0-9]{1,60}?)(?P<value>-?\d+(?:\.\d+)?)\s*(?P<unit>%|万元|万|亿|k|m|b|人|次|个)",
+            r"(?P<label>[^0-9]{1,60}?)(?P<value>-?\d+(?:\.\d+)?)\s*(?P<unit>%|k|m|b)?",
             flags=re.IGNORECASE,
         )
         source = source_refs[0] if source_refs else "user_outline"
@@ -5520,7 +5775,7 @@ class RunOrchestrator:
                 match = unit_re.search(text)
             if not match:
                 continue
-            label = match.group("label").strip(" -:：") or node.title
+            label = match.group("label").strip(" -:") or node.title
             raw_value = match.group("value")
             try:
                 value = float(raw_value)
@@ -6334,6 +6589,7 @@ def build_orchestrator(base_dir: Path) -> RunOrchestrator:
         llm_client=llm_client,
         settings=settings,
     )
+
 
 
 

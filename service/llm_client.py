@@ -667,7 +667,8 @@ class OpenAICompatibleLLMClient:
             "You are a strict PPT code reviewer. Rewrite and return full JavaScript module only. "
             "Keep createSlide synchronous and keep module export contract exact. Fix all listed issues while preserving content intent. "
             "Prioritize hard constraints first: compile/API legality, bounds/overlap, page badge, visual policy, then typography/spacing. "
-            "Never use ShapeType.*, slide.shapes.*, slide.background(...), pres.Fit.*, addGroup(), or zero-length LINE geometry."
+            "Never use ShapeType.*, slide.shapes.*, slide.background(...), pres.Fit.*, addGroup(), or zero-length LINE geometry. "
+            "Use minimal-diff repair strategy: keep layout/composition unless directly required by a failing diagnostic."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -685,6 +686,7 @@ class OpenAICompatibleLLMClient:
             "Follow slide_plan.api_contract exactly when present.\n"
             "If failure_context includes compile/runtime diagnostics, treat them as authoritative and fix them first. "
             "Example: pres.shapes.ELLIPSE is invalid in PptxGenJS, use pres.shapes.OVAL.\n"
+            "When failure_context contains line numbers/focus windows, patch those lines first and avoid unrelated rewrites.\n"
             "Must satisfy: body text left-aligned, clear title/body size contrast, fit:'shrink' on title and long body text, "
             "safe margins and spacing, content slide must keep non-text visual element, non-cover slides must include page badge.\n"
             f"candidate_js=\n{candidate_js}\n"
