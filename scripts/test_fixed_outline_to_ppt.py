@@ -474,7 +474,7 @@ async def main(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        style_choice, style_name, style_prompt, template_style = _resolve_style_inputs(args)
+        style_choice, style_name, style_prompt, template_style, style_recipe_hint = _resolve_style_inputs(args)
     except ValueError as exc:
         print(str(exc))
         print("可先运行: python scripts/test_fixed_outline_to_ppt.py --list-styles")
@@ -503,6 +503,7 @@ async def main(args: argparse.Namespace) -> int:
         style_choice=style_choice,
         style_prompt=style_prompt,
         effective_template_style=template_style,
+        style_recipe_hint=style_recipe_hint,
     )
     run = RunRecord(
         run_id=run_id,
