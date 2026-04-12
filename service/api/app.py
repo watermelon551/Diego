@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from ..models import ConfirmOutlineRequest, CreateRunRequest, PromptRunRequest, RunStatus
 from ..run import RunOrchestrator, build_orchestrator
@@ -79,6 +79,24 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         return run
+
+    @app.get("/v1/ppt/runs/{run_id}/artifacts/pptx")
+    async def download_pptx(run_id: str):
+        run = await ctx.orchestrator.store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        if run.status != RunStatus.SUCCEEDED:
+            raise HTTPException(status_code=409, detail="run is not in succeeded state")
+        pptx_path = Path(str(run.pptx_path or "").strip())
+        if not str(pptx_path):
+            raise HTTPException(status_code=404, detail="pptx artifact not found")
+        if not pptx_path.exists() or not pptx_path.is_file():
+            raise HTTPException(status_code=404, detail="pptx artifact file missing")
+        return FileResponse(
+            path=str(pptx_path),
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            filename=f"{run_id}.pptx",
+        )
 
     @app.post("/v1/ppt/runs/{run_id}/outline/confirm")
     async def confirm_outline(run_id: str, req: ConfirmOutlineRequest):
