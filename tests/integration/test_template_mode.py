@@ -1,6 +1,6 @@
 from tests.support.service_flow_shared import *  # noqa: F401,F403
 
-def test_template_repair_uses_latest_template_candidate_not_outline_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_template_mode_should_skip_repair_loop_and_emit_no_template_js(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     llm = CaptureTemplateRepairLLM()
     orch = RunOrchestrator(
         store=RunStore(base_dir=tmp_path),
@@ -10,23 +10,18 @@ def test_template_repair_uses_latest_template_candidate_not_outline_fallback(tmp
         settings=make_settings(),
     )
 
-    call_counter = {"n": 0}
+    async def always_fail_markitdown(_pptx_path: Path):
+        return False, "forced markitdown failure"
 
-    async def flaky_markitdown_check(_pptx_path: Path):
-        call_counter["n"] += 1
-        if call_counter["n"] == 1:
-            return False, "forced template qa failure"
-        return True, None
-
-    monkeypatch.setattr(orch, "_markitdown_check", flaky_markitdown_check)
+    monkeypatch.setattr(orch, "_markitdown_check", always_fail_markitdown)
     client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
 
-    template_file = tmp_path / "template_repair.pptx"
+    template_file = tmp_path / "template_one_pass.pptx"
     build_structured_template_pptx(template_file)
     with template_file.open("rb") as fp:
         upload = client.post(
             "/v1/ppt/templates",
-            files={"file": ("template_repair.pptx", fp, "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+            files={"file": ("template_one_pass.pptx", fp, "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
         )
     assert upload.status_code == 200
     template_id = upload.json()["template_id"]
@@ -34,8 +29,8 @@ def test_template_repair_uses_latest_template_candidate_not_outline_fallback(tmp
     run_id = client.post(
         "/v1/ppt/runs",
         json={
-            "topic": "Template Repair Loop",
-            "project_id": "p-template-repair",
+            "topic": "Template One Pass",
+            "project_id": "p-template-one-pass",
             "rag_source_ids": ["r1"],
             "template_style": "default",
             "target_slide_count": 1,
@@ -46,9 +41,12 @@ def test_template_repair_uses_latest_template_candidate_not_outline_fallback(tmp
     wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"})
+
+    assert final["compile_js_path"] is None
+    assert final["slides"]
+    assert all(item.get("js_path") in (None, "") for item in final["slides"])
     assert final["qa_report"]["passed"] is True
-    assert len(llm.review_candidate_titles) >= 2
-    assert any(title.startswith("TMP-1-") for title in llm.review_candidate_titles[1:])
+    assert len(llm.review_candidate_titles) == 0
 
 def test_template_upload_and_template_generation(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -82,9 +80,9 @@ def test_template_upload_and_template_generation(tmp_path: Path) -> None:
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"})
     assert final["pptx_path"] and Path(final["pptx_path"]).exists()
-    assert final["compile_js_path"] and Path(final["compile_js_path"]).exists()
+    assert final["compile_js_path"] is None
     assert final["slides"]
-    assert all(item.get("js_path") and Path(item["js_path"]).exists() for item in final["slides"])
+    assert all(item.get("js_path") in (None, "") for item in final["slides"])
     assert final["qa_report"]["passed"] is True
 
 def test_template_structural_rebuild_for_target_count(tmp_path: Path) -> None:
@@ -378,4 +376,5 @@ def test_template_layout_conflict_should_fail_fast_with_layout_report(tmp_path: 
     slide_report = final["template_layout_report"]["slides"][0]
     assert slide_report["issues_after_count"] > 0
     assert slide_report["passed"] is False
+
 

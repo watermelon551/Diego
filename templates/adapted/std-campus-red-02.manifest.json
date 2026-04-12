@@ -1,0 +1,60 @@
+{
+  "template_style_key": "campus-red",
+  "source": "template\\【终】团委模板.pptx",
+  "slides": [
+    {
+      "slide_no": 1,
+      "source_slide_no": 6,
+      "source_target": "slides/slide6.xml",
+      "page_type": "cover",
+      "content_variant": "",
+      "priority": 160,
+      "repeatable": true
+    },
+    {
+      "slide_no": 2,
+      "source_slide_no": 1,
+      "source_target": "slides/slide1.xml",
+      "page_type": "toc",
+      "content_variant": "",
+      "priority": 150,
+      "repeatable": true
+    },
+    {
+      "slide_no": 3,
+      "source_slide_no": 15,
+      "source_target": "slides/slide15.xml",
+      "page_type": "content",
+      "content_variant": "a",
+      "priority": 115,
+      "repeatable": true
+    },
+    {
+      "slide_no": 4,
+      "source_slide_no": 26,
+      "source_target": "slides/slide26.xml",
+      "page_type": "content",
+      "content_variant": "b",
+      "priority": 110,
+      "repeatable": true
+    },
+    {
+      "slide_no": 5,
+      "source_slide_no": 18,
+      "source_target": "slides/slide18.xml",
+      "page_type": "content",
+      "content_variant": "d",
+      "priority": 125,
+      "repeatable": true
+    },
+    {
+      "slide_no": 6,
+      "source_slide_no": 34,
+      "source_target": "slides/slide34.xml",
+      "page_type": "ending",
+      "content_variant": "",
+      "priority": 130,
+      "repeatable": true
+    }
+  ]
+}

@@ -35,7 +35,7 @@ class TemplateFlowService:
         await orch.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.COMPILING))
         await orch._publish(run_id, EventType.COMPILE_STARTED, {"mode": "template"})
 
-        template_dir, work_template, template_md, unpacked, edited, template_slides_dir, template_compile_js, _ = orch._template_work_paths(Path(run.artifact_dir))
+        template_dir, work_template, template_md, unpacked, edited, _, _, _ = orch._template_work_paths(Path(run.artifact_dir))
         template_dir.mkdir(parents=True, exist_ok=True)
         unpacked.mkdir(parents=True, exist_ok=True)
         src_template = Path(template_record.path)
@@ -83,6 +83,7 @@ class TemplateFlowService:
                 design=design,
                 use_review=False,
                 forced_issues=None,
+                emit_template_js=False,
             )
         except TemplateAssetError:
             await orch._fail_run(run_id, "SLIDES_GENERATING", "TEMPLATE_ASSET_FETCH_FAILED", retryable=False)
@@ -98,13 +99,9 @@ class TemplateFlowService:
             return
         orch._pack_template_unpacked(unpacked=unpacked, edited=edited)
 
-        compiled = await orch._compile_template_js(template_slides_dir=template_slides_dir)
-        if not compiled:
-            await orch._fail_run(run_id, "COMPILING", "TEMPLATE_JS_COMPILE_FAILED", retryable=True)
-            return
 
         def apply_compile(r: RunRecord) -> None:
-            r.compile_js_path = str(template_compile_js)
+            r.compile_js_path = None
             r.pptx_path = str(edited)
             r.stage_timings.compile_ms = int((time.perf_counter() - compile_start) * 1000)
             r.slides = artifacts
@@ -114,7 +111,7 @@ class TemplateFlowService:
         await orch._publish(
             run_id,
             EventType.COMPILE_COMPLETED,
-            {"file": str(edited), "mode": "template", "compile_js": str(template_compile_js)},
+            {"file": str(edited), "mode": "template-direct"},
         )
         qa_timeout_sec = max(1.0, float(orch.settings.qa_finalize_timeout_sec))
         try:
@@ -133,5 +130,8 @@ class TemplateFlowService:
             return
         if not post_compile_ok:
             return
-        await orch._finalize_run_success(run_id, from_stage="COMPILING", reason="template compile+qa completed")
+        await orch._finalize_run_success(run_id, from_stage="COMPILING", reason="template direct-apply completed")
+
+
+
 

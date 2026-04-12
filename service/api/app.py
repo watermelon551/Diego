@@ -62,6 +62,10 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
             raise HTTPException(status_code=400, detail="empty template file")
         return await ctx.orchestrator.upload_template(filename=file.filename, content=data)
 
+    @app.get("/v1/ppt/templates")
+    async def list_templates():
+        return await ctx.orchestrator.list_templates()
+
     @app.get("/v1/ppt/templates/{template_id}")
     async def get_template(template_id: str):
         detail = await ctx.orchestrator.get_template_detail(template_id)
@@ -94,3 +98,4 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
         return StreamingResponse(_sse_generator(ctx, run_id), media_type="text/event-stream")
 
     return app
+

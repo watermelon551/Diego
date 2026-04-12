@@ -174,23 +174,36 @@ async def _wait_for_status(
         await asyncio.sleep(0.5)
 
 
-async def _prepare_template(orchestrator) -> str:
+def _print_template_catalog(items) -> None:
+    print("\n可用模板目录：")
+    for idx, item in enumerate(items, start=1):
+        filename = Path(item.path).name if getattr(item, "path", "") else item.filename
+        print(f"  {idx:02d}. {item.template_id} | {filename}")
+
+
+async def _select_template_id(orchestrator) -> str:
+    items = await orchestrator.list_templates()
+    if not items:
+        print("当前没有可用模板。请先上传模板或准备 templates/adapted 下的内置模板。")
+        return ""
+    _print_template_catalog(items)
+    default_id = str(items[0].template_id)
     while True:
-        raw = _ask("请输入模板 pptx 路径", "")
-        if not raw:
-            print("模板模式必须提供模板路径。")
+        raw = _ask("template_id (序号/完整id，输入 list 查看)", default_id).strip()
+        lowered = raw.lower()
+        if lowered == "list":
+            _print_template_catalog(items)
             continue
-        path = Path(raw).expanduser().resolve()
-        if not path.exists() or not path.is_file():
-            print(f"文件不存在: {path}")
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(items):
+                return str(items[idx - 1].template_id)
+            print(f"序号越界，范围 1-{len(items)}")
             continue
-        if path.suffix.lower() != ".pptx":
-            print("仅支持 .pptx")
-            continue
-        content = path.read_bytes()
-        uploaded = await orchestrator.upload_template(filename=path.name, content=content)
-        print(f"模板上传成功，template_id={uploaded.template_id}")
-        return uploaded.template_id
+        for item in items:
+            if str(item.template_id) == raw:
+                return raw
+        print("template_id 不存在，请输入 list 查看。")
 
 
 async def main() -> None:
@@ -235,7 +248,9 @@ async def main() -> None:
 
         template_id: str | None = None
         if generation_mode == GenerationMode.TEMPLATE:
-            template_id = await _prepare_template(orchestrator)
+            template_id = await _select_template_id(orchestrator)
+            if not template_id:
+                continue
 
         req = PromptRunRequest(
             prompt=prompt,
@@ -342,3 +357,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+

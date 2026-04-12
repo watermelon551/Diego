@@ -85,12 +85,15 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         templates_base: Path,
         llm_client: LLMClient,
         settings: Settings,
+        builtin_templates_dir: Path | None = None,
     ) -> None:
         self.store = store
         self.artifacts_base = artifacts_base
         self.templates_base = templates_base
         self.llm_client = llm_client
         self.settings = settings
+        default_builtin_dir = Path.cwd() / 'templates' / 'adapted'
+        self._builtin_templates_dir = Path(builtin_templates_dir) if builtin_templates_dir is not None else default_builtin_dir
         # Keep subprocess monkeypatch compatibility via legacy shim imports.
         self.subprocess = subprocess
         self.slide_concurrency = max(1, settings.slide_concurrency)
@@ -139,6 +142,36 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         self._compile_service = CompileService(self)
         self._quality_service = QualityRepairService(self)
         self._reporting_service = ReportingService(self)
+        self._register_builtin_templates()
+
+    def _register_builtin_templates(self) -> None:
+        directory = self._builtin_templates_dir
+        if not directory.exists() or not directory.is_dir():
+            return
+        seen_ids: set[str] = set()
+        for pptx in sorted(directory.glob('*.pptx'), key=lambda item: item.name.lower()):
+            if not pptx.is_file():
+                continue
+            template_id = self._build_builtin_template_id(pptx.stem, seen=seen_ids)
+            record = TemplateRecord(
+                template_id=template_id,
+                filename=pptx.name,
+                path=str(pptx.resolve()),
+                created_at=now_iso(),
+            )
+            self.store.add_template_sync(record)
+
+    def _build_builtin_template_id(self, stem: str, *, seen: set[str]) -> str:
+        base = re.sub(r'[^a-z0-9]+', '-', str(stem or '').lower()).strip('-')
+        if not base:
+            base = 'template'
+        candidate = f'builtin-{base}'
+        serial = 2
+        while candidate in seen:
+            candidate = f'builtin-{base}-{serial}'
+            serial += 1
+        seen.add(candidate)
+        return candidate
 
     def _use_agentic_engine(self) -> bool:
         return self.settings.generation_engine == "agentic_v2"
@@ -230,6 +263,18 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             path=record.path,
             created_at=record.created_at,
         )
+
+    async def list_templates(self) -> list[TemplateDetailResponse]:
+        records = await self.store.list_templates()
+        return [
+            TemplateDetailResponse(
+                template_id=item.template_id,
+                filename=item.filename,
+                path=item.path,
+                created_at=item.created_at,
+            )
+            for item in records
+        ]
 
     async def create_run(self, req: CreateRunRequest) -> RunSummaryResponse:
         run_id = str(uuid4())
@@ -847,6 +892,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         design: DesignProfile,
         use_review: bool,
         forced_issues: list[str] | None,
+        emit_template_js: bool = True,
     ) -> list[SlideArtifact] | None:
         return await self._compile_service.apply_template_nodes_once(
             run_id=run_id,
@@ -854,6 +900,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             design=design,
             use_review=use_review,
             forced_issues=forced_issues,
+            emit_template_js=emit_template_js,
         )
 
     async def _revise_template_slides(self, *, run_id: str, design: DesignProfile, forced_issues: list[str] | None) -> bool:
@@ -2377,25 +2424,10 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             else:
                 issues.append("scratch mode output pptx missing")
         else:
-            template_slides = sorted(run.slides, key=lambda x: x.slide_no)
-            if not template_slides:
-                issues.append("template mode slide js artifacts missing")
-            for artifact in template_slides:
-                if not artifact.js_path:
-                    issues.append(f"slide-{artifact.slide_no:02d}: js_path missing")
-                    continue
-                slide_js = Path(artifact.js_path)
-                if not slide_js.exists():
-                    issues.append(f"slide-{artifact.slide_no:02d}: js file missing")
-                    continue
-                issues.extend(await self._run_slide_preview_qa(run_id=run_id, slide_js=slide_js, slide_no=artifact.slide_no))
-
             if not run.pptx_path or not Path(run.pptx_path).exists():
                 issues.append("template mode output pptx missing")
             else:
-                markitdown_ok, extract_issue = await self._markitdown_check(Path(run.pptx_path))
-                if not markitdown_ok and extract_issue:
-                    issues.append(extract_issue)
+                issues.extend(self._template_output_qa_issues(Path(run.pptx_path)))
 
         deduped_issues = self._dedupe_preserve_order([str(item) for item in issues if str(item).strip()])
         issues_by_slide, global_issues = self._split_qa_issues_by_slide(deduped_issues)
@@ -2410,6 +2442,80 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         await self.store.update_run(run_id, lambda r: setattr(r, "qa_report", report))
         await self._publish(run_id, EventType.QA_COMPLETED, report)
         return not deduped_issues
+    def _template_output_qa_issues(self, pptx_path: Path) -> list[str]:
+        issues: list[str] = []
+        placeholder_re = re.compile(
+            r"(xxxx|lorem|ipsum|placeholder|click to add|text here|your text|todo)",
+            flags=re.IGNORECASE,
+        )
+        try:
+            from zipfile import ZipFile
+
+            with ZipFile(pptx_path, "r") as zf:
+                names = [item for item in zf.namelist() if item and not item.endswith("/")]
+                if "[Content_Types].xml" not in names:
+                    return ["template output missing [Content_Types].xml"]
+                if "ppt/presentation.xml" not in names:
+                    return ["template output missing ppt/presentation.xml"]
+
+                slide_names = sorted(
+                    [
+                        item
+                        for item in names
+                        if item.startswith("ppt/slides/slide") and item.endswith(".xml")
+                    ]
+                )
+                if not slide_names:
+                    issues.append("template output contains no slide xml")
+
+                content_types_xml = zf.read("[Content_Types].xml").decode("utf-8", errors="ignore")
+                default_exts = {
+                    str(ext).strip().lower()
+                    for ext in re.findall(r'<Default\b[^>]*Extension="([^"]+)"', content_types_xml)
+                }
+                override_parts = {
+                    str(part).strip()
+                    for part in re.findall(r'<Override\b[^>]*PartName="([^"]+)"', content_types_xml)
+                }
+
+                missing_content_type_parts: list[str] = []
+                for name in names:
+                    if name == "[Content_Types].xml":
+                        continue
+                    part_name = f"/{name}"
+                    if part_name in override_parts:
+                        continue
+                    ext = Path(name).suffix.lower().lstrip(".")
+                    if ext and ext in default_exts:
+                        continue
+                    missing_content_type_parts.append(part_name)
+                    if len(missing_content_type_parts) >= 8:
+                        break
+                if missing_content_type_parts:
+                    issues.append(
+                        "missing content-type entries: " + ", ".join(missing_content_type_parts)
+                    )
+
+                for slide_name in slide_names:
+                    try:
+                        slide_xml = zf.read(slide_name).decode("utf-8", errors="ignore")
+                    except Exception:
+                        issues.append(f"{slide_name}: unreadable xml")
+                        continue
+                    texts = [self._xml_unescape(item).strip() for item in re.findall(r"<a:t>(.*?)</a:t>", slide_xml, flags=re.DOTALL)]
+                    cnv_hints: list[str] = []
+                    for tag in re.findall(r"<p:cNvPr\b[^>]*/>", slide_xml):
+                        attrs = self._parse_xml_attrs(tag)
+                        hint = f"{attrs.get('name', '')} {attrs.get('descr', '')}".strip()
+                        if hint:
+                            cnv_hints.append(hint)
+                    combined = "\\n".join([item for item in texts + cnv_hints if item]).lower()
+                    if placeholder_re.search(combined):
+                        issues.append(f"{slide_name}: placeholder-like text remains")
+
+        except Exception as exc:
+            issues.append(f"template output qa exception: {self._exception_reason(exc)}")
+        return self._dedupe_preserve_order(issues)
     async def _markitdown_check(self, pptx_path: Path) -> tuple[bool, str | None]:
         result = await asyncio.to_thread(
             subprocess.run,
@@ -2759,6 +2865,11 @@ def build_orchestrator(base_dir: Path) -> RunOrchestrator:
         llm_client=llm_client,
         settings=settings,
     )
+
+
+
+
+
 
 
 

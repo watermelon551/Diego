@@ -1,0 +1,51 @@
+{
+  "template_style_key": "business-dark",
+  "source": "template\\黑金风格科技.pptx",
+  "slides": [
+    {
+      "slide_no": 1,
+      "source_slide_no": 1,
+      "source_target": "slides/slide1.xml",
+      "page_type": "cover",
+      "content_variant": "",
+      "priority": 160,
+      "repeatable": true
+    },
+    {
+      "slide_no": 2,
+      "source_slide_no": 15,
+      "source_target": "slides/slide15.xml",
+      "page_type": "toc",
+      "content_variant": "",
+      "priority": 150,
+      "repeatable": true
+    },
+    {
+      "slide_no": 3,
+      "source_slide_no": 2,
+      "source_target": "slides/slide2.xml",
+      "page_type": "content",
+      "content_variant": "a",
+      "priority": 115,
+      "repeatable": true
+    },
+    {
+      "slide_no": 4,
+      "source_slide_no": 9,
+      "source_target": "slides/slide9.xml",
+      "page_type": "ending",
+      "content_variant": "",
+      "priority": 130,
+      "repeatable": true
+    },
+    {
+      "slide_no": 5,
+      "source_slide_no": 3,
+      "source_target": "slides/slide3.xml",
+      "page_type": "content",
+      "content_variant": "b",
+      "priority": 110,
+      "repeatable": true
+    }
+  ]
+}

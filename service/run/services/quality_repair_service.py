@@ -25,6 +25,17 @@ class QualityRepairService:
         orch = self.orch
         if not orch.settings.qa_enabled:
             return True
+        if mode == GenerationMode.TEMPLATE:
+            qa_ok = await orch._run_skill_qa(run_id, mode=mode)
+            if qa_ok:
+                return True
+            latest = await orch.store.get_run(run_id)
+            if latest is not None and latest.status == RunStatus.FAILED:
+                return False
+            qa_details = await orch._persist_qa_failure_artifacts(run_id=run_id, mode=mode)
+            await orch._fail_run(run_id, "COMPILING", "QA_FAILED", retryable=False, error_details=qa_details)
+            return False
+
         polish_ok = await self.mandatory_polish_cycle(run_id, mode=mode, design=design)
         if not polish_ok:
             latest = await orch.store.get_run(run_id)
@@ -427,3 +438,4 @@ class QualityRepairService:
         if candidate.layout_hint and candidate.layout_hint not in allowed_layouts:
             issues.append(f"layout_hint invalid for {node.page_type.value}: {candidate.layout_hint}")
         return issues
+

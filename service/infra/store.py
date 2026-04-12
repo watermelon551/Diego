@@ -65,10 +65,18 @@ class RunStore:
         async with self._get_lock():
             self._templates[template.template_id] = template
 
+    def add_template_sync(self, template: TemplateRecord) -> None:
+        self._templates[template.template_id] = template
+
     async def get_template(self, template_id: str) -> TemplateRecord | None:
         async with self._get_lock():
             return self._templates.get(template_id)
 
+    async def list_templates(self) -> list[TemplateRecord]:
+        async with self._get_lock():
+            return list(self._templates.values())
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+

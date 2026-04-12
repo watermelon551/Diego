@@ -1,0 +1,60 @@
+{
+  "template_style_key": "academic-clean",
+  "source": "template\\1.ST-第1章 软件测试概述-2025(1).pptx",
+  "slides": [
+    {
+      "slide_no": 1,
+      "source_slide_no": 1,
+      "source_target": "slides/slide1.xml",
+      "page_type": "cover",
+      "content_variant": "",
+      "priority": 160,
+      "repeatable": true
+    },
+    {
+      "slide_no": 2,
+      "source_slide_no": 2,
+      "source_target": "slides/slide2.xml",
+      "page_type": "toc",
+      "content_variant": "",
+      "priority": 150,
+      "repeatable": true
+    },
+    {
+      "slide_no": 3,
+      "source_slide_no": 4,
+      "source_target": "slides/slide4.xml",
+      "page_type": "content",
+      "content_variant": "a",
+      "priority": 115,
+      "repeatable": true
+    },
+    {
+      "slide_no": 4,
+      "source_slide_no": 3,
+      "source_target": "slides/slide3.xml",
+      "page_type": "content",
+      "content_variant": "b",
+      "priority": 110,
+      "repeatable": true
+    },
+    {
+      "slide_no": 5,
+      "source_slide_no": 24,
+      "source_target": "slides/slide24.xml",
+      "page_type": "content",
+      "content_variant": "d",
+      "priority": 125,
+      "repeatable": true
+    },
+    {
+      "slide_no": 6,
+      "source_slide_no": 51,
+      "source_target": "slides/slide51.xml",
+      "page_type": "ending",
+      "content_variant": "",
+      "priority": 130,
+      "repeatable": true
+    }
+  ]
+}

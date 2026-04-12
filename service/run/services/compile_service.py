@@ -75,6 +75,7 @@ class CompileService:
         design: DesignProfile,
         use_review: bool,
         forced_issues: list[str] | None,
+        emit_template_js: bool = True,
     ) -> list[SlideArtifact] | None:
         orch = self.orch
         run = await orch.store.get_run(run_id)
@@ -83,8 +84,9 @@ class CompileService:
         effective_template_style = orch._resolved_template_style(run)
         slide_files = orch._rebuild_template_structure(unpacked=unpacked, target_count=len(run.outline.nodes))
         _, _, _, _, _, template_slides_dir, template_compile_js, _ = self.template_work_paths(Path(run.artifact_dir))
-        template_slides_dir.mkdir(parents=True, exist_ok=True)
-        (template_slides_dir / "output").mkdir(parents=True, exist_ok=True)
+        if emit_template_js:
+            template_slides_dir.mkdir(parents=True, exist_ok=True)
+            (template_slides_dir / "output").mkdir(parents=True, exist_ok=True)
 
         artifacts: list[SlideArtifact] = []
         mapping_report: dict[str, Any] = {"mode": "template", "slides": [], "unmapped_required": [], "passed": True}
@@ -223,37 +225,42 @@ class CompileService:
                     },
                 )
 
-            generated = GeneratedSlide(
-                title=node_for_apply.title,
-                bullets=list(node_for_apply.bullets),
-                citations=list(citations),
-                page_type=base_node.page_type,
-                layout_hint=node_for_apply.layout_hint,
-            )
-            js_code = orch._render_skill_slide_js(
-                slide_no=idx,
-                total=run.input.target_slide_count,
-                node=base_node,
-                generated=generated,
-                design=design,
-                chart_plan=chart_plan,
-            )
-            slide_path = template_slides_dir / f"slide-{idx:02d}.js"
-            slide_path.write_text(js_code, encoding="utf-8")
+            js_code = ""
+            js_path: str | None = None
+            if emit_template_js:
+                generated = GeneratedSlide(
+                    title=node_for_apply.title,
+                    bullets=list(node_for_apply.bullets),
+                    citations=list(citations),
+                    page_type=base_node.page_type,
+                    layout_hint=node_for_apply.layout_hint,
+                )
+                js_code = orch._render_skill_slide_js(
+                    slide_no=idx,
+                    total=run.input.target_slide_count,
+                    node=base_node,
+                    generated=generated,
+                    design=design,
+                    chart_plan=chart_plan,
+                )
+                slide_path = template_slides_dir / f"slide-{idx:02d}.js"
+                slide_path.write_text(js_code, encoding="utf-8")
+                js_path = str(slide_path)
             artifacts.append(
                 SlideArtifact(
                     slide_no=idx,
-                    js_path=str(slide_path),
+                    js_path=js_path,
                     js_code=js_code,
                     status="ok",
                     citations=list(citations),
                 )
             )
 
-        template_compile_js.write_text(
-            orch._build_compile_script(total=len(artifacts), theme=design.theme),
-            encoding="utf-8",
-        )
+        if emit_template_js:
+            template_compile_js.write_text(
+                orch._build_compile_script(total=len(artifacts), theme=design.theme),
+                encoding="utf-8",
+            )
 
         def apply_reports(r: RunRecord) -> None:
             r.template_mapping_report = mapping_report
@@ -355,3 +362,5 @@ class CompileService:
                 if normalized and normalized not in results:
                     results.append(normalized)
         return results
+
+

@@ -1,0 +1,51 @@
+{
+  "template_style_key": "campus-red",
+  "source": "template\\01 西南交通大学红色系模板1.pptx",
+  "slides": [
+    {
+      "slide_no": 1,
+      "source_slide_no": 1,
+      "source_target": "slides/slide1.xml",
+      "page_type": "cover",
+      "content_variant": "",
+      "priority": 160,
+      "repeatable": true
+    },
+    {
+      "slide_no": 2,
+      "source_slide_no": 3,
+      "source_target": "slides/slide3.xml",
+      "page_type": "toc",
+      "content_variant": "",
+      "priority": 150,
+      "repeatable": true
+    },
+    {
+      "slide_no": 3,
+      "source_slide_no": 2,
+      "source_target": "slides/slide2.xml",
+      "page_type": "content",
+      "content_variant": "a",
+      "priority": 115,
+      "repeatable": true
+    },
+    {
+      "slide_no": 4,
+      "source_slide_no": 18,
+      "source_target": "slides/slide18.xml",
+      "page_type": "content",
+      "content_variant": "b",
+      "priority": 110,
+      "repeatable": true
+    },
+    {
+      "slide_no": 5,
+      "source_slide_no": 4,
+      "source_target": "slides/slide4.xml",
+      "page_type": "ending",
+      "content_variant": "",
+      "priority": 130,
+      "repeatable": true
+    }
+  ]
+}

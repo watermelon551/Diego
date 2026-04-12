@@ -172,19 +172,20 @@ class TemplateOpsMixin(TemplateAssetSearchMixin):
         return presentation_text[: insert_at + 1] + "\n  " + block + presentation_text[insert_at + 1 :]
 
     def _rebuild_content_types_overrides(self, *, content_types_text: str, final_targets: list[str]) -> str:
+        default_tags = re.findall(r"<Default\b[^>]*/>", content_types_text)
         override_tags = re.findall(r"<Override\b[^>]*/>", content_types_text)
-        kept: list[str] = []
+        kept_overrides: list[str] = []
         for tag in override_tags:
             attrs = self._parse_xml_attrs(tag)
             part_name = attrs.get("PartName", "")
             if part_name.startswith("/ppt/slides/slide") and part_name.endswith(".xml"):
                 continue
-            kept.append(tag)
+            kept_overrides.append(tag)
         slide_overrides = [
             f'<Override PartName="/ppt/{target}" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
             for target in final_targets
         ]
-        body = "\n".join(kept + slide_overrides)
+        body = "\n".join(default_tags + kept_overrides + slide_overrides)
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
@@ -1155,4 +1156,5 @@ class TemplateOpsMixin(TemplateAssetSearchMixin):
             .replace(">", "&gt;")
             .replace('"', "&quot;")
         )
+
 
