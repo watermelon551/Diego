@@ -349,7 +349,10 @@ class OpenAICompatibleLLMClient:
             "safe margins >=0.5in on content slides; block gaps around 0.3-0.5in; "
             "fit:'shrink' on title and long body text; natural-language content only. "
             "Use addPageBadge(pres, slide, theme, slideConfig.index) on non-cover slides at x:9.3, y:5.1. "
-            "If using LINE shape, keep positive w/h (never zero)."
+            "If using LINE shape, keep positive w/h (never zero). "
+            "When slide_plan.visual_plan.assets is present: MUST call slide.addImage({ path|data, ...options }) using object-literal signature only; "
+            "MUST consume slot='main' asset path in createSlide; slot='secondary' is optional; "
+            "MUST NOT leave image placeholder labels such as [主视觉图像], [辅助图像], [流程图], [示意图], [image placeholder]."
         )
         text = await self._chat_text(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
@@ -400,6 +403,10 @@ class OpenAICompatibleLLMClient:
             "When failure_context contains line numbers/focus windows, patch those lines first and avoid unrelated rewrites.\n"
             "Must satisfy: body text left-aligned, clear title/body size contrast, fit:'shrink' on title and long body text, "
             "safe margins and spacing, content slide must keep non-text visual element, non-cover slides must include page badge.\n"
+            "When slide_plan.visual_plan.assets is present, preserve slot semantics and enforce strict image contract:\n"
+            "- use slide.addImage({ path|data, ...opts }) object form only\n"
+            "- consume slot='main' asset in createSlide\n"
+            "- remove image placeholder labels and replace with actual addImage usage\n"
             f"candidate_js=\n{candidate_js}\n"
         )
         text = await self._chat_text(

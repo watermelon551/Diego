@@ -65,11 +65,18 @@ from .types import (
     TemplateSlotMappingError,
 )
 from ..slides.js_quality_mixin import SlideJsQualityMixin
+from ..slides.js_asset_contract import (
+    collect_addimage_signature_issues,
+    extract_main_asset_path,
+    extract_planned_asset_paths,
+    has_image_placeholder_text,
+)
 from ..templates.template_ops_mixin import TemplateOpsMixin
+from .asset_flow_mixin import RunAssetFlowMixin
 from .flows import OutlineFlowService, ScratchFlowService, TemplateFlowService
 from .services import CompileService, QualityRepairService, ReportingService
 
-class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
+class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
     def __init__(
         self,
         *,
@@ -122,6 +129,9 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
         self._run_budget_lock = threading.Lock()
         self._run_llm_call_counts: dict[str, int] = {}
         self._run_llm_call_limits: dict[str, int] = {}
+        self._asset_context_lock = threading.Lock()
+        self._asset_search_context_stack: list[dict[str, Any]] = []
+        self._run_asset_keys: dict[str, set[str]] = {}
         self._js_api_contract = self._load_js_api_contract()
         self._outline_flow = OutlineFlowService(self)
         self._scratch_flow = ScratchFlowService(self)
@@ -450,6 +460,7 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
         with self._run_budget_lock:
             self._run_llm_call_counts.pop(run_id, None)
             self._run_llm_call_limits.pop(run_id, None)
+            self._run_asset_keys.pop(run_id, None)
 
     def _consume_run_llm_budget(self, *, run_id: str, phase: str) -> None:
         with self._run_budget_lock:
@@ -1256,6 +1267,7 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
                 slide_no=slide_no,
                 page_type=node.page_type.value,
                 visual_policy=run.input.visual_policy,
+                slide_plan=candidate_plan,
             )
             fatal_contract = any(
                 issue in {"missing export contract", "createSlide signature invalid", "createSlide must be synchronous"}
@@ -1586,7 +1598,7 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
             elif layout in {"content-timeline", "content-comparison"}:
                 visual_kind = "shape_flow"
 
-        image_slots = 1 if (node.page_type == SlidePageType.CONTENT and visual_kind in {"image_or_showcase", "icon_rows"}) else 0
+        image_slots = 2 if (node.page_type == SlidePageType.CONTENT and visual_kind in {"image_or_showcase", "icon_rows"}) else 0
         return {
             "slide_no": slide_no,
             "page_type": node.page_type.value,
@@ -1810,83 +1822,6 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
             base["seed"] = f"s{slide_no}-r{round_no}-w{worker_idx}-{layout}"
             variants.append(base)
         return variants
-
-    async def _prepare_scratch_visual_assets(
-        self,
-        *,
-        run: RunRecord,
-        node: OutlineNode,
-        slide_no: int,
-        slide_plan: dict[str, Any],
-        slides_dir: Path,
-    ) -> list[dict[str, Any]]:
-        if run.input.visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY:
-            return []
-        if node.page_type != SlidePageType.CONTENT:
-            return []
-        visual_plan = slide_plan.get("visual_plan", {}) if isinstance(slide_plan.get("visual_plan", {}), dict) else {}
-        kind = str(visual_plan.get("kind", ""))
-        requires_image = run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED or kind in {"image_or_showcase", "icon_rows"}
-        if not requires_image:
-            return []
-
-        slot_type = "icon" if kind == "icon_rows" else "image"
-        query = self._build_asset_query(node=node, slot_type=slot_type, slide_no=slide_no)
-        imgs_dir = slides_dir / "imgs"
-        imgs_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            asset_bytes, ext = await self._fetch_slot_asset_with_gate(
-                query=query,
-                slot_type=slot_type,
-                node=node,
-                slide_no=slide_no,
-                rel_id=f"scratch-{slide_no:02d}-{slot_type}",
-            )
-            local_path = imgs_dir / f"slide-{slide_no:02d}-{slot_type}.{ext}"
-            await asyncio.to_thread(local_path.write_bytes, asset_bytes)
-            rel_path = Path("imgs") / local_path.name
-            return [
-                {
-                    "slot": slot_type,
-                    "type": slot_type,
-                    "query": query,
-                    "path": rel_path.as_posix(),
-                    "provider": self.settings.asset_provider,
-                }
-            ]
-        except Exception as exc:
-            if run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED:
-                raise VisualPolicyUnsatisfiedError(
-                    f"slide {slide_no} requires media asset but fetch failed: {self._exception_reason(exc)}"
-                ) from exc
-            return []
-
-    async def _fetch_slot_asset_with_gate(
-        self,
-        *,
-        query: str,
-        slot_type: str,
-        node: OutlineNode,
-        slide_no: int,
-        rel_id: str,
-    ) -> tuple[bytes, str]:
-        acquired = False
-        try:
-            timeout_sec = max(2.0, float(self.settings.asset_timeout_sec) + 2.0)
-            acquired = await asyncio.to_thread(self._asset_fetch_gate.acquire, True, timeout_sec)
-            if not acquired:
-                raise TimeoutError("asset fetch concurrency gate timeout")
-            return await asyncio.to_thread(
-                self._fetch_slot_asset,
-                query=query,
-                slot_type=slot_type,
-                node=node,
-                slide_no=slide_no,
-                rel_id=rel_id,
-            )
-        finally:
-            if acquired:
-                self._asset_fetch_gate.release()
 
     def _fallback_research_brief(self, *, topic: str, template_style: str, target_slide_count: int) -> dict[str, Any]:
         focus: list[str] = []
@@ -2167,11 +2102,16 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
     def _slide_block_content(self, layout_hint: str, *, visual_kind: str = "shape") -> str:
         visual_header = [
             "  const visualKind = String(slideConfig.visualKind || 'shape').toLowerCase();",
-            "  const visualAsset = Array.isArray(slideConfig.assets) ? slideConfig.assets.find((item) => item && typeof item.path === 'string' && item.path.trim()) : null;",
+            "  const visualAssets = Array.isArray(slideConfig.assets) ? slideConfig.assets.filter((item) => item && typeof item.path === 'string' && item.path.trim()) : [];",
+            "  const visualAssetMain = visualAssets.find((item) => String(item.slot || '').toLowerCase() === 'main') || visualAssets[0] || null;",
+            "  const visualAssetSecondary = visualAssets.find((item) => String(item.slot || '').toLowerCase() === 'secondary') || (visualAssets.length > 1 ? visualAssets[1] : null);",
         ]
         if layout_hint == "content-icon-rows":
             body = "\n".join(
                 [
+                    "  if (visualKind === 'image' && visualAssetMain && visualAssetMain.path) {",
+                    "    slide.addImage({ path: visualAssetMain.path, x: 6.75, y: 1.05, w: 2.15, h: 1.25 });",
+                    "  }",
                     "  bullets.slice(0, 5).forEach((item, idx) => {",
                     "    const y = 1.35 + idx * 0.72;",
                     "    slide.addShape(pres.shapes.OVAL, { x: 0.85, y: y + 0.08, w: 0.32, h: 0.32, fill: { color: theme.accent }, line: { color: theme.accent } });",
@@ -2236,8 +2176,12 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
             body = "\n".join(
                 [
                     "  slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 0.8, y: 1.25, w: 8.4, h: 2.55, fill: { color: theme.light, transparency: 6 }, line: { color: theme.secondary, pt: 1 }, rectRadius: style.cornerMedium });",
-                    "  if (visualKind === 'image' && visualAsset && visualAsset.path) {",
-                    "    slide.addImage({ path: visualAsset.path, x: 1.0, y: 1.42, w: 7.95, h: 2.2 });",
+                    "  if (visualKind === 'image' && visualAssetMain && visualAssetMain.path) {",
+                    "    slide.addImage({ path: visualAssetMain.path, x: 1.0, y: 1.42, w: 7.95, h: 2.2 });",
+                    "    if (visualAssetSecondary && visualAssetSecondary.path) {",
+                    "      slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 7.45, y: 3.25, w: 1.4, h: 0.88, fill: { color: theme.bg, transparency: 6 }, line: { color: theme.bg, pt: 1 }, rectRadius: style.cornerSmall });",
+                    "      slide.addImage({ path: visualAssetSecondary.path, x: 7.52, y: 3.32, w: 1.25, h: 0.74 });",
+                    "    }",
                     "  } else {",
                     "    slide.addText('Visual showcase area', { x: 1.1, y: 2.35, w: 7.8, h: 0.4, fontSize: 14, fontFace: fonts.body, color: theme.secondary, bold: false, align: 'center', margin: 0 });",
                     "  }",
@@ -2249,8 +2193,11 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
             [
                 "  slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 0.7, y: 1.25, w: 4.2, h: 3.75, fill: { color: theme.light, transparency: 12 }, line: { color: theme.secondary, pt: 1 }, rectRadius: style.cornerMedium });",
                 "  slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 5.1, y: 1.25, w: 4.2, h: 3.75, fill: { color: theme.bg }, line: { color: theme.secondary, pt: 1 }, rectRadius: style.cornerMedium });",
-                "  if (visualKind === 'image' && visualAsset && visualAsset.path) {",
-                "    slide.addImage({ path: visualAsset.path, x: 1.0, y: 1.55, w: 3.6, h: 3.05 });",
+                "  if (visualKind === 'image' && visualAssetMain && visualAssetMain.path) {",
+                "    slide.addImage({ path: visualAssetMain.path, x: 1.0, y: 1.55, w: 3.6, h: 3.05 });",
+                "    if (visualAssetSecondary && visualAssetSecondary.path) {",
+                "      slide.addImage({ path: visualAssetSecondary.path, x: 3.65, y: 3.88, w: 1.05, h: 0.7 });",
+                "    }",
                 "  } else {",
                 "    slide.addText('Visual', { x: 1.0, y: 2.9, w: 3.5, h: 0.45, fontSize: 18, fontFace: fonts.title, color: theme.primary, bold: true, align: 'center', margin: 0 });",
                 "  }",
@@ -2349,6 +2296,22 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
                     static_issues.append(f"{path.name}: title accent line pattern detected")
                 if page_type == "content" and all(token not in text for token in ("addShape(", "addImage(", "addChart(")):
                     static_issues.append(f"{path.name}: content slide missing non-text visual element")
+                image_sig_issues = collect_addimage_signature_issues(
+                    text,
+                    extract_method_call_args=lambda payload, method_expr: self._extract_method_call_args(payload, method_expr=method_expr),
+                    dedupe=self._dedupe_preserve_order,
+                )
+                for issue in image_sig_issues:
+                    static_issues.append(f"{path.name}: {issue}")
+                planned_assets = extract_planned_asset_paths(js_code=text, slide_plan=None, dedupe=self._dedupe_preserve_order)
+                main_asset = extract_main_asset_path(js_code=text, slide_plan=None, dedupe=self._dedupe_preserve_order)
+                if page_type == "content" and planned_assets:
+                    if "addImage(" not in text:
+                        static_issues.append(f"{path.name}: visual assets planned but addImage() missing")
+                    if main_asset and main_asset not in text:
+                        static_issues.append(f"{path.name}: visual assets planned but main image path not used")
+                    if has_image_placeholder_text(text):
+                        static_issues.append(f"{path.name}: image placeholder text remains while visual assets are planned")
                 if page_type == "content" and run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED:
                     if "addImage(" not in text:
                         static_issues.append(f"{path.name}: visual_policy media_required expects addImage()")
@@ -2579,6 +2542,27 @@ class RunOrchestrator(SlideJsQualityMixin, TemplateOpsMixin):
                 "stderr": self._truncate_diag_text(result.stderr or ""),
                 "stdout": self._truncate_diag_text(result.stdout or ""),
                 "error_message": reason,
+            }
+            await self._publish(
+                run_id,
+                EventType.SLIDE_PREVIEW_QA,
+                {
+                    "slide_no": slide_no,
+                    "slide_js": slide_js.name,
+                    "passed": False,
+                    "issues": issues,
+                },
+            )
+            return issues, preview_text, diagnostics
+        known_reason = self._known_compile_stderr_reason(stderr=result.stderr or "", stdout=result.stdout or "")
+        if known_reason:
+            issues.append(f"{slide_js.name}: preview compile failed: {known_reason}")
+            diagnostics = {
+                "command": " ".join(preview_cmd),
+                "exit_code": result.returncode,
+                "stderr": self._truncate_diag_text(result.stderr or ""),
+                "stdout": self._truncate_diag_text(result.stdout or ""),
+                "error_message": known_reason,
             }
             await self._publish(
                 run_id,

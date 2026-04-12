@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import httpx
 import os
 import random
 import re
@@ -18,14 +17,15 @@ from ..run.types import (
     LayoutBox,
     SlotGraph,
     SlotNode,
-    TemplateAssetError,
     TemplateLayoutConflictError,
     TemplateSlotMappingError,
     SLIDE_HEIGHT_EMU,
     SLIDE_WIDTH_EMU,
 )
+from .asset_search_mixin import TemplateAssetSearchMixin
 
-class TemplateOpsMixin:
+
+class TemplateOpsMixin(TemplateAssetSearchMixin):
     def _rebuild_template_structure(self, *, unpacked: Path, target_count: int) -> list[Path]:
         self._ensure_template_structure_files(unpacked=unpacked)
         slides_dir = unpacked / "ppt" / "slides"
@@ -613,6 +613,14 @@ class TemplateOpsMixin:
 
         media_dir = unpacked / "ppt" / "media"
         media_dir.mkdir(parents=True, exist_ok=True)
+        context = self._active_asset_search_context()
+        run_id = str(context.get("run_id", "")).strip()
+        used_keys: set[str] = set()
+        snapshotter = getattr(self, "_run_asset_keys_snapshot", None)
+        if run_id and callable(snapshotter):
+            snap = snapshotter(run_id=run_id)
+            if isinstance(snap, set):
+                used_keys = {str(item).strip() for item in snap if str(item).strip()}
         out: list[str] = []
         cursor = 0
         replaced_any = False
@@ -640,12 +648,14 @@ class TemplateOpsMixin:
 
             slot_type = keep_slot_map.get(rel_id, "image")
             query = self._build_asset_query(node=node, slot_type=slot_type, slide_no=slide_no)
-            asset_bytes, ext = self._fetch_slot_asset(
+            asset_bytes, ext, meta = self._fetch_slot_asset(
                 query=query,
                 slot_type=slot_type,
                 node=node,
                 slide_no=slide_no,
                 rel_id=rel_id,
+                search_context=context,
+                used_asset_keys=used_keys,
             )
             filename = f"slot-s{slide_no:02d}-{rel_id.lower() or 'img'}-{slot_type}.{ext}"
             target_file = media_dir / filename
@@ -653,6 +663,12 @@ class TemplateOpsMixin:
             attrs["Target"] = self._relative_target(from_dir=slide_xml.parent, to_path=target_file)
             attrs_str = " ".join(f'{k}="{self._xml_attr_escape(v)}"' for k, v in attrs.items())
             out.append(f"<Relationship {attrs_str}/>")
+            selected_key = str(meta.get("key", "")).strip()
+            if selected_key:
+                used_keys.add(selected_key)
+                remember = getattr(self, "_remember_run_asset_key", None)
+                if run_id and callable(remember):
+                    remember(run_id=run_id, key=selected_key)
             replaced_any = True
             seen_exts.add(ext)
             cursor = tag_match.end()
@@ -703,6 +719,14 @@ class TemplateOpsMixin:
         out.append(text[cursor:])
         return "".join(out)
 
+    def _active_asset_search_context(self) -> dict[str, Any]:
+        getter = getattr(self, "_get_active_asset_search_context", None)
+        if callable(getter):
+            value = getter()
+            if isinstance(value, dict):
+                return value
+        return {}
+
     def _build_asset_query(self, *, node: OutlineNode, slot_type: str, slide_no: int) -> str:
         head = node.title.strip() or f"slide {slide_no}"
         tail = node.bullets[0].strip() if node.bullets else ""
@@ -711,112 +735,6 @@ class TemplateOpsMixin:
         if slot_type == "logo":
             return f"{head} {tail} company logo"
         return f"{head} {tail} presentation photo"
-
-    def _fetch_slot_asset(self, *, query: str, slot_type: str, node: OutlineNode, slide_no: int, rel_id: str) -> tuple[bytes, str]:
-        provider = self.settings.asset_provider.lower().strip()
-        if provider == "mock":
-            return self._build_slot_png_bytes(node=node, slot_type=slot_type, slide_no=slide_no, rel_id=rel_id), "png"
-        if provider == "none":
-            raise TemplateAssetError("asset provider is disabled")
-
-        providers = self._asset_provider_chain(provider)
-        if not providers:
-            raise TemplateAssetError(f"no configured asset providers for {provider}")
-
-        last_error: Exception | None = None
-        for name in providers:
-            for _ in range(max(1, self.settings.asset_max_retries)):
-                try:
-                    if name == "unsplash":
-                        return self._fetch_unsplash_asset(query=query, slot_type=slot_type)
-                    if name == "pexels":
-                        return self._fetch_pexels_asset(query=query, slot_type=slot_type)
-                except Exception as exc:  # noqa: PERF203
-                    last_error = exc
-                    continue
-        raise TemplateAssetError(f"asset fetch failed for query={query!r}: {last_error}")
-
-    def _asset_provider_chain(self, provider: str) -> list[str]:
-        if provider == "unsplash":
-            return ["unsplash"]
-        if provider == "pexels":
-            return ["pexels"]
-        if provider == "auto":
-            order: list[str] = []
-            if self.settings.unsplash_access_key:
-                order.append("unsplash")
-            if self.settings.pexels_api_key:
-                order.append("pexels")
-            return order
-        return []
-
-    def _fetch_unsplash_asset(self, *, query: str, slot_type: str) -> tuple[bytes, str]:
-        key = self.settings.unsplash_access_key.strip()
-        if not key:
-            raise TemplateAssetError("missing UNSPLASH_ACCESS_KEY")
-        orientation = "landscape" if slot_type == "image" else "squarish"
-        with httpx.Client(timeout=self.settings.asset_timeout_sec, follow_redirects=True) as client:
-            resp = client.get(
-                "https://api.unsplash.com/search/photos",
-                params={"query": query, "per_page": 1, "orientation": orientation},
-                headers={"Authorization": f"Client-ID {key}"},
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            results = payload.get("results", []) if isinstance(payload, dict) else []
-            if not results:
-                raise TemplateAssetError("unsplash returned no results")
-            first = results[0] if isinstance(results[0], dict) else {}
-            urls = first.get("urls", {}) if isinstance(first, dict) else {}
-            image_url = urls.get("regular") or urls.get("full") or urls.get("small")
-            if not image_url:
-                raise TemplateAssetError("unsplash response missing image url")
-            return self._download_asset(client=client, url=str(image_url))
-
-    def _fetch_pexels_asset(self, *, query: str, slot_type: str) -> tuple[bytes, str]:
-        key = self.settings.pexels_api_key.strip()
-        if not key:
-            raise TemplateAssetError("missing PEXELS_API_KEY")
-        orientation = "landscape" if slot_type == "image" else "square"
-        with httpx.Client(timeout=self.settings.asset_timeout_sec, follow_redirects=True) as client:
-            resp = client.get(
-                "https://api.pexels.com/v1/search",
-                params={"query": query, "per_page": 1, "orientation": orientation},
-                headers={"Authorization": key},
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            photos = payload.get("photos", []) if isinstance(payload, dict) else []
-            if not photos:
-                raise TemplateAssetError("pexels returned no results")
-            first = photos[0] if isinstance(photos[0], dict) else {}
-            src = first.get("src", {}) if isinstance(first, dict) else {}
-            image_url = src.get("large2x") or src.get("large") or src.get("original")
-            if not image_url:
-                raise TemplateAssetError("pexels response missing image url")
-            return self._download_asset(client=client, url=str(image_url))
-
-    def _download_asset(self, *, client: httpx.Client, url: str) -> tuple[bytes, str]:
-        resp = client.get(url)
-        resp.raise_for_status()
-        content = resp.content
-        if not content:
-            raise TemplateAssetError("downloaded asset is empty")
-        ext = self._guess_image_ext(content_type=resp.headers.get("content-type", ""), url=url)
-        return content, ext
-
-    def _guess_image_ext(self, *, content_type: str, url: str) -> str:
-        lowered = content_type.lower()
-        if "png" in lowered:
-            return "png"
-        if "jpeg" in lowered or "jpg" in lowered:
-            return "jpg"
-        if "webp" in lowered:
-            return "webp"
-        suffix = Path(url.split("?", 1)[0]).suffix.lower().lstrip(".")
-        if suffix in {"png", "jpg", "jpeg", "webp"}:
-            return "jpg" if suffix == "jpeg" else suffix
-        return "jpg"
 
     def _build_slot_png_bytes(self, *, node: OutlineNode, slot_type: str, slide_no: int, rel_id: str) -> bytes:
         key = f"{node.title}|{slot_type}|{slide_no}|{rel_id}".encode("utf-8", errors="ignore")

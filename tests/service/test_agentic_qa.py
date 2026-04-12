@@ -596,6 +596,8 @@ def test_agentic_should_pass_slide_brief_and_asset_plan_to_llm(tmp_path: Path) -
     visual_plan = plan.get("visual_plan", {})
     assets = visual_plan.get("assets", []) if isinstance(visual_plan, dict) else []
     assert assets
+    slots = {str(item.get("slot", "")).strip().lower() for item in assets}
+    assert "main" in slots
     assert any(str(item.get("path", "")).startswith("imgs/slide-03") for item in assets)
     assert brief.get("audience")
     assert brief.get("purpose")

@@ -46,7 +46,8 @@ class CompileService:
             errors="replace",
             check=False,
         )
-        return result.returncode == 0
+        reason = orch._known_compile_stderr_reason(stderr=result.stderr or "", stdout=result.stdout or "")
+        return result.returncode == 0 and not reason
 
     async def compile_scratch_slides(self, run_id: str) -> bool:
         orch = self.orch
@@ -63,7 +64,8 @@ class CompileService:
             errors="replace",
             check=False,
         )
-        return compile_res.returncode == 0
+        reason = orch._known_compile_stderr_reason(stderr=compile_res.stderr or "", stdout=compile_res.stdout or "")
+        return compile_res.returncode == 0 and not reason
 
     async def apply_template_nodes_once(
         self,
@@ -158,13 +160,23 @@ class CompileService:
                 node=node_for_apply,
                 source_refs=citations,
             )
-            semantic_report = orch._rewrite_template_slide_semantics(
-                unpacked=unpacked,
-                slide_xml=slide_xml,
+            context = orch._build_asset_search_context(
+                run=run,
                 node=node_for_apply,
                 slide_no=idx,
-                chart_plan=chart_plan,
+                slide_plan={"layout": node_for_apply.layout_hint or base_node.layout_hint or ""},
             )
+            orch._push_asset_search_context(context)
+            try:
+                semantic_report = orch._rewrite_template_slide_semantics(
+                    unpacked=unpacked,
+                    slide_xml=slide_xml,
+                    node=node_for_apply,
+                    slide_no=idx,
+                    chart_plan=chart_plan,
+                )
+            finally:
+                orch._pop_asset_search_context()
             layout_entry = semantic_report.get("layout")
             if isinstance(layout_entry, dict):
                 layout_report["slides"].append(layout_entry)

@@ -8,6 +8,7 @@ from typing import Any
 
 from ..models import EventType, GenerationMode, OutlineNode, SlidePageType, VisualPolicy
 from ..run.types import JsLayoutBox, SLIDE_HEIGHT_IN, SLIDE_WIDTH_IN
+from .js_asset_contract import collect_addimage_signature_issues, collect_addshape_signature_issues, collect_addtext_signature_issues, collect_detected_api_violations, canonicalize_addimage_signature, extract_main_asset_path, extract_planned_asset_paths, has_image_placeholder_text
 
 
 class SlideJsQualityMixin:
@@ -266,6 +267,19 @@ class SlideJsQualityMixin:
             canonical = updated
             fixes.append("fix malformed module.exports trailing comma")
 
+        canonical, addimage_fix_count = canonicalize_addimage_signature(
+            canonical,
+            split_top_level_args=self._split_top_level_args,
+            find_matching_delimiter=lambda payload, start_idx, open_char, close_char: self._find_matching_delimiter(
+                payload,
+                start_idx=start_idx,
+                open_char=open_char,
+                close_char=close_char,
+            ),
+        )
+        if addimage_fix_count > 0:
+            fixes.append("normalize addImage(path, opts) to addImage({ path, ...opts })")
+
         # Ensure minimal slideConfig exists if still missing but exported.
         if "module.exports = { createSlide, slideConfig };" in canonical and not re.search(
             r"\b(?:const|let|var)\s+slideConfig\b",
@@ -376,7 +390,7 @@ class SlideJsQualityMixin:
             "failed_js_full": self._truncate_diag_text(candidate_js, limit=50000),
             "failed_js_with_line_no": numbered,
             "focus_windows": focus,
-            "detected_api_violations": self._collect_detected_api_violations(candidate_js),
+            "detected_api_violations": collect_detected_api_violations(candidate_js),
             "gate_summary": gate_summary,
         }
         if "preview_mode" in diag:
@@ -415,23 +429,6 @@ class SlideJsQualityMixin:
             },
         )
 
-    def _collect_detected_api_violations(self, js_code: str) -> list[str]:
-        checks = [
-            ("pres.shapes.ELLIPSE", "use OVAL instead of ELLIPSE"),
-            ("pres.shapes.RT_TRIANGLE", "use RIGHT_TRIANGLE instead of RT_TRIANGLE"),
-            ("slide.addPageBadge(", "slide.addPageBadge is invalid; use addPageBadge helper"),
-            ("addGroup(", "addGroup is not supported in this runtime"),
-            ("createCanvas(", "createCanvas is unsupported runtime dependency"),
-            ("slide.background(", "slide.background(...) call is invalid; use assignment"),
-            ("pres.utilitextfit(", "pres.utilitextfit is not a valid pptxgenjs API"),
-        ]
-        lowered = str(js_code or "")
-        hits: list[str] = []
-        for marker, desc in checks:
-            if marker in lowered:
-                hits.append(desc)
-        return hits
-
     def _validate_slide_js_contract(
         self,
         js_code: str,
@@ -439,6 +436,7 @@ class SlideJsQualityMixin:
         slide_no: int,
         page_type: str,
         visual_policy: VisualPolicy = VisualPolicy.AUTO,
+        slide_plan: dict[str, Any] | None = None,
     ) -> list[str]:
         issues: list[str] = []
         export_ok = False
@@ -460,20 +458,48 @@ class SlideJsQualityMixin:
             issues.append("forbidden runtime dependency: createCanvas()")
         if re.search(r"addShape\(\s*['\"][a-zA-Z0-9_-]+['\"]", js_code):
             issues.append("addShape must use pres.shapes enum, not string literal")
-        issues.extend(self._collect_addshape_signature_issues(js_code))
-        issues.extend(self._collect_addtext_signature_issues(js_code))
+        issues.extend(
+            collect_addshape_signature_issues(
+                js_code,
+                extract_method_call_args=lambda payload, method_expr: self._extract_method_call_args(payload, method_expr=method_expr),
+                dedupe=self._dedupe_preserve_order,
+            )
+        )
+        issues.extend(
+            collect_addtext_signature_issues(
+                js_code,
+                extract_method_call_args=lambda payload, method_expr: self._extract_method_call_args(payload, method_expr=method_expr),
+                dedupe=self._dedupe_preserve_order,
+            )
+        )
         if re.search(r"addShape\(\s*pres\.shapes\.LINE[\s\S]*?\{[\s\S]*?\b(?:w|h)\s*:\s*0(?:\.0+)?\b", js_code):
             issues.append("line shape geometry invalid: w/h must be > 0")
         if re.search(r"['\"]#[0-9a-fA-F]{3,8}['\"]", js_code):
             issues.append("hex color with # is forbidden")
         if re.search(r"['\"][0-9a-fA-F]{8}['\"]", js_code):
             issues.append("8-char hex color is forbidden")
+        issues.extend(
+            collect_addimage_signature_issues(
+                js_code,
+                extract_method_call_args=lambda payload, method_expr: self._extract_method_call_args(payload, method_expr=method_expr),
+                dedupe=self._dedupe_preserve_order,
+            )
+        )
         if slide_no > 1 and "x: 9.3, y: 5.1" not in js_code:
             issues.append("missing required page badge position")
         if any(char in js_code for char in ("•", "✓", "▪", "◦")):
             issues.append("unicode bullet symbol detected")
+        planned_assets = extract_planned_asset_paths(js_code=js_code, slide_plan=slide_plan, dedupe=self._dedupe_preserve_order)
+        main_asset = extract_main_asset_path(js_code=js_code, slide_plan=slide_plan, dedupe=self._dedupe_preserve_order)
         if page_type == "content" and all(token not in js_code for token in ("addShape(", "addImage(", "addChart(")):
             issues.append("content slide missing non-text visual element")
+        if page_type == "content" and planned_assets:
+            if "addImage(" not in js_code:
+                issues.append("visual assets planned but addImage() missing")
+            if main_asset and main_asset not in js_code:
+                issues.append("visual assets planned but main image path not used")
+            if has_image_placeholder_text(js_code):
+                issues.append("image placeholder text remains while visual assets are planned")
         if page_type == "content":
             if visual_policy == VisualPolicy.MEDIA_REQUIRED:
                 if "addImage(" not in js_code:
@@ -563,30 +589,6 @@ class SlideJsQualityMixin:
             idx = close_idx + 1
 
         return calls
-
-    def _collect_addtext_signature_issues(self, js_code: str) -> list[str]:
-        issues: list[str] = []
-        calls = self._extract_method_call_args(js_code, method_expr=r"\bslide\.addText\s*\(")
-        for args in calls:
-            if len(args) != 2:
-                issues.append("addText call signature invalid: use addText(textOrRuns, { ...options })")
-                continue
-            options = str(args[1]).strip()
-            if not options.startswith("{"):
-                issues.append("addText call signature invalid: options must be object literal")
-        return self._dedupe_preserve_order(issues)
-
-    def _collect_addshape_signature_issues(self, js_code: str) -> list[str]:
-        issues: list[str] = []
-        calls = self._extract_method_call_args(js_code, method_expr=r"\bslide\.addShape\s*\(")
-        for args in calls:
-            if len(args) != 2:
-                issues.append("addShape call signature invalid: use addShape(pres.shapes.X, { ...options })")
-                continue
-            options = str(args[1]).strip()
-            if not options.startswith("{"):
-                issues.append("addShape call signature invalid: options must be object literal")
-        return self._dedupe_preserve_order(issues)
 
     def _apply_local_js_guardrails(
         self,
@@ -764,9 +766,13 @@ class SlideJsQualityMixin:
             "addShape must use pres.shapes enum",
             "addText call signature invalid",
             "addShape call signature invalid",
+            "addImage call signature invalid",
             "line shape geometry invalid",
             "hex color with # is forbidden",
             "8-char hex color is forbidden",
+            "visual assets planned but addImage() missing",
+            "visual assets planned but main image path not used",
+            "image placeholder text remains while visual assets are planned",
             "llm_output_not_executable",
         )
         high_risk_markers = (
@@ -823,6 +829,12 @@ class SlideJsQualityMixin:
             directives.append("For pres.shapes.LINE always keep both w and h > 0 (e.g., h: 0.01), never zero-length geometry.")
         if any("addtext call signature invalid" in item.lower() or "addshape call signature invalid" in item.lower() for item in blocking):
             directives.append("Call signatures must be strict: addText(textOrRuns, { ...opts }) and addShape(pres.shapes.X, { ...opts }); never pass style as 3rd arg or positional x,y,w,h.")
+        if any("addimage call signature invalid" in item.lower() for item in blocking):
+            directives.append("Use strict image API signature only: slide.addImage({ path|data, x, y, w, h, ...opts }); never addImage(path, opts).")
+        if any("visual assets planned but addimage() missing" in item.lower() or "main image path not used" in item.lower() for item in blocking):
+            directives.append("When visual assets are planned, consume slot='main' via explicit addImage({ path: <main-path>, ... }).")
+        if any("image placeholder text remains while visual assets are planned" in item.lower() for item in blocking + high_risk):
+            directives.append("Remove image placeholder labels and render real images from visual_plan.assets instead.")
         if any("out of slide bounds" in item.lower() or "overlaps" in item.lower() for item in blocking + high_risk):
             directives.append("Reflow layout with safe margins and non-overlap: content margins >=0.5in, preserve 0.22in+ block gap.")
         if any("page badge" in item.lower() for item in blocking):
@@ -1275,7 +1287,7 @@ class SlideJsQualityMixin:
             score -= 18
             issues.append("preview text too short")
             directives.append("expand concrete natural-language copy")
-        if re.search(r"(placeholder|lorem|ipsum|todo|xxxx)", lowered):
+        if re.search(r"(placeholder|lorem|ipsum|todo|xxxx|\[[^\]]*(主视觉|辅助图|流程图|示意图|image)\])", lowered):
             score -= 25
             issues.append("placeholder-like code/text remains")
             directives.append("replace placeholders with natural language")

@@ -120,8 +120,18 @@ class ScratchFlowService:
             errors="replace",
             check=False,
         )
-        if result.returncode != 0:
-            await orch._fail_run(run_id, "COMPILING", "COMPILE_SCRIPT_FAILED", retryable=True)
+        compile_reason = orch._known_compile_stderr_reason(stderr=result.stderr or "", stdout=result.stdout or "")
+        if result.returncode != 0 or compile_reason:
+            await orch._fail_run(
+                run_id,
+                "COMPILING",
+                "COMPILE_SCRIPT_FAILED",
+                retryable=True,
+                error_details={
+                    "return_code": result.returncode,
+                    "reason": compile_reason or "compile.js returned non-zero",
+                },
+            )
             return
 
         pptx_path = output_dir / "presentation.pptx"
