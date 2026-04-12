@@ -1,5 +1,11 @@
 from tests.support.service_flow_shared import *  # noqa: F401,F403
 
+def test_healthz_endpoint(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "service": "diego"}
+
 def test_missing_llm_env_should_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)

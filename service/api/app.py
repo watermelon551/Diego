@@ -39,11 +39,15 @@ async def _sse_generator(ctx: AppContext, run_id: str):
 
 
 def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | None = None) -> FastAPI:
-    app = FastAPI(title="ppt-agent-service", version="0.1.0")
+    app = FastAPI(title="Diego", version="0.1.0")
     resolved_base = base_dir or (Path.cwd() / ".runtime")
     resolved_base.mkdir(parents=True, exist_ok=True)
     orch = orchestrator or build_orchestrator(resolved_base)
     ctx = AppContext(orchestrator=orch)
+
+    @app.get("/healthz")
+    async def healthz():
+        return {"status": "ok", "service": "diego"}
 
     @app.post("/v1/ppt/runs")
     async def create_run(req: CreateRunRequest):

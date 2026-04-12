@@ -1,6 +1,8 @@
-# ppt-agent-service
+# Diego
 
-`ppt-agent-service` 是一个独立的 PPT 生成微服务，提供统一的“主题到课件”生成能力。当前版本已支持 `scratch`（自由生成）与 `template`（模板编辑）两条主链路，并具备状态机、SSE 事件流、质量门禁、失败收敛和可观测输出。
+`Diego` 是一个独立的 PPT 生成微服务，提供统一的“主题到课件”生成能力。当前版本已支持 `scratch`（自由生成）与 `template`（模板编辑）两条主链路，并具备状态机、SSE 事件流、质量门禁、失败收敛和可观测输出。
+
+命名说明：`Diego` 对应艺术家迭戈（Diego Velazquez）。他被普遍认为是西班牙黄金时代最重要的画家之一，也是西方艺术史上的巨匠，他擅长把口头或场景的“叙述”转化为极具真实感和心理深度的画面。
 
 ## 0. 版本里程碑
 
@@ -81,12 +83,45 @@ Copy-Item .env.example .env
 
 完整列表见 [`.env.example`](./.env.example)。
 
+### 2.3 Docker 微服务部署（生产基线）
+
+```powershell
+# 1) 初始化环境变量
+Copy-Item .env.example .env
+
+# 2) 编辑 .env，至少填入 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+
+# 3) 构建并启动
+docker compose build
+docker compose up -d
+```
+
+常用运维命令：
+
+```powershell
+# 查看状态与健康检查
+docker compose ps
+
+# 查看服务日志
+docker compose logs -f diego-service
+
+# 停止并移除容器
+docker compose down
+```
+
+说明：
+
+- Compose 服务名为 `diego-service`，默认映射到 `http://127.0.0.1:8000`。
+- 健康检查探针为 `GET /healthz`。
+- 当前采用容器内临时存储（不挂载宿主卷），容器销毁后 `.runtime` 产物不会保留。
+
 ## 3. 接口说明
 
 ### 3.1 接口总览
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| `GET` | `/healthz` | 容器健康检查 |
 | `POST` | `/v1/ppt/runs` | 用结构化请求创建 run |
 | `POST` | `/v1/ppt/runs/prompt` | 用 prompt 快速创建 run |
 | `GET` | `/v1/ppt/runs/{run_id}` | 查询 run 详情（含报告与事件） |
