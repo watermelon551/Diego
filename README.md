@@ -12,6 +12,23 @@
 
 完整规范见：[PROJECT_GOALS.md](./docs/PROJECT_GOALS.md)
 
+## 项目结构（重构后）
+
+- `service/api`: HTTP 路由与请求入口
+- `service/run`: 运行编排与状态机（`RunOrchestrator`）
+  - `service/run/flows`: outline/scratch/template 三条主流程服务
+  - `service/run/services`: quality/compile/reporting 领域服务（编排逻辑下沉）
+- `service/llm`: LLM 协议、OpenAI-compatible 客户端、mock 与解析工具
+- `service/slides`: scratch 生成侧 JS 质量门禁与诊断 mixin
+- `service/templates`: template 编辑、槽位映射、图表与布局重排 mixin
+- `service/design`: 设计策略（style profile + style catalog）
+- `service/infra`: 基础设施（`RunStore`）
+- `service/models`: 契约模型（请求/响应/运行态）
+
+兼容性说明：
+- 旧导入路径仍可用（例如 `service.orchestrator` / `service.llm_client`），当前通过 shim re-export 兼容，后续版本再清理。
+- 若要在本地显式看到旧路径弃用提示，可设置 `PPT_AGENT_SHIM_WARNINGS=1`。
+
 ## 快速开始
 
 ```powershell
@@ -95,6 +112,11 @@ $env:TEMP=(Resolve-Path '.runtime').Path
 $env:TMP=$env:TEMP
 .\.venv\Scripts\python.exe -m pytest -q --basetemp=.runtime\pytest_tmp -o cache_dir=.runtime\pytest_cache
 ```
+
+测试已按主题拆分：
+- `tests/integration/`: 端到端流程与 API/SSE
+- `tests/service/`: service 内部行为与质量门禁
+- `tests/support/`: 共享 mock / fixture / helper
 
 ## Skill 对齐能力
 

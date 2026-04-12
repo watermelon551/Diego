@@ -1,6 +1,9 @@
 # Runtime and generated artifacts
 .runtime/
 pytest-cache-files-*/
+tmp_pytest*/
+tmp_pytest_new/
+tmp_pytest_run_*/
 
 # Python cache
 __pycache__/

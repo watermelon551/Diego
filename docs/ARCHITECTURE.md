@@ -7,6 +7,24 @@
 核心闭环：
 `RAG检索 -> 大纲流式 -> 大纲确认 -> 逐页 JS 生成 -> 编译 -> PPTX 产物返回`
 
+## 1.1 服务内部分层（2026-04 重构后）
+
+- `api`: FastAPI 路由与 SSE 出口
+- `run`: 运行编排、状态流转、失败收敛
+  - `run/flows`: `outline_flow` / `scratch_flow` / `template_flow` 主流程执行器
+  - `run/services`: `quality_repair_service` / `compile_service` / `reporting_service` 领域服务
+    - `orchestrator` 仅保留生命周期编排与失败收敛，重逻辑下沉到 services
+- `llm`: provider 调用、协议与输出解析
+- `slides`: scratch 侧 JS 合约校验、质量门禁、诊断
+- `templates`: 模板结构重建、slot mapping、layout reflow、素材注入
+- `design`: 样式策略与主题映射
+- `infra`: 内存存储与事件等待机制
+- `models`: API/状态对象契约
+
+兼容层策略：
+- `service.orchestrator`、`service.llm_client` 等旧路径仍保留为 shim。
+- shim 默认静默；设置 `PPT_AGENT_SHIM_WARNINGS=1` 时会抛出弃用告警，便于迁移。
+
 ## 2. 运行状态机
 
 - `OUTLINE_DRAFTING`

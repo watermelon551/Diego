@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from .style_catalog import (
+from ..design.style_catalog import (
     STYLE_PRESET_AUTO,
     is_valid_style_choice,
     normalize_style_choice,
@@ -94,7 +94,7 @@ class CreateRunRequest(BaseModel):
     style_preset: str = Field(default=STYLE_PRESET_AUTO)
     target_slide_count: int = Field(default=8, ge=1, le=50)
     generation_mode: GenerationMode = GenerationMode.SCRATCH
-    template_id: str | None = None
+    template_id: Optional[str] = None
     visual_policy: VisualPolicy = VisualPolicy.AUTO
 
     @model_validator(mode="after")
@@ -115,7 +115,7 @@ class PromptRunRequest(BaseModel):
     style_preset: str = Field(default=STYLE_PRESET_AUTO)
     target_slide_count: int = Field(default=8, ge=1, le=50)
     generation_mode: GenerationMode = GenerationMode.SCRATCH
-    template_id: str | None = None
+    template_id: Optional[str] = None
     visual_policy: VisualPolicy = VisualPolicy.AUTO
 
     @model_validator(mode="after")
@@ -145,7 +145,7 @@ class OutlineNode(BaseModel):
     title: str
     bullets: list[str] = Field(default_factory=list)
     page_type: SlidePageType = SlidePageType.CONTENT
-    layout_hint: str | None = None
+    layout_hint: Optional[str] = None
 
 
 class OutlineDocument(BaseModel):
@@ -156,7 +156,7 @@ class OutlineDocument(BaseModel):
 
 class SlideArtifact(BaseModel):
     slide_no: int
-    js_path: str | None = None
+    js_path: Optional[str] = None
     js_code: str
     status: str
     citations: list[str] = Field(default_factory=list)
@@ -177,9 +177,9 @@ class RunEvent(BaseModel):
 
 class ConfirmOutlineRequest(BaseModel):
     approved: bool = True
-    outline: OutlineDocument | None = None
-    base_version: int | None = None
-    change_reason: str | None = None
+    outline: Optional[OutlineDocument] = None
+    base_version: Optional[int] = None
+    change_reason: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_patch(self) -> "ConfirmOutlineRequest":
@@ -193,9 +193,9 @@ class ConfirmOutlineRequest(BaseModel):
 class OutlineHistoryEntry(BaseModel):
     action: str
     approved: bool
-    base_version: int | None = None
-    new_version: int | None = None
-    change_reason: str | None = None
+    base_version: Optional[int] = None
+    new_version: Optional[int] = None
+    change_reason: Optional[str] = None
     at: str
 
 
@@ -204,19 +204,19 @@ class RunRecord(BaseModel):
     trace_id: str
     status: RunStatus
     input: CreateRunRequest
-    outline: OutlineDocument | None = None
+    outline: Optional[OutlineDocument] = None
     outline_history: list[OutlineHistoryEntry] = Field(default_factory=list)
     slides: list[SlideArtifact] = Field(default_factory=list)
     citation_map: dict[int, list[str]] = Field(default_factory=dict)
     events: list[RunEvent] = Field(default_factory=list)
     stage_timings: StageTimings = Field(default_factory=StageTimings)
-    error_code: str | None = None
-    failed_stage: str | None = None
+    error_code: Optional[str] = None
+    failed_stage: Optional[str] = None
     retryable: bool = False
     error_details: dict[str, Any] = Field(default_factory=dict)
     artifact_dir: str
-    compile_js_path: str | None = None
-    pptx_path: str | None = None
+    compile_js_path: Optional[str] = None
+    pptx_path: Optional[str] = None
     qa_report: dict[str, Any] = Field(default_factory=dict)
     template_mapping_report: dict[str, Any] = Field(default_factory=dict)
     chart_truth_report: dict[str, Any] = Field(default_factory=dict)
@@ -239,17 +239,17 @@ class RunDetailResponse(BaseModel):
     run_id: str
     trace_id: str
     status: RunStatus
-    outline: OutlineDocument | None
+    outline: Optional[OutlineDocument]
     outline_history: list[OutlineHistoryEntry]
     slides: list[SlideArtifact]
     citation_map: dict[int, list[str]]
     stage_timings: StageTimings
-    error_code: str | None
-    failed_stage: str | None
+    error_code: Optional[str]
+    failed_stage: Optional[str]
     retryable: bool
     error_details: dict[str, Any]
-    compile_js_path: str | None
-    pptx_path: str | None
+    compile_js_path: Optional[str]
+    pptx_path: Optional[str]
     qa_report: dict[str, Any]
     template_mapping_report: dict[str, Any]
     chart_truth_report: dict[str, Any]

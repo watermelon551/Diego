@@ -50,7 +50,25 @@ $env:TMP=$env:TEMP
 
 ## 4. 当前测试项清单
 
-`tests/test_service_flow.py` 覆盖以下场景：
+测试文件已按职责拆分：
+
+- `tests/integration/test_api_runs.py`
+- `tests/integration/test_template_mode.py`
+- `tests/integration/test_events_and_finalize.py`
+- `tests/service/test_agentic_qa.py`
+- `tests/service/test_llm_resilience.py`
+- `tests/service/test_visual_policy.py`
+
+共享测试基座：
+
+- `tests/support/service_flow_shared.py`（mock client、fixture、helper）
+
+结构门禁：
+
+- `tests/service/test_architecture_guards.py`（依赖方向 + shim 导出约束）
+- `tests/service/test_file_size_budgets.py`（核心文件行数预算）
+
+上述测试覆盖以下场景：
 
 - 配置与参数校验：缺失 LLM 环境变量、创建 run 参数校验。
 - 大纲流程：prompt 创建、确认闸门、大纲版本冲突与更新。
