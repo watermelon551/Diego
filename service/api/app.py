@@ -80,6 +80,20 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
             raise HTTPException(status_code=404, detail="run not found")
         return run
 
+    @app.get("/v1/ppt/runs/{run_id}/slides/{slide_no}/preview")
+    async def get_slide_preview(run_id: str, slide_no: int):
+        if slide_no < 1:
+            raise HTTPException(status_code=400, detail="slide_no must be >= 1")
+        try:
+            preview = await ctx.orchestrator.get_slide_preview(run_id, slide_no)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if preview is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return preview
+
     @app.get("/v1/ppt/runs/{run_id}/artifacts/pptx")
     async def download_pptx(run_id: str):
         run = await ctx.orchestrator.store.get_run(run_id)

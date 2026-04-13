@@ -74,6 +74,7 @@ from ..slides.js_asset_contract import (
 from ..templates.template_ops_mixin import TemplateOpsMixin
 from .asset_flow_mixin import RunAssetFlowMixin
 from .flows import OutlineFlowService, ScratchFlowService, TemplateFlowService
+from .slide_preview import render_slide_html_preview
 from .services import CompileService, QualityRepairService, ReportingService
 
 class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
@@ -278,6 +279,51 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             artifact_cleanup_report=run.artifact_cleanup_report,
             events=run.events,
         )
+
+    async def get_slide_preview(self, run_id: str, slide_no: int) -> dict[str, Any] | None:
+        if slide_no < 1:
+            raise ValueError("slide_no must be >= 1")
+        run = await self.store.get_run(run_id)
+        if run is None:
+            return None
+
+        slide = next(
+            (
+                item
+                for item in run.slides
+                if int(getattr(item, "slide_no", 0) or 0) == slide_no
+            ),
+            None,
+        )
+        if slide is None:
+            raise ValueError("slide preview not ready")
+        slide_js_path = Path(str(getattr(slide, "js_path", "") or "").strip())
+        if not str(slide_js_path) or not slide_js_path.exists() or not slide_js_path.is_file():
+            raise FileNotFoundError("slide js artifact missing")
+
+        effective_template_style = self._resolved_template_style(run)
+        requirements_report = (
+            run.research_report if isinstance(run.research_report, dict) else {}
+        )
+        design = self._resolve_design_profile(
+            topic=run.input.topic,
+            template_style=effective_template_style,
+            requirements_report=requirements_report,
+        )
+        preview = await render_slide_html_preview(
+            slide_js_path=slide_js_path,
+            theme=design.theme,
+            subprocess_runner=self.subprocess.run,
+        )
+        page_index = slide_no - 1
+        return {
+            "run_id": run_id,
+            "slide_no": slide_no,
+            "page_index": page_index,
+            "slide_id": f"{run_id}-slide-{page_index}",
+            "status": "ready",
+            **preview,
+        }
 
     async def confirm_outline(self, run_id: str, req: ConfirmOutlineRequest) -> RunSummaryResponse | None:
         run = await self.store.get_run(run_id)

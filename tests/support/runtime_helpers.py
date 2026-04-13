@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -21,6 +22,40 @@ def fake_subprocess_run(args, cwd=None, capture_output=False, text=False, check=
         out.mkdir(parents=True, exist_ok=True)
         (out / "presentation.pptx").write_bytes(b"fake-pptx")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="compiled", stderr="")
+    if "node" in cmd and ".html-preview-runner-" in cmd:
+        payload = {
+            "operations": [
+                {
+                    "kind": "shape",
+                    "payload": {
+                        "shape": "RECTANGLE",
+                        "options": {"x": 0.4, "y": 0.4, "w": 9.2, "h": 4.8},
+                    },
+                },
+                {
+                    "kind": "text",
+                    "payload": {
+                        "content": "Preview Title",
+                        "options": {"x": 0.8, "y": 0.8, "w": 6.2, "h": 0.8, "fontSize": 32},
+                    },
+                },
+            ],
+            "background": {"color": "FFFFFF"},
+            "slide_config": {"index": 1},
+            "theme": {
+                "primary": "111111",
+                "secondary": "222222",
+                "accent": "0A84FF",
+                "light": "EEF2F7",
+                "bg": "FFFFFF",
+            },
+        }
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps(payload, ensure_ascii=False),
+            stderr="",
+        )
     if "node" in cmd and ".preview-runner-" in cmd:
         match = re.search(r"\.preview-runner-(\d+)\.js", cmd)
         if match:
