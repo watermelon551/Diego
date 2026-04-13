@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from ..models import OutlineDocument, OutlineNode, SlidePageType, VisualPolicy
 from ..design.skill_profile import allowed_layouts_for, enforce_layout_variety
+from ..design.style_catalog import resolve_style_dna_choice
 from .parsing import _extract_code_block, _extract_js_module, _extract_json_object, _normalize_page_type, _sanitize_llm_text
 from .types import GeneratedSlide, LLMEmptyResponseError, LLMTimeoutError, OutlineFormatError, SlideSpec, TokenCallback
 
@@ -165,6 +166,7 @@ class OpenAICompatibleLLMClient:
             text=text,
             topic=topic,
             target_slide_count=target_slide_count,
+            template_style=template_style,
         )
 
     async def repair_outline(
@@ -207,6 +209,7 @@ class OpenAICompatibleLLMClient:
             text=text,
             topic=topic,
             target_slide_count=target_slide_count,
+            template_style=template_style,
         )
 
     async def critique_outline(
@@ -244,6 +247,7 @@ class OpenAICompatibleLLMClient:
             text=text,
             topic=topic,
             target_slide_count=target_slide_count,
+            template_style=template_style,
         )
 
     async def generate_slide(
@@ -320,6 +324,9 @@ class OpenAICompatibleLLMClient:
         slide_plan: dict[str, Any] | None = None,
         slide_brief: dict[str, Any] | None = None,
     ) -> str:
+        style_dna_payload = {}
+        if isinstance(slide_brief, dict) and isinstance(slide_brief.get("style_dna"), dict):
+            style_dna_payload = dict(slide_brief.get("style_dna", {}))
         system_prompt = (
             "You are a PPT code agent. Return JavaScript only (no markdown fences) for one runnable slide module. "
             "Must export synchronous createSlide(pres, theme) and slideConfig exactly. "
@@ -328,6 +335,7 @@ class OpenAICompatibleLLMClient:
             "API blacklist: NEVER use ShapeType.*, slide.shapes.*, slide.background(...), pres.Fit.*, addGroup(), async createSlide(). "
             "Hard layout constraints: body text left-aligned, title clearly dominates body text, content slides include non-text visuals, "
             "safe margins/spacing, and avoid overlaps/out-of-bounds. "
+            "Treat style_dna as authoritative visual direction and allow structural composition changes to match it. "
             "Never output placeholders, pseudo code, or markdown fences."
         )
         user_prompt = (
@@ -343,10 +351,11 @@ class OpenAICompatibleLLMClient:
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
             f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
+            f"style_dna={json.dumps(style_dna_payload, ensure_ascii=False)}\n"
             "If slide_plan.api_contract is present, treat it as the highest-priority runtime contract.\n"
-            "Requirements: LAYOUT_16x9; title 36pt+ (or equivalent dominant scale); body 14-16pt where possible; "
+            "Requirements: LAYOUT_16x9; title 36pt+ (or equivalent dominant scale); "
             "body paragraphs/lists left-aligned; content slides include >=1 non-text visual; "
-            "safe margins >=0.5in on content slides; block gaps around 0.3-0.5in; "
+            "respect slide_plan.constraints and style_dna density/layout family before generic defaults; "
             "fit:'shrink' on title and long body text; natural-language content only. "
             "Use addPageBadge(pres, slide, theme, slideConfig.index) on non-cover slides at x:9.3, y:5.1. "
             "If using LINE shape, keep positive w/h (never zero). "
@@ -377,12 +386,15 @@ class OpenAICompatibleLLMClient:
         preview_text: str = "",
         slide_brief: dict[str, Any] | None = None,
     ) -> str:
+        style_dna_payload = {}
+        if isinstance(slide_brief, dict) and isinstance(slide_brief.get("style_dna"), dict):
+            style_dna_payload = dict(slide_brief.get("style_dna", {}))
         system_prompt = (
             "You are a strict PPT code reviewer. Rewrite and return full JavaScript module only. "
             "Keep createSlide synchronous and keep module export contract exact. Fix all listed issues while preserving content intent. "
             "Prioritize hard constraints first: compile/API legality, bounds/overlap, page badge, visual policy, then typography/spacing. "
             "Never use ShapeType.*, slide.shapes.*, slide.background(...), pres.Fit.*, addGroup(), or zero-length LINE geometry. "
-            "Use minimal-diff repair strategy: keep layout/composition unless directly required by a failing diagnostic."
+            "You may do structural layout re-composition when it improves style_dna alignment while keeping narrative intent."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -396,11 +408,12 @@ class OpenAICompatibleLLMClient:
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
             f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
+            f"style_dna={json.dumps(style_dna_payload, ensure_ascii=False)}\n"
             f"preview_text={preview_text[:2000]}\n"
             "Follow slide_plan.api_contract exactly when present.\n"
             "If failure_context includes compile/runtime diagnostics, treat them as authoritative and fix them first. "
             "Example: pres.shapes.ELLIPSE is invalid in PptxGenJS, use pres.shapes.OVAL.\n"
-            "When failure_context contains line numbers/focus windows, patch those lines first and avoid unrelated rewrites.\n"
+            "When failure_context contains line numbers/focus windows, patch those lines first, then re-compose if style_dna requires it.\n"
             "Must satisfy: body text left-aligned, clear title/body size contrast, fit:'shrink' on title and long body text, "
             "safe margins and spacing, content slide must keep non-text visual element, non-cover slides must include page badge.\n"
             "When slide_plan.visual_plan.assets is present, preserve slot semantics and enforce strict image contract:\n"
@@ -942,7 +955,7 @@ class OpenAICompatibleLLMClient:
             return f"{self.base_url}/messages"
         return f"{self.base_url}/v1/messages"
 
-    def _fit_outline(self, outline: OutlineDocument, *, topic: str, target_slide_count: int) -> OutlineDocument:
+    def _fit_outline(self, outline: OutlineDocument, *, topic: str, target_slide_count: int, template_style: str) -> OutlineDocument:
         nodes = list(outline.nodes)
         if len(nodes) > target_slide_count:
             nodes = nodes[:target_slide_count]
@@ -957,7 +970,16 @@ class OpenAICompatibleLLMClient:
                 )
             )
         self._assign_page_types(nodes)
-        enforce_layout_variety(nodes=nodes, seed=f"{topic}|{target_slide_count}")
+        style_dna = resolve_style_dna_choice(
+            "auto",
+            template_style=template_style,
+            seed=f"{topic}|{target_slide_count}|outline",
+        )
+        enforce_layout_variety(
+            nodes=nodes,
+            seed=f"{topic}|{target_slide_count}",
+            style_dna_id=style_dna.id,
+        )
         return OutlineDocument(version=max(1, outline.version), summary=outline.summary, nodes=nodes)
 
     def _parse_outline_or_raise(
@@ -966,6 +988,7 @@ class OpenAICompatibleLLMClient:
         text: str,
         topic: str,
         target_slide_count: int,
+        template_style: str,
     ) -> OutlineDocument:
         try:
             payload = _extract_json_object(text)
@@ -990,7 +1013,12 @@ class OpenAICompatibleLLMClient:
                 details=details[:10],
                 raw_response=text,
             ) from exc
-        return self._fit_outline(outline, topic=topic, target_slide_count=target_slide_count)
+        return self._fit_outline(
+            outline,
+            topic=topic,
+            target_slide_count=target_slide_count,
+            template_style=template_style,
+        )
 
     def _assign_page_types(self, nodes: list[OutlineNode]) -> None:
         if not nodes:

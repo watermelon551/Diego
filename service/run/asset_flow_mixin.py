@@ -82,6 +82,8 @@ class RunAssetFlowMixin:
         visual_plan = slide_plan.get("visual_plan", {}) if isinstance(slide_plan.get("visual_plan", {}), dict) else {}
         kind = str(visual_plan.get("kind", ""))
         requires_image = run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED or kind in {"image_or_showcase", "icon_rows"}
+        if run.input.visual_policy == VisualPolicy.AUTO and not requires_image:
+            requires_image = True
         if not requires_image:
             return []
 

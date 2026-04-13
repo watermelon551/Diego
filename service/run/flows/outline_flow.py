@@ -88,6 +88,10 @@ class OutlineFlowService:
                 "style_recipe": design_intent_payload.get("style_recipe", ""),
                 "visual_strategy": design_intent_payload.get("visual_strategy", ""),
                 "density": design_intent_payload.get("density", ""),
+                "style_dna_id": design_intent_payload.get("style_dna_id", ""),
+                "style_signature": design_intent_payload.get("style_signature", ""),
+                "layout_family": design_intent_payload.get("layout_family", ""),
+                "density_profile": design_intent_payload.get("density_profile", ""),
             }
             await orch._publish(run_id, EventType.REQUIREMENTS_ANALYZING_COMPLETED, requirements_payload)
             await orch._publish(run_id, EventType.REQUIREMENTS_ANALYZED, requirements_payload)
@@ -247,7 +251,14 @@ class OutlineFlowService:
                         EventType.OUTLINE_REPAIR_COMPLETED,
                         {"attempt": 1, "phase": "critique", "fallback_used": True},
                     )
-            enforce_layout_variety(nodes=outline.nodes, seed=f"{run.input.topic}|{effective_template_style}|{run_id}")
+            style_dna_id = ""
+            if isinstance(requirements_report.get("design_intent", {}), dict):
+                style_dna_id = str(requirements_report.get("design_intent", {}).get("style_dna_id", "")).strip()
+            enforce_layout_variety(
+                nodes=outline.nodes,
+                seed=f"{run.input.topic}|{effective_template_style}|{run_id}",
+                style_dna_id=style_dna_id or None,
+            )
             design = orch._resolve_design_profile(topic=run.input.topic, template_style=effective_template_style, requirements_report=requirements_report)
 
             def apply_outline(r: RunRecord) -> None:
@@ -284,6 +295,7 @@ class OutlineFlowService:
                     "sections": len(outline.nodes),
                     "palette": design.palette_name,
                     "style": design.style.name,
+                    "style_dna_id": style_dna_id,
                     "fonts": {"title": design.title_font, "body": design.body_font},
                     "theme": design.theme,
                 },

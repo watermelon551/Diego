@@ -6,6 +6,7 @@ from typing import Iterable
 from typing import TypeVar
 
 from ..models import OutlineNode, SlidePageType
+from .style_catalog import get_style_dna_by_id
 
 
 @dataclass(frozen=True)
@@ -30,24 +31,24 @@ class DesignProfile:
 
 
 PALETTES: list[tuple[str, tuple[str, str, str, str, str]]] = [
-    ("Modern & Wellness", ("006d77", "83c5be", "edf6f9", "ffddd2", "e29578")),
-    ("Business & Authority", ("2b2d42", "8d99ae", "edf2f4", "ef233c", "d90429")),
-    ("Nature & Outdoors", ("606c38", "283618", "fefae0", "dda15e", "bc6c25")),
-    ("Vintage & Academic", ("780000", "c1121f", "fdf0d5", "003049", "669bbc")),
-    ("Soft & Creative", ("cdb4db", "ffc8dd", "ffafcc", "bde0fe", "a2d2ff")),
-    ("Bohemian", ("ccd5ae", "e9edc9", "fefae0", "faedcd", "d4a373")),
-    ("Vibrant & Tech", ("8ecae6", "219ebc", "023047", "ffb703", "fb8500")),
-    ("Craft & Artisan", ("7f5539", "a68a64", "ede0d4", "656d4a", "414833")),
-    ("Tech & Night", ("000814", "001d3d", "003566", "ffc300", "ffd60a")),
-    ("Education & Charts", ("264653", "2a9d8f", "e9c46a", "f4a261", "e76f51")),
-    ("Forest & Eco", ("dad7cd", "a3b18a", "588157", "3a5a40", "344e41")),
-    ("Elegant & Fashion", ("edafb8", "f7e1d7", "dedbd2", "b0c4b1", "4a5759")),
-    ("Art & Food", ("335c67", "fff3b0", "e09f3e", "9e2a2b", "540b0e")),
-    ("Luxury & Mysterious", ("22223b", "4a4e69", "9a8c98", "c9ada7", "f2e9e4")),
-    ("Pure Tech Blue", ("03045e", "0077b6", "00b4d8", "90e0ef", "caf0f8")),
-    ("Coastal Coral", ("0081a7", "00afb9", "fdfcdc", "fed9b7", "f07167")),
-    ("Vibrant Orange Mint", ("ff9f1c", "ffbf69", "ffffff", "cbf3f0", "2ec4b6")),
-    ("Platinum White Gold", ("0a0a0a", "0070f3", "d4af37", "f5f5f5", "ffffff")),
+    ("Modern & Wellness", ("006D77", "83C5BE", "EDF6F9", "FFDDD2", "E29578")),
+    ("Business & Authority", ("2B2D42", "8D99AE", "EDF2F4", "EF233C", "D90429")),
+    ("Nature & Outdoors", ("606C38", "283618", "FEFAE0", "DDA15E", "BC6C25")),
+    ("Vintage & Academic", ("780000", "C1121F", "FDF0D5", "003049", "669BBC")),
+    ("Soft & Creative", ("CDB4DB", "FFC8DD", "FFAFCC", "BDE0FE", "A2D2FF")),
+    ("Bohemian", ("CCD5AE", "E9EDC9", "FEFAE0", "FAEDCD", "D4A373")),
+    ("Vibrant & Tech", ("8ECAE6", "219EBC", "023047", "FFB703", "FB8500")),
+    ("Craft & Artisan", ("7F5539", "A68A64", "EDE0D4", "656D4A", "414833")),
+    ("Tech & Night", ("000814", "001D3D", "003566", "FFC300", "FFD60A")),
+    ("Education & Charts", ("264653", "2A9D8F", "E9C46A", "F4A261", "E76F51")),
+    ("Forest & Eco", ("DAD7CD", "A3B18A", "588157", "3A5A40", "344E41")),
+    ("Elegant & Fashion", ("EDAFB8", "F7E1D7", "DEDBD2", "B0C4B1", "4A5759")),
+    ("Art & Food", ("335C67", "FFF3B0", "E09F3E", "9E2A2B", "540B0E")),
+    ("Luxury & Mysterious", ("22223B", "4A4E69", "9A8C98", "C9ADA7", "F2E9E4")),
+    ("Pure Tech Blue", ("03045E", "0077B6", "00B4D8", "90E0EF", "CAF0F8")),
+    ("Coastal Coral", ("0081A7", "00AFB9", "FDFCDC", "FED9B7", "F07167")),
+    ("Vibrant Orange Mint", ("FF9F1C", "FFBF69", "FFFFFF", "CBF3F0", "2EC4B6")),
+    ("Platinum White Gold", ("0A0A0A", "0070F3", "D4AF37", "F5F5F5", "FFFFFF")),
 ]
 
 FONT_PAIRS: list[tuple[str, str]] = [
@@ -118,8 +119,26 @@ LAYOUTS_BY_PAGE_TYPE: dict[SlidePageType, list[str]] = {
 }
 
 
-def choose_design_profile(*, topic: str, template_style: str) -> DesignProfile:
-    seed = f"{topic}|{template_style}".lower()
+def choose_design_profile(*, topic: str, template_style: str, style_dna_id: str | None = None) -> DesignProfile:
+    seed = f"{topic}|{template_style}|{style_dna_id}".lower()
+    style_dna = get_style_dna_by_id(style_dna_id)
+    if style_dna is not None:
+        style = STYLE_RECIPES.get(style_dna.style_recipe, STYLE_RECIPES["soft"])
+        theme = {
+            key: str(style_dna.theme_hint.get(key, "")).strip().upper()
+            for key in ("primary", "secondary", "accent", "light", "bg")
+        }
+        palette_name = style_dna.name
+        title_font = str(style_dna.typography_profile.get("title_font", "")).strip() or "Cambria"
+        body_font = str(style_dna.typography_profile.get("body_font", "")).strip() or "Calibri"
+        return DesignProfile(
+            palette_name=palette_name,
+            theme=theme,
+            title_font=title_font,
+            body_font=body_font,
+            style=style,
+        )
+
     palette_name, palette = _choose(PALETTES, seed + "|palette")
     style = STYLE_RECIPES[_choose_style_name(template_style=template_style, seed=seed)]
     title_font, body_font = _choose(FONT_PAIRS, seed + "|fonts")
@@ -139,32 +158,107 @@ def choose_design_profile(*, topic: str, template_style: str) -> DesignProfile:
     )
 
 
-def enforce_layout_variety(*, nodes: list[OutlineNode], seed: str) -> None:
+def enforce_layout_variety(*, nodes: list[OutlineNode], seed: str, style_dna_id: str | None = None) -> None:
     prev_layout = ""
-    content_layout_cursor = 0
-    content_layouts = LAYOUTS_BY_PAGE_TYPE[SlidePageType.CONTENT]
+    style_dna = get_style_dna_by_id(style_dna_id)
+
+    content_positions = [idx for idx, node in enumerate(nodes) if node.page_type == SlidePageType.CONTENT]
+    content_choices = allowed_layouts_for(SlidePageType.CONTENT, style_dna_id=style_dna_id)
+    content_weights = _layout_weights_for(page_type=SlidePageType.CONTENT, style_dna_id=style_dna_id)
+    content_sequence = _build_weighted_layout_sequence(
+        choices=content_choices,
+        weights=content_weights,
+        seed=f"{seed}|content",
+        count=len(content_positions),
+    )
+    _ensure_content_variety(sequence=content_sequence, choices=content_choices, target_count=len(content_positions))
+
+    content_cursor = 0
     for idx, node in enumerate(nodes, start=1):
-        choices = LAYOUTS_BY_PAGE_TYPE[node.page_type]
+        choices = allowed_layouts_for(node.page_type, style_dna_id=style_dna_id)
         preferred = (node.layout_hint or "").strip().lower()
         if preferred in choices and preferred != prev_layout:
             layout = preferred
         else:
-            if node.page_type == SlidePageType.CONTENT:
-                layout = content_layouts[content_layout_cursor % len(content_layouts)]
-                content_layout_cursor += 1
-                if layout == prev_layout:
-                    layout = content_layouts[content_layout_cursor % len(content_layouts)]
-                    content_layout_cursor += 1
+            if node.page_type == SlidePageType.CONTENT and content_cursor < len(content_sequence):
+                layout = content_sequence[content_cursor]
+                content_cursor += 1
             else:
-                layout = choices[_stable_index(seed=f"{seed}|{idx}", size=len(choices))]
-                if layout == prev_layout and len(choices) > 1:
-                    layout = choices[(choices.index(layout) + 1) % len(choices)]
-        node.layout_hint = layout
-        prev_layout = layout
+                weights = _layout_weights_for(page_type=node.page_type, style_dna_id=style_dna_id)
+                seq = _build_weighted_layout_sequence(
+                    choices=choices,
+                    weights=weights,
+                    seed=f"{seed}|{node.page_type.value}|{idx}",
+                    count=1,
+                )
+                layout = seq[0] if seq else (choices[0] if choices else "")
+            if layout == prev_layout and len(choices) > 1:
+                alternatives = [item for item in choices if item != prev_layout]
+                if alternatives:
+                    offset = _stable_index(seed=f"{seed}|{idx}|fallback", size=len(alternatives))
+                    layout = alternatives[offset]
+        node.layout_hint = layout or node.layout_hint
+        prev_layout = node.layout_hint or ""
 
 
-def allowed_layouts_for(page_type: SlidePageType) -> list[str]:
+def allowed_layouts_for(page_type: SlidePageType, style_dna_id: str | None = None) -> list[str]:
+    style_dna = get_style_dna_by_id(style_dna_id)
+    if style_dna is not None:
+        pool = style_dna.layout_pool_by_page_type.get(page_type.value, ())
+        filtered = [item for item in pool if item in LAYOUTS_BY_PAGE_TYPE[page_type]]
+        if filtered:
+            return filtered
     return list(LAYOUTS_BY_PAGE_TYPE[page_type])
+
+
+def _layout_weights_for(page_type: SlidePageType, style_dna_id: str | None = None) -> dict[str, int]:
+    style_dna = get_style_dna_by_id(style_dna_id)
+    if style_dna is None:
+        return {item: 1 for item in LAYOUTS_BY_PAGE_TYPE[page_type]}
+    weights = style_dna.layout_weights_by_page_type.get(page_type.value, {})
+    choices = allowed_layouts_for(page_type, style_dna_id=style_dna_id)
+    return {item: max(1, int(weights.get(item, 1))) for item in choices}
+
+
+def _build_weighted_layout_sequence(
+    *,
+    choices: list[str],
+    weights: dict[str, int],
+    seed: str,
+    count: int,
+) -> list[str]:
+    if not choices or count <= 0:
+        return []
+    bag: list[str] = []
+    for item in choices:
+        bag.extend([item] * max(1, int(weights.get(item, 1))))
+    if not bag:
+        return [choices[0]] * count
+
+    result: list[str] = []
+    prev = ""
+    for idx in range(count):
+        pick_idx = _stable_index(seed=f"{seed}|{idx}", size=len(bag))
+        candidate = bag[pick_idx]
+        if candidate == prev and len(choices) > 1:
+            alt = [item for item in choices if item != prev]
+            candidate = alt[_stable_index(seed=f"{seed}|{idx}|alt", size=len(alt))]
+        result.append(candidate)
+        prev = candidate
+    return result
+
+
+def _ensure_content_variety(*, sequence: list[str], choices: list[str], target_count: int) -> None:
+    if target_count < 8 or len(choices) < 3 or not sequence:
+        return
+    required_unique = min(3, len(choices))
+    seen = list(dict.fromkeys(sequence))
+    if len(seen) >= required_unique:
+        return
+    missing = [item for item in choices if item not in seen][: required_unique - len(seen)]
+    for idx, item in enumerate(missing, start=1):
+        pos = min(len(sequence) - 1, idx * 2)
+        sequence[pos] = item
 
 
 def _choose_style_name(*, template_style: str, seed: str) -> str:
@@ -193,4 +287,4 @@ def _choose(items: Iterable[T], seed: str) -> T:
 
 def _stable_index(*, seed: str, size: int) -> int:
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) % size
+    return int(digest[:8], 16) % max(1, size)
