@@ -183,7 +183,12 @@ class QualityRepairService:
             for slide in sorted(run.slides, key=lambda x: x.slide_no):
                 node = run.outline.nodes[slide.slide_no - 1]
                 rule_issues = forced_issues or run.qa_report.get("issues", [])
-                slide_plan = orch._build_slide_plan(node=node, design=design, slide_no=slide.slide_no)
+                slide_plan = orch._build_slide_plan(
+                    node=node,
+                    design=design,
+                    slide_no=slide.slide_no,
+                    style_dna_id=orch._resolved_style_dna_id(run),
+                )
                 orch._apply_visual_policy_to_slide_plan(
                     slide_plan=slide_plan,
                     page_type=node.page_type,

@@ -5,6 +5,7 @@ from typing import Any
 
 from ..models import OutlineDocument, OutlineNode, SlidePageType, VisualPolicy
 from ..design.skill_profile import enforce_layout_variety
+from ..design.style_catalog import resolve_style_dna_choice
 from .types import GeneratedSlide, SlideSpec, TokenCallback
 
 class MockLLMClient:
@@ -80,7 +81,8 @@ class MockLLMClient:
                     layout_hint="content-two-column" if i % 2 == 0 else "content-icon-rows",
                 )
             )
-        enforce_layout_variety(nodes=nodes, seed=f"{topic}|mock")
+        style_dna = resolve_style_dna_choice("auto", template_style=template_style, seed=f"{topic}|mock")
+        enforce_layout_variety(nodes=nodes, seed=f"{topic}|mock", style_dna_id=style_dna.id)
         return OutlineDocument(version=1, summary=f"Auto outline for {topic}", nodes=nodes)
 
     async def repair_outline(

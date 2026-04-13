@@ -48,7 +48,13 @@ from ..models import (
     VisualPolicy,
 )
 from ..design.skill_profile import PALETTES, FONT_PAIRS, STYLE_RECIPES, DesignProfile, StyleRecipe, allowed_layouts_for, choose_design_profile, enforce_layout_variety
-from ..design.style_catalog import STYLE_PRESET_AUTO, get_style_theme_hint, resolve_style_choice
+from ..design.style_catalog import (
+    STYLE_PRESET_AUTO,
+    get_style_dna_by_id,
+    get_style_theme_hint,
+    resolve_style_choice,
+    resolve_style_dna_choice,
+)
 from ..infra.store import RunStore, now_iso
 
 
@@ -343,6 +349,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             enforce_layout_variety(
                 nodes=req.outline.nodes,
                 seed=f"{run.input.topic}|{self._resolved_template_style(run)}|{run_id}|confirm",
+                style_dna_id=self._resolved_style_dna_id(run),
             )
             if req.outline.version <= run.outline.version:
                 req.outline.version = run.outline.version + 1
@@ -554,7 +561,31 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             return None
         return resolve_style_choice(getattr(run.input, "style_preset", STYLE_PRESET_AUTO))
 
+    def _selected_style_dna(self, run: RunRecord):
+        if run.input.generation_mode != GenerationMode.SCRATCH:
+            return None
+        return resolve_style_dna_choice(
+            getattr(run.input, "style_preset", STYLE_PRESET_AUTO),
+            template_style=run.input.template_style,
+            seed=f"{run.run_id}|{run.input.topic}",
+        )
+
+    def _resolved_style_dna_id(self, run: RunRecord) -> str | None:
+        report = run.research_report if isinstance(run.research_report, dict) else {}
+        design_intent = report.get("design_intent", {}) if isinstance(report.get("design_intent", {}), dict) else {}
+        style_dna_id = str(design_intent.get("style_dna_id", "")).strip()
+        if style_dna_id:
+            return style_dna_id
+        selected = self._selected_style_dna(run)
+        return selected.id if selected is not None else None
+
+    def _resolved_style_dna(self, run: RunRecord):
+        return get_style_dna_by_id(self._resolved_style_dna_id(run))
+
     def _requested_template_style(self, run: RunRecord) -> str:
+        style_dna = self._selected_style_dna(run)
+        if style_dna is not None:
+            return style_dna.template_style_hint
         preset = self._selected_style_preset(run)
         if preset is not None:
             return preset.template_style_hint
@@ -562,29 +593,34 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
 
     def _apply_style_preset_to_requirements(self, *, run: RunRecord, report: dict[str, Any]) -> dict[str, Any]:
         preset = self._selected_style_preset(run)
+        style_dna = self._selected_style_dna(run)
         normalized = dict(report or {})
         normalized["style_preset"] = getattr(run.input, "style_preset", STYLE_PRESET_AUTO)
-        if preset is None:
+        if preset is None and style_dna is None:
             normalized["style_reference_name"] = ""
             return normalized
 
-        normalized["style_reference_name"] = preset.name
-        normalized["style_intent"] = preset.prompt
-        normalized["effective_template_style"] = preset.template_style_hint
+        reference_name = style_dna.name if style_dna is not None else (preset.name if preset is not None else "")
+        style_intent = style_dna.prompt if style_dna is not None else (preset.prompt if preset is not None else "")
+        effective_template_style = style_dna.template_style_hint if style_dna is not None else (preset.template_style_hint if preset is not None else "")
+        normalized["style_reference_name"] = reference_name
+        normalized["style_intent"] = style_intent
+        normalized["effective_template_style"] = effective_template_style
 
         notes_raw = normalized.get("design_notes", [])
         notes = [str(item).strip() for item in notes_raw if str(item).strip()] if isinstance(notes_raw, list) else []
-        notes = [preset.prompt] + [item for item in notes if item != preset.prompt]
+        if style_intent:
+            notes = [style_intent] + [item for item in notes if item != style_intent]
         normalized["design_notes"] = notes[:8]
 
         design_intent = normalized.get("design_intent", {})
         if not isinstance(design_intent, dict):
             design_intent = {}
-        if not str(design_intent.get("style_recipe", "")).strip():
-            design_intent["style_recipe"] = preset.style_recipe_hint
+        if not str(design_intent.get("style_recipe", "")).strip() and style_dna is not None:
+            design_intent["style_recipe"] = style_dna.style_recipe
         if not str(design_intent.get("rationale", "")).strip():
-            design_intent["rationale"] = f"apply selected style preset: {preset.name}"
-        style_theme = get_style_theme_hint(preset.id)
+            design_intent["rationale"] = f"apply selected style profile: {reference_name or 'auto'}"
+        style_theme = dict(style_dna.theme_hint) if style_dna is not None else get_style_theme_hint(preset.id if preset is not None else "")
         if style_theme:
             existing_theme_raw = design_intent.get("theme") if isinstance(design_intent.get("theme"), dict) else {}
             existing_theme: dict[str, str] = {}
@@ -600,8 +636,22 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
                 merged_theme = dict(style_theme)
                 merged_theme.update(existing_theme)
                 design_intent["theme"] = merged_theme
-            design_intent["palette_name"] = preset.name
-            normalized["palette_name"] = preset.name
+            palette_name = str(design_intent.get("palette_name", "")).strip()
+            if not palette_name:
+                design_intent["palette_name"] = reference_name
+                normalized["palette_name"] = reference_name
+            else:
+                normalized["palette_name"] = palette_name
+        if style_dna is not None:
+            design_intent.setdefault("layout_family", style_dna.layout_family)
+            design_intent.setdefault("density_profile", style_dna.density_profile)
+            design_intent.setdefault("visual_strategy_profile", style_dna.visual_strategy_profile)
+            design_intent["style_dna_id"] = style_dna.id
+            design_intent["style_signature"] = style_dna.style_signature
+            if not str(design_intent.get("title_font", "")).strip():
+                design_intent["title_font"] = str(style_dna.typography_profile.get("title_font", ""))
+            if not str(design_intent.get("body_font", "")).strip():
+                design_intent["body_font"] = str(style_dna.typography_profile.get("body_font", ""))
         normalized["design_intent"] = design_intent
         return normalized
 
@@ -640,6 +690,11 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             "body_font": str(intent_raw.get("body_font", "")).strip(),
             "visual_strategy": str(intent_raw.get("visual_strategy", "")).strip(),
             "density": str(intent_raw.get("density", "")).strip(),
+            "layout_family": str(intent_raw.get("layout_family", "")).strip(),
+            "density_profile": str(intent_raw.get("density_profile", "")).strip(),
+            "visual_strategy_profile": str(intent_raw.get("visual_strategy_profile", "")).strip(),
+            "style_dna_id": str(intent_raw.get("style_dna_id", "")).strip(),
+            "style_signature": str(intent_raw.get("style_signature", "")).strip(),
             "rationale": str(intent_raw.get("rationale", "")).strip(),
             "theme": theme_overrides,
         }
@@ -720,10 +775,11 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         return normalized_preferred if normalized_preferred in available else fallback
 
     def _resolve_design_profile(self, *, topic: str, template_style: str, requirements_report: dict[str, Any]) -> DesignProfile:
-        base = choose_design_profile(topic=topic, template_style=template_style)
         design_intent = requirements_report.get("design_intent", {})
         if not isinstance(design_intent, dict):
             design_intent = {}
+        style_dna_id = str(design_intent.get("style_dna_id", "")).strip() or None
+        base = choose_design_profile(topic=topic, template_style=template_style, style_dna_id=style_dna_id)
         palette_name, theme = self._resolve_palette_theme(base=base, design_intent=design_intent)
         style_name = self._resolve_style_recipe_name(
             design_intent=design_intent,
@@ -1054,7 +1110,8 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         run = await self.store.get_run(run_id)
         assert run is not None
         effective_template_style = self._resolved_template_style(run)
-        slide_plan = self._build_slide_plan(node=node, design=design, slide_no=slide_no)
+        style_dna_id = self._resolved_style_dna_id(run)
+        slide_plan = self._build_slide_plan(node=node, design=design, slide_no=slide_no, style_dna_id=style_dna_id)
         self._apply_visual_policy_to_slide_plan(
             slide_plan=slide_plan,
             page_type=node.page_type,
@@ -1083,6 +1140,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
                 "visual_policy": run.input.visual_policy.value,
                 "visual_plan": slide_plan.get("visual_plan", {}),
                 "constraints": slide_plan.get("constraints", {}),
+                "style_dna_id": style_dna_id or "",
             },
         )
         await self._publish(
@@ -1453,6 +1511,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
                     "slide_no": slide_no,
                     "round": repair_round,
                     "visual_policy": run.input.visual_policy.value,
+                    "gate_mode": "hard_only_v2",
                     "score": quality_score,
                     "threshold": 0,
                     "hard_issues": list(blocking + high_risk),
@@ -1472,6 +1531,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
                     "round": repair_round,
                     "score": quality_score,
                     "threshold": 0,
+                    "gate_mode": "hard_only_v2",
                     "passed": not needs_repair,
                     "hard_issue_count": len(blocking) + len(high_risk),
                     "llm_issue_count": 0,
@@ -1630,9 +1690,24 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         node: OutlineNode,
         design: DesignProfile,
         slide_no: int,
+        style_dna_id: str | None = None,
     ) -> dict[str, Any]:
-        allowed = allowed_layouts_for(node.page_type)
+        allowed = allowed_layouts_for(node.page_type, style_dna_id=style_dna_id)
         layout = node.layout_hint if node.layout_hint in allowed else (allowed[0] if allowed else (node.layout_hint or "content-two-column"))
+        style_dna = get_style_dna_by_id(style_dna_id)
+        density_profile = str(style_dna.density_profile if style_dna is not None else "balanced").strip().lower()
+        if density_profile == "dense":
+            min_margin_in = 0.42 if node.page_type == SlidePageType.CONTENT else 0.32
+            min_block_gap_in = 0.2 if node.page_type == SlidePageType.CONTENT else 0.16
+            body_preferred_size = "13-15"
+        elif density_profile == "airy":
+            min_margin_in = 0.58 if node.page_type == SlidePageType.CONTENT else 0.4
+            min_block_gap_in = 0.28 if node.page_type == SlidePageType.CONTENT else 0.2
+            body_preferred_size = "15-17"
+        else:
+            min_margin_in = 0.5 if node.page_type == SlidePageType.CONTENT else 0.35
+            min_block_gap_in = 0.22 if node.page_type == SlidePageType.CONTENT else 0.18
+            body_preferred_size = "14-16"
         visual_kind = "shape_chart"
         if node.page_type == SlidePageType.CONTENT:
             if layout in {"content-showcase", "content-two-column"}:
@@ -1656,11 +1731,11 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
                 "chart_preferred": visual_kind in {"chart_callout"},
             },
             "constraints": {
-                "min_margin_in": 0.5 if node.page_type == SlidePageType.CONTENT else 0.35,
-                "min_block_gap_in": 0.22 if node.page_type == SlidePageType.CONTENT else 0.18,
+                "min_margin_in": min_margin_in,
+                "min_block_gap_in": min_block_gap_in,
                 "body_align": "left",
                 "title_min_size": 36,
-                "body_preferred_size": "14-16",
+                "body_preferred_size": body_preferred_size,
                 "title_body_min_delta": 18,
                 "must_use_shrink": True,
             },
@@ -1669,6 +1744,9 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
                 "style": design.style.name,
                 "title_font": design.title_font,
                 "body_font": design.body_font,
+                "style_dna_id": style_dna_id or "",
+                "layout_family": str(style_dna.layout_family if style_dna is not None else ""),
+                "density_profile": str(style_dna.density_profile if style_dna is not None else ""),
             },
             "content_blocks": {
                 "title": node.title,
@@ -1676,8 +1754,16 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             },
         }
 
-    def _layout_supports_image(self, layout_hint: str | None) -> bool:
-        return str(layout_hint or "").strip() in {"content-two-column", "content-showcase", "content-icon-rows"}
+    def _layout_supports_image(self, layout_hint: str | None, *, style_dna_id: str | None = None) -> bool:
+        layout = str(layout_hint or "").strip()
+        if not layout:
+            return False
+        if layout not in {"content-two-column", "content-showcase", "content-icon-rows"}:
+            return False
+        allowed_content = set(allowed_layouts_for(SlidePageType.CONTENT, style_dna_id=style_dna_id))
+        if allowed_content:
+            return layout in allowed_content
+        return True
 
     def _apply_visual_policy_to_slide_plan(
         self,
@@ -1694,8 +1780,14 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             slide_plan["visual_plan"] = visual_plan
         if visual_policy == VisualPolicy.MEDIA_REQUIRED:
             layout = str(slide_plan.get("layout", "")).strip()
-            if not self._layout_supports_image(layout):
-                slide_plan["layout"] = "content-showcase"
+            style_dna_id = ""
+            tokens = slide_plan.get("design_tokens", {})
+            if isinstance(tokens, dict):
+                style_dna_id = str(tokens.get("style_dna_id", "")).strip()
+            if not self._layout_supports_image(layout, style_dna_id=style_dna_id):
+                allowed_content = allowed_layouts_for(SlidePageType.CONTENT, style_dna_id=style_dna_id or None)
+                image_candidates = [item for item in allowed_content if self._layout_supports_image(item, style_dna_id=style_dna_id or None)]
+                slide_plan["layout"] = image_candidates[0] if image_candidates else "content-showcase"
             visual_plan["kind"] = "image_or_showcase"
             visual_plan["image_slots"] = max(1, int(visual_plan.get("image_slots", 0) or 0))
             visual_plan["chart_preferred"] = False
@@ -1784,11 +1876,12 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         page_type: SlidePageType,
         repair_round: int,
         prefer_image_layout: bool,
+        style_dna_id: str | None = None,
     ) -> str | None:
-        allowed = allowed_layouts_for(page_type)
+        allowed = allowed_layouts_for(page_type, style_dna_id=style_dna_id)
         if not allowed:
             return layout_hint
-        preferred = [name for name in allowed if self._layout_supports_image(name)] if prefer_image_layout else []
+        preferred = [name for name in allowed if self._layout_supports_image(name, style_dna_id=style_dna_id)] if prefer_image_layout else []
         if preferred:
             current = str(layout_hint or "").strip()
             if current in preferred:
@@ -1827,6 +1920,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         design_notes_raw = report.get("design_notes", [])
         design_notes = [str(item).strip() for item in design_notes_raw if str(item).strip()] if isinstance(design_notes_raw, list) else []
         design_intent = report.get("design_intent", {}) if isinstance(report.get("design_intent", {}), dict) else {}
+        style_dna = get_style_dna_by_id(str(design_intent.get("style_dna_id", "")).strip())
         selected_focus = page_focus_list[slide_no - 1] if 0 < slide_no <= len(page_focus_list) else ""
         visual_plan = slide_plan.get("visual_plan", {}) if isinstance(slide_plan.get("visual_plan", {}), dict) else {}
         assets = visual_plan.get("assets", []) if isinstance(visual_plan.get("assets", []), list) else []
@@ -1842,6 +1936,20 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
             "layout": str(slide_plan.get("layout", "")),
             "design_notes": design_notes[:8],
             "assets": assets,
+            "style_dna": (
+                {
+                    "id": style_dna.id,
+                    "name": style_dna.name,
+                    "style_signature": style_dna.style_signature,
+                    "layout_family": style_dna.layout_family,
+                    "density_profile": style_dna.density_profile,
+                    "shape_language": style_dna.shape_language,
+                    "decoration_policy": style_dna.decoration_policy,
+                    "visual_strategy_profile": style_dna.visual_strategy_profile,
+                }
+                if style_dna is not None
+                else {}
+            ),
         }
 
     def _candidate_variant_specs(
