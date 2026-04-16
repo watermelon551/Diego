@@ -217,6 +217,8 @@ class RunRecord(BaseModel):
     artifact_dir: str
     compile_js_path: Optional[str] = None
     pptx_path: Optional[str] = None
+    compile_provider: Optional[str] = None
+    compile_fallback_used: bool = False
     qa_report: dict[str, Any] = Field(default_factory=dict)
     template_mapping_report: dict[str, Any] = Field(default_factory=dict)
     chart_truth_report: dict[str, Any] = Field(default_factory=dict)
@@ -250,6 +252,8 @@ class RunDetailResponse(BaseModel):
     error_details: dict[str, Any]
     compile_js_path: Optional[str]
     pptx_path: Optional[str]
+    compile_provider: Optional[str]
+    compile_fallback_used: bool
     qa_report: dict[str, Any]
     template_mapping_report: dict[str, Any]
     chart_truth_report: dict[str, Any]

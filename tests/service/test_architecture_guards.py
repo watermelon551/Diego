@@ -33,8 +33,8 @@ def test_layer_boundaries_should_not_have_forbidden_imports() -> None:
         (
             ROOT / "service" / "api",
             [
-                r"from\s+\.\.(templates|slides)\b",
-                r"from\s+service\.(templates|slides)\b",
+                r"from\s+\.\.(templates|slides|design)\b",
+                r"from\s+service\.(templates|slides|design)\b",
             ],
         ),
         (
@@ -70,6 +70,46 @@ def test_layer_boundaries_should_not_have_forbidden_imports() -> None:
     assert not violations, "Forbidden imports found:\n" + "\n".join(violations)
 
 
+def test_runtime_kernel_and_engines_should_keep_explicit_boundaries() -> None:
+    checks: list[tuple[Path, list[str]]] = [
+        (
+            ROOT / "service" / "run" / "kernel.py",
+            [
+                r"from\s+\.\.(app|orchestrator|llm_client|store)\b",
+                r"from\s+service\.(app|orchestrator|llm_client|store)\b",
+            ],
+        ),
+        (
+            ROOT / "service" / "run" / "engines" / "template_engine.py",
+            [
+                r"from\s+.+scratch_engine\b",
+            ],
+        ),
+        (
+            ROOT / "service" / "run" / "engines" / "scratch_engine.py",
+            [
+                r"from\s+.+template_engine\b",
+            ],
+        ),
+        (
+            ROOT / "service" / "run" / "engines" / "quality_engine.py",
+            [
+                r"RunStatus",
+                r"setattr\(.*status",
+                r"status\s*=",
+            ],
+        ),
+    ]
+    violations: list[str] = []
+    for path, patterns in checks:
+        text = path.read_text(encoding="utf-8")
+        for pattern in patterns:
+            if re.search(pattern, text):
+                rel = path.relative_to(ROOT).as_posix()
+                violations.append(f"{rel} matches forbidden pattern: {pattern}")
+    assert not violations, "Runtime boundary violations found:\n" + "\n".join(violations)
+
+
 def test_internal_service_modules_should_not_import_legacy_shims() -> None:
     service_root = ROOT / "service"
     shim_roots = {
@@ -97,3 +137,34 @@ def test_internal_service_modules_should_not_import_legacy_shims() -> None:
                 rel = path.relative_to(ROOT).as_posix()
                 violations.append(f"{rel} matches forbidden pattern: {pattern}")
     assert not violations, "Legacy shim imports found in internal modules:\n" + "\n".join(violations)
+
+
+def test_core_files_should_respect_size_guards() -> None:
+    exempt_over_500 = {
+        "service/run/orchestrator.py": "transition facade while legacy helper methods are still migrating",
+        "service/slides/js_quality_mixin.py": "legacy quality logic migration in progress",
+        "service/templates/template_ops_mixin.py": "legacy template logic migration in progress",
+        "service/design/style_catalog.py": "catalog data and normalization rules intentionally centralized",
+        "service/llm/client.py": "provider client and parsing compatibility surface intentionally centralized",
+    }
+    exempt_over_300 = {
+        "service/run/flows/outline_flow.py",
+        "service/run/services/compile_service.py",
+        "service/run/services/quality_repair_service.py",
+        "service/run/slide_preview.py",
+        "service/templates/asset_search_mixin.py",
+        "service/design/skill_profile.py",
+        "service/models/contracts.py",
+        "service/llm/mock.py",
+        "service/llm/types.py",
+        "service/config.py",
+    }
+    violations: list[str] = []
+    for path in _iter_py_files(ROOT / "service"):
+        rel = path.relative_to(ROOT).as_posix()
+        lines = path.read_text(encoding="utf-8").count("\n") + 1
+        if lines > 500 and rel not in exempt_over_500:
+            violations.append(f"{rel} is {lines} lines and has no >500 exemption")
+        elif lines > 300 and rel not in exempt_over_500 and rel not in exempt_over_300:
+            violations.append(f"{rel} is {lines} lines and has no >300 exemption")
+    assert not violations, "Core file size guard violations found:\n" + "\n".join(violations)

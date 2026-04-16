@@ -1,4 +1,5 @@
 from tests.support.service_flow_shared import *  # noqa: F401,F403
+import service.run.engines.compile_engine as compile_engine_mod
 
 def test_healthz_endpoint(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -102,6 +103,143 @@ def test_confirm_gate_and_scratch_success_flow(tmp_path: Path) -> None:
     assert len(final_data["slides"]) == 4
     assert all(item.get("js_path") and Path(item["js_path"]).exists() for item in final_data["slides"])
     assert final_data["qa_report"]["passed"] is True
+
+def test_scratch_compile_can_use_pagevra_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict | None = None, content: bytes = b"") -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.content = content
+
+        def json(self) -> dict:
+            return dict(self._payload)
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.timeout = kwargs.get("timeout")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict | None = None):
+            assert url == "http://pagevra.test/compile/bundles"
+            assert json is not None
+            assert json["provider"] == "diego"
+            assert json["mode"] == "scratch"
+            assert json["entrypoint"] == "slides/compile.js"
+            assert any(item["path"] == "slides/compile.js" for item in json["files"])
+            return FakeResponse(200, {"state": "success", "job_id": "job-pv-1"})
+
+        async def get(self, url: str):
+            assert url == "http://pagevra.test/compile/jobs/job-pv-1/artifacts/pptx"
+            return FakeResponse(200, content=b"pagevra-pptx")
+
+    monkeypatch.setattr(compile_engine_mod.httpx, "AsyncClient", FakeAsyncClient)
+    client = make_client(
+        tmp_path,
+        compile_provider="pagevra",
+        pagevra_base_url="http://pagevra.test",
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Pagevra Compile",
+            "project_id": "p-pagevra",
+            "rag_source_ids": ["a", "b"],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    final = wait_status(client, run_id, {"SUCCEEDED"})
+
+    assert Path(final["pptx_path"]).read_bytes() == b"pagevra-pptx"
+    assert final["compile_provider"] == "pagevra"
+    assert final["compile_fallback_used"] is False
+    compile_event = next(item for item in final["events"] if item["event"] == "compile.completed")
+    assert compile_event["payload"]["provider"] == "pagevra"
+    assert compile_event["payload"]["requested_provider"] == "pagevra"
+    assert compile_event["payload"]["fallback_used"] is False
+
+def test_scratch_compile_auto_falls_back_to_local_when_pagevra_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class ExplodingAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict | None = None):
+            raise RuntimeError("pagevra unavailable")
+
+    monkeypatch.setattr(compile_engine_mod.httpx, "AsyncClient", ExplodingAsyncClient)
+    client = make_client(
+        tmp_path,
+        compile_provider="auto",
+        pagevra_base_url="http://pagevra.test",
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Auto Fallback",
+            "project_id": "p-auto",
+            "rag_source_ids": ["a"],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    final = wait_status(client, run_id, {"SUCCEEDED"})
+
+    assert Path(final["pptx_path"]).exists()
+    assert final["compile_provider"] == "local"
+    assert final["compile_fallback_used"] is True
+    compile_event = next(item for item in final["events"] if item["event"] == "compile.completed")
+    assert compile_event["payload"]["provider"] == "local"
+    assert compile_event["payload"]["requested_provider"] == "auto"
+    assert compile_event["payload"]["fallback_used"] is True
+    assert compile_event["payload"]["fallback_from"] == "pagevra"
+
+def test_build_compile_bundle_returns_high_fidelity_scratch_manifest(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Compile Bundle",
+            "project_id": "p-bundle",
+            "rag_source_ids": ["a", "b"],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    wait_status(client, run_id, {"SUCCEEDED"})
+
+    bundle = asyncio.run(orch.build_compile_bundle(run_id))
+    assert bundle["provider"] == "diego"
+    assert bundle["mode"] == "scratch"
+    assert bundle["entrypoint"] == "slides/compile.js"
+    assert bundle["compile_options"]["cwd"] == "slides"
+    assert any(item["path"] == "slides/compile.js" for item in bundle["files"])
 
 def test_outline_update_then_approve_flow(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -242,4 +380,3 @@ def test_requirements_report_should_include_design_intent_payload(tmp_path: Path
     assert req_events
     assert req_events[-1]["payload"]["palette_name"] == "Pure Tech Blue"
     assert req_events[-1]["payload"]["style_recipe"] == "sharp"
-
