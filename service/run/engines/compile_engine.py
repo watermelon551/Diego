@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from ..types import RunStageError
+
 
 class CompileEngine:
     def __init__(self, runtime: Any) -> None:
@@ -99,11 +101,21 @@ class CompileEngine:
                     "reason": "pagevra_base_url_missing",
                     "provider": "pagevra",
                 }
-            raise RuntimeError("pagevra_base_url_missing")
+            raise RunStageError(
+                stage="COMPILING",
+                error_code="PAGEVRA_BASE_URL_MISSING",
+                retryable=False,
+                details={"provider": "pagevra", "reason": "pagevra_base_url_missing"},
+            )
         try:
             run = await self.runtime.store.get_run(run_id)
             if run is None:
-                raise RuntimeError("run_not_found")
+                raise RunStageError(
+                    stage="COMPILING",
+                    error_code="COMPILE_RUN_NOT_FOUND",
+                    retryable=False,
+                    details={"provider": "pagevra", "reason": "run_not_found"},
+                )
             bundle = await self._build_scratch_compile_bundle(run=run, slides_dir=slides_dir)
             timeout = float(getattr(self.runtime.settings, "pagevra_compile_timeout_sec", 180.0) or 180.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -120,13 +132,37 @@ class CompileEngine:
                             "reason": reason,
                             "provider": "pagevra",
                         }
-                    raise RuntimeError(reason)
+                    raise RunStageError(
+                        stage="COMPILING",
+                        error_code="PAGEVRA_COMPILE_FAILED",
+                        retryable=response.status_code >= 500 or response.status_code == 429,
+                        details={
+                            "provider": "pagevra",
+                            "status_code": response.status_code,
+                            "reason": reason,
+                        },
+                    )
                 job_id = str(payload.get("job_id") or "").strip()
                 if not job_id:
-                    raise RuntimeError("pagevra_compile_missing_job_id")
+                    raise RunStageError(
+                        stage="COMPILING",
+                        error_code="PAGEVRA_JOB_ID_MISSING",
+                        retryable=True,
+                        details={"provider": "pagevra", "reason": "pagevra_compile_missing_job_id"},
+                    )
                 artifact = await client.get(f"{base_url}/compile/jobs/{job_id}/artifacts/pptx")
                 if artifact.status_code >= 400:
-                    raise RuntimeError(f"pagevra_artifact_download_failed:{artifact.status_code}")
+                    raise RunStageError(
+                        stage="COMPILING",
+                        error_code="PAGEVRA_ARTIFACT_DOWNLOAD_FAILED",
+                        retryable=artifact.status_code >= 500 or artifact.status_code == 429,
+                        details={
+                            "provider": "pagevra",
+                            "status_code": artifact.status_code,
+                            "job_id": job_id,
+                            "reason": "pagevra_artifact_download_failed",
+                        },
+                    )
                 pptx_path = slides_dir / "output" / "presentation.pptx"
                 pptx_path.parent.mkdir(parents=True, exist_ok=True)
                 pptx_path.write_bytes(artifact.content)
@@ -152,7 +188,21 @@ class CompileEngine:
                     "reason": str(exc),
                     "provider": "pagevra",
                 }
-            raise
+            if isinstance(exc, RunStageError):
+                raise
+            if isinstance(exc, httpx.HTTPError):
+                raise RunStageError(
+                    stage="COMPILING",
+                    error_code="PAGEVRA_HTTP_ERROR",
+                    retryable=True,
+                    details={"provider": "pagevra", "reason": str(exc)},
+                ) from exc
+            raise RunStageError(
+                stage="COMPILING",
+                error_code="PAGEVRA_COMPILE_ERROR",
+                retryable=True,
+                details={"provider": "pagevra", "reason": str(exc)},
+            ) from exc
 
     async def _build_scratch_compile_bundle(self, *, run: Any, slides_dir: Path) -> dict[str, Any]:
         files: list[dict[str, str]] = []

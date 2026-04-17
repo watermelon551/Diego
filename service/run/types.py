@@ -61,6 +61,22 @@ class SlideGenerationError(RuntimeError):
         return payload
 
 
+class RunStageError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        stage: str,
+        error_code: str,
+        retryable: bool,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.stage = stage
+        self.error_code = error_code
+        self.retryable = retryable
+        self.details = dict(details or {})
+        super().__init__(f"{stage}:{error_code}")
+
+
 @dataclass
 class SlotNode:
     slot_id: str
@@ -149,4 +165,3 @@ SLIDE_WIDTH_EMU = 9_144_000
 SLIDE_HEIGHT_EMU = 5_143_500
 SLIDE_WIDTH_IN = 10.0
 SLIDE_HEIGHT_IN = 5.625
-

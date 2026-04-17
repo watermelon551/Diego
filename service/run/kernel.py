@@ -17,6 +17,7 @@ from ..models import (
 )
 from ..infra.store import now_iso
 from .runtime_models import RunContext
+from .types import RunStageError
 
 
 class RunKernel:
@@ -206,5 +207,13 @@ class RunKernel:
                 await self._template_stage.execute(ctx)
             else:
                 await self._scratch_stage.execute(ctx)
+        except RunStageError as exc:
+            await self.fail_run(
+                run_id,
+                exc.stage,
+                exc.error_code,
+                retryable=exc.retryable,
+                error_details=exc.details,
+            )
         except Exception:
             await self.fail_run(run_id, "SLIDES_GENERATING", "GENERATION_PIPELINE_ERROR", retryable=True)

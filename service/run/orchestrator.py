@@ -79,7 +79,7 @@ from ..slides.js_asset_contract import (
 from .engines import AssetResolver, CompileEngine, QualityEngine, ReportingEngine, ScratchSlideEngine, TemplateEngine
 from .flows import OutlineFlowService, ScratchFlowService, TemplateFlowService
 from .kernel import RunKernel
-from .runtime_support import RuntimeSupport
+from .runtime_support import LegacyCompileServiceAdapter, RuntimeSupport
 from .slide_preview import render_slide_html_preview
 from .stages import FinalizeQualityStage, OutlineStage, ScratchGenerationStage, TemplateGenerationStage
 
@@ -148,6 +148,11 @@ class RunOrchestrator:
         self.compile_engine = CompileEngine(self._support)
         self.quality_engine = QualityEngine(self._support)
         self.reporting_engine = ReportingEngine(self._support)
+        self._legacy_aliases = {
+            "_compile_service": LegacyCompileServiceAdapter(self),
+            "_quality_service": self.quality_engine,
+            "_reporting_service": self.reporting_engine,
+        }
         self._outline_flow = OutlineFlowService(self)
         self._scratch_flow = ScratchFlowService(self)
         self._template_flow = TemplateFlowService(self)
@@ -160,7 +165,12 @@ class RunOrchestrator:
         )
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._support, name)
+        if name in self._legacy_aliases:
+            return self._legacy_aliases[name]
+        try:
+            return getattr(self._support, name)
+        except AttributeError as exc:
+            raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}") from exc
 
     def _use_agentic_engine(self) -> bool:
         return self.settings.generation_engine == "agentic_v2"
@@ -2801,7 +2811,6 @@ def build_orchestrator(base_dir: Path) -> RunOrchestrator:
         llm_client=llm_client,
         settings=settings,
     )
-
 
 
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from tests.support.service_flow_shared import *  # noqa: F401,F403
 import service.run.engines.compile_engine as compile_engine_mod
 
@@ -209,6 +211,33 @@ def test_scratch_compile_auto_falls_back_to_local_when_pagevra_fails(tmp_path: P
     assert compile_event["payload"]["requested_provider"] == "auto"
     assert compile_event["payload"]["fallback_used"] is True
     assert compile_event["payload"]["fallback_from"] == "pagevra"
+
+
+def test_scratch_compile_pagevra_should_fail_with_compile_stage_diagnostics_when_base_url_missing(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        compile_provider="pagevra",
+        pagevra_base_url="",
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Pagevra Missing URL",
+            "project_id": "p-pagevra-missing",
+            "rag_source_ids": ["a"],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    final = wait_status(client, run_id, {"FAILED"})
+
+    assert final["failed_stage"] == "COMPILING"
+    assert final["error_code"] == "PAGEVRA_BASE_URL_MISSING"
+    assert final["error_details"]["provider"] == "pagevra"
+    assert final["error_details"]["reason"] == "pagevra_base_url_missing"
 
 def test_build_compile_bundle_returns_high_fidelity_scratch_manifest(tmp_path: Path) -> None:
     orch = RunOrchestrator(
