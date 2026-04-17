@@ -39,7 +39,12 @@ class ScratchFlowService:
             async with sem:
                 await orch._publish(run_id, EventType.SLIDE_STARTED, {"slide_no": slide_no, "page_type": node.page_type.value})
                 try:
-                    artifact = await orch._generate_skill_slide(run_id=run_id, slide_no=slide_no, node=node, design=design)
+                    artifact = await orch.scratch_engine.generate_slide(
+                        run_id=run_id,
+                        slide_no=slide_no,
+                        node=node,
+                        design=design,
+                    )
                 except VisualPolicyUnsatisfiedError:
                     raise
                 except SlideGenerationError:
@@ -100,65 +105,66 @@ class ScratchFlowService:
             lambda r: setattr(r.stage_timings, "slide_ms", int((time.perf_counter() - slide_start) * 1000)),
         )
         await orch.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.COMPILING))
-        await orch._publish(run_id, EventType.COMPILE_STARTED, {})
+        await orch._publish(
+            run_id,
+            EventType.COMPILE_STARTED,
+            {
+                "requested_provider": orch.settings.compile_provider,
+            },
+        )
 
         compile_start = time.perf_counter()
         run = await orch.store.get_run(run_id)
         assert run is not None
         sorted_slides = sorted(run.slides, key=lambda x: x.slide_no)
-        compile_js = slides_dir / "compile.js"
-        compile_js.write_text(orch._build_compile_script(total=len(sorted_slides), theme=design.theme), encoding="utf-8")
-
-        compile_cmd = ["node", "compile.js"]
-        result = await asyncio.to_thread(
-            orch.subprocess.run,
-            compile_cmd,
-            cwd=slides_dir,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
+        compile_result = await orch.compile_engine.compile_scratch_run(
+            run_id=run_id,
+            slides_dir=slides_dir,
+            slide_count=len(sorted_slides),
+            theme=design.theme,
         )
-        compile_reason = orch._known_compile_stderr_reason(stderr=result.stderr or "", stdout=result.stdout or "")
-        if result.returncode != 0 or compile_reason:
+        if not compile_result["ok"]:
             await orch._fail_run(
                 run_id,
                 "COMPILING",
                 "COMPILE_SCRIPT_FAILED",
                 retryable=True,
                 error_details={
-                    "return_code": result.returncode,
-                    "reason": compile_reason or "compile.js returned non-zero",
+                    "return_code": compile_result["return_code"],
+                    "reason": compile_result["reason"],
+                    "provider": compile_result.get("provider"),
+                    "requested_provider": compile_result.get("requested_provider", orch.settings.compile_provider),
+                    "fallback_used": bool(compile_result.get("fallback_used")),
+                    "fallback_from": compile_result.get("fallback_from"),
                 },
             )
             return
 
-        pptx_path = output_dir / "presentation.pptx"
+        pptx_path = compile_result["pptx_path"]
 
         def apply_compile(r: RunRecord) -> None:
-            r.compile_js_path = str(compile_js)
+            r.compile_js_path = str(compile_result["compile_js_path"])
             r.pptx_path = str(pptx_path)
+            r.compile_provider = str(compile_result.get("provider") or "")
+            r.compile_fallback_used = bool(compile_result.get("fallback_used"))
             r.stage_timings.compile_ms = int((time.perf_counter() - compile_start) * 1000)
 
         await orch.store.update_run(run_id, apply_compile)
-        await orch._publish(run_id, EventType.COMPILE_COMPLETED, {"file": str(pptx_path)})
-        qa_timeout_sec = max(1.0, float(orch.settings.qa_finalize_timeout_sec))
-        try:
-            post_compile_ok = await asyncio.wait_for(
-                orch._complete_post_compile_quality(run_id=run_id, mode=GenerationMode.SCRATCH, design=design),
-                timeout=qa_timeout_sec,
-            )
-        except asyncio.TimeoutError:
-            await orch._fail_run(
-                run_id,
-                "COMPILING",
-                "FINALIZE_TIMEOUT",
-                retryable=True,
-                error_details={"reason": f"post-compile QA exceeded {qa_timeout_sec:.0f}s", "mode": "scratch"},
-            )
-            return
-        if not post_compile_ok:
-            return
-        await orch._finalize_run_success(run_id, from_stage="COMPILING", reason="scratch compile+qa completed")
-
+        await orch._publish(
+            run_id,
+            EventType.COMPILE_COMPLETED,
+            {
+                "file": str(pptx_path),
+                "provider": compile_result.get("provider", "local"),
+                "requested_provider": compile_result.get("requested_provider", orch.settings.compile_provider),
+                "fallback_used": bool(compile_result.get("fallback_used")),
+                "fallback_from": compile_result.get("fallback_from"),
+            },
+        )
+        await orch.finalize_quality_stage.execute(
+            run_id=run_id,
+            mode=GenerationMode.SCRATCH,
+            design=design,
+            from_stage="COMPILING",
+            success_reason="scratch compile+qa completed",
+        )

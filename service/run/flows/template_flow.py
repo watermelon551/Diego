@@ -35,7 +35,7 @@ class TemplateFlowService:
         await orch.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.COMPILING))
         await orch._publish(run_id, EventType.COMPILE_STARTED, {"mode": "template"})
 
-        template_dir, work_template, template_md, unpacked, edited, template_slides_dir, template_compile_js, _ = orch._template_work_paths(Path(run.artifact_dir))
+        template_dir, work_template, template_md, unpacked, edited, template_slides_dir, template_compile_js, _ = orch.template_engine.template_work_paths(Path(run.artifact_dir))
         template_dir.mkdir(parents=True, exist_ok=True)
         unpacked.mkdir(parents=True, exist_ok=True)
         src_template = Path(template_record.path)
@@ -77,7 +77,7 @@ class TemplateFlowService:
 
         compile_start = time.perf_counter()
         try:
-            artifacts = await orch._apply_template_nodes_once(
+            artifacts = await orch.template_engine.apply_template_nodes_once(
                 run_id=run_id,
                 unpacked=unpacked,
                 design=design,
@@ -96,9 +96,9 @@ class TemplateFlowService:
         if not artifacts:
             await orch._fail_run(run_id, "SLIDES_GENERATING", "TEMPLATE_APPLY_FAILED", retryable=True)
             return
-        orch._pack_template_unpacked(unpacked=unpacked, edited=edited)
+        orch.template_engine.pack_template_unpacked(unpacked=unpacked, edited=edited)
 
-        compiled = await orch._compile_template_js(template_slides_dir=template_slides_dir)
+        compiled = await orch.template_engine.compile_template_js(template_slides_dir=template_slides_dir)
         if not compiled:
             await orch._fail_run(run_id, "COMPILING", "TEMPLATE_JS_COMPILE_FAILED", retryable=True)
             return
@@ -116,22 +116,10 @@ class TemplateFlowService:
             EventType.COMPILE_COMPLETED,
             {"file": str(edited), "mode": "template", "compile_js": str(template_compile_js)},
         )
-        qa_timeout_sec = max(1.0, float(orch.settings.qa_finalize_timeout_sec))
-        try:
-            post_compile_ok = await asyncio.wait_for(
-                orch._complete_post_compile_quality(run_id=run_id, mode=GenerationMode.TEMPLATE, design=design),
-                timeout=qa_timeout_sec,
-            )
-        except asyncio.TimeoutError:
-            await orch._fail_run(
-                run_id,
-                "COMPILING",
-                "FINALIZE_TIMEOUT",
-                retryable=True,
-                error_details={"reason": f"post-compile QA exceeded {qa_timeout_sec:.0f}s", "mode": "template"},
-            )
-            return
-        if not post_compile_ok:
-            return
-        await orch._finalize_run_success(run_id, from_stage="COMPILING", reason="template compile+qa completed")
-
+        await orch.finalize_quality_stage.execute(
+            run_id=run_id,
+            mode=GenerationMode.TEMPLATE,
+            design=design,
+            from_stage="COMPILING",
+            success_reason="template compile+qa completed",
+        )

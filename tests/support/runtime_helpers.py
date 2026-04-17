@@ -4,6 +4,7 @@ import re
 import subprocess
 import time
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -73,8 +74,8 @@ def fake_subprocess_run(args, cwd=None, capture_output=False, text=False, check=
     return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
 
-def make_settings() -> Settings:
-    return Settings(
+def make_settings(**overrides) -> Settings:
+    settings = Settings(
         llm_api_style="openai_chat",
         llm_base_url="https://api.example.com",
         llm_api_key="test",
@@ -98,16 +99,20 @@ def make_settings() -> Settings:
         outline_timeout_retries=3,
         outline_timeout_backoff_sec=0.0,
         outline_structured_output=True,
+        compile_provider="local",
+        pagevra_base_url="",
+        pagevra_compile_timeout_sec=10.0,
     )
+    return replace(settings, **overrides) if overrides else settings
 
 
-def make_client(tmp_path: Path, llm_client: MockLLMClient | None = None) -> TestClient:
+def make_client(tmp_path: Path, llm_client: MockLLMClient | None = None, **settings_overrides) -> TestClient:
     orch = RunOrchestrator(
         store=RunStore(base_dir=tmp_path),
         artifacts_base=tmp_path / "artifacts",
         templates_base=tmp_path / "templates",
         llm_client=llm_client or MockLLMClient(),
-        settings=make_settings(),
+        settings=make_settings(**settings_overrides),
     )
     return TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
 

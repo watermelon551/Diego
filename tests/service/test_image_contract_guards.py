@@ -182,3 +182,16 @@ def test_compile_scratch_slides_should_fail_on_known_fatal_stderr_marker(tmp_pat
     monkeypatch.setattr(orch.subprocess, "run", fake_compile_run)
     ok = asyncio.run(orch._compile_service.compile_scratch_slides(run_id=run.run_id))
     assert ok is False
+
+
+def test_missing_legacy_alias_should_raise_attribute_error_instead_of_recursing(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+
+    with pytest.raises(AttributeError):
+        _ = orch._missing_legacy_service

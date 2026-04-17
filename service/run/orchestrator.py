@@ -70,20 +70,21 @@ from .types import (
     TemplateLayoutConflictError,
     TemplateSlotMappingError,
 )
-from ..slides.js_quality_mixin import SlideJsQualityMixin
 from ..slides.js_asset_contract import (
     collect_addimage_signature_issues,
     extract_main_asset_path,
     extract_planned_asset_paths,
     has_image_placeholder_text,
 )
-from ..templates.template_ops_mixin import TemplateOpsMixin
-from .asset_flow_mixin import RunAssetFlowMixin
+from .engines import AssetResolver, CompileEngine, QualityEngine, ReportingEngine, ScratchSlideEngine, TemplateEngine
 from .flows import OutlineFlowService, ScratchFlowService, TemplateFlowService
+from .kernel import RunKernel
+from .runtime_support import LegacyCompileServiceAdapter, RuntimeSupport
 from .slide_preview import render_slide_html_preview
-from .services import CompileService, QualityRepairService, ReportingService
+from .stages import FinalizeQualityStage, OutlineStage, ScratchGenerationStage, TemplateGenerationStage
 
-class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
+
+class RunOrchestrator:
     def __init__(
         self,
         *,
@@ -140,12 +141,36 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         self._asset_search_context_stack: list[dict[str, Any]] = []
         self._run_asset_keys: dict[str, set[str]] = {}
         self._js_api_contract = self._load_js_api_contract()
+        self._support = RuntimeSupport(self)
+        self.asset_resolver = AssetResolver(self._support)
+        self.scratch_engine = ScratchSlideEngine(self._support)
+        self.template_engine = TemplateEngine(self._support)
+        self.compile_engine = CompileEngine(self._support)
+        self.quality_engine = QualityEngine(self._support)
+        self.reporting_engine = ReportingEngine(self._support)
+        self._legacy_aliases = {
+            "_compile_service": LegacyCompileServiceAdapter(self),
+            "_quality_service": self.quality_engine,
+            "_reporting_service": self.reporting_engine,
+        }
         self._outline_flow = OutlineFlowService(self)
         self._scratch_flow = ScratchFlowService(self)
         self._template_flow = TemplateFlowService(self)
-        self._compile_service = CompileService(self)
-        self._quality_service = QualityRepairService(self)
-        self._reporting_service = ReportingService(self)
+        self.finalize_quality_stage = FinalizeQualityStage(self)
+        self._kernel = RunKernel(
+            orchestrator=self,
+            outline_stage=OutlineStage(self._outline_flow),
+            scratch_stage=ScratchGenerationStage(self._scratch_flow),
+            template_stage=TemplateGenerationStage(self._template_flow),
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._legacy_aliases:
+            return self._legacy_aliases[name]
+        try:
+            return getattr(self._support, name)
+        except AttributeError as exc:
+            raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}") from exc
 
     def _use_agentic_engine(self) -> bool:
         return self.settings.generation_engine == "agentic_v2"
@@ -239,52 +264,13 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         )
 
     async def create_run(self, req: CreateRunRequest) -> RunSummaryResponse:
-        run_id = str(uuid4())
-        trace_id = str(uuid4())
-        artifact_dir = self.artifacts_base / run_id
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        run = RunRecord(
-            run_id=run_id,
-            trace_id=trace_id,
-            status=RunStatus.OUTLINE_DRAFTING,
-            input=req,
-            artifact_dir=str(artifact_dir),
-        )
-        await self.store.add_run(run)
-        self._spawn(self._generate_outline(run_id))
-        return RunSummaryResponse(run_id=run_id, trace_id=trace_id, status=run.status)
+        return await self._kernel.create_run(req)
 
     async def get_run_detail(self, run_id: str) -> RunDetailResponse | None:
-        run = await self.store.get_run(run_id)
-        if run is None:
-            return None
-        return RunDetailResponse(
-            run_id=run.run_id,
-            trace_id=run.trace_id,
-            status=run.status,
-            outline=run.outline,
-            outline_history=run.outline_history,
-            slides=run.slides,
-            citation_map=run.citation_map,
-            stage_timings=run.stage_timings,
-            error_code=run.error_code,
-            failed_stage=run.failed_stage,
-            retryable=run.retryable,
-            error_details=run.error_details,
-            compile_js_path=run.compile_js_path,
-            pptx_path=run.pptx_path,
-            qa_report=run.qa_report,
-            template_mapping_report=run.template_mapping_report,
-            chart_truth_report=run.chart_truth_report,
-            repair_history=run.repair_history,
-            quality_report=run.quality_report,
-            quality_gate_report=run.quality_gate_report,
-            research_report=run.research_report,
-            candidate_selection_report=run.candidate_selection_report,
-            template_layout_report=run.template_layout_report,
-            artifact_cleanup_report=run.artifact_cleanup_report,
-            events=run.events,
-        )
+        return await self._kernel.get_run_detail(run_id)
+
+    async def build_compile_bundle(self, run_id: str) -> dict[str, Any]:
+        return await self.compile_engine.build_compile_bundle(run_id)
 
     async def get_slide_preview(self, run_id: str, slide_no: int) -> dict[str, Any] | None:
         if slide_no < 1:
@@ -332,73 +318,10 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         }
 
     async def confirm_outline(self, run_id: str, req: ConfirmOutlineRequest) -> RunSummaryResponse | None:
-        run = await self.store.get_run(run_id)
-        if run is None:
-            return None
-        if run.status != RunStatus.AWAITING_OUTLINE_CONFIRM:
-            raise ValueError("run is not awaiting outline confirmation")
-
-        if run.outline is None:
-            raise ValueError("run outline is missing")
-
-        if req.outline is not None:
-            if req.base_version != run.outline.version:
-                raise ValueError(
-                    f"base_version mismatch: expected {run.outline.version}, got {req.base_version}"
-                )
-            enforce_layout_variety(
-                nodes=req.outline.nodes,
-                seed=f"{run.input.topic}|{self._resolved_template_style(run)}|{run_id}|confirm",
-                style_dna_id=self._resolved_style_dna_id(run),
-            )
-            if req.outline.version <= run.outline.version:
-                req.outline.version = run.outline.version + 1
-
-        def apply_confirm(r: RunRecord) -> None:
-            current_version = r.outline.version if r.outline is not None else None
-            if req.outline is not None:
-                r.outline = req.outline
-            if req.approved:
-                r.status = RunStatus.SLIDES_GENERATING
-            else:
-                r.status = RunStatus.AWAITING_OUTLINE_CONFIRM
-            new_version = r.outline.version if r.outline is not None else None
-            action = "confirmed" if req.approved else ("updated" if req.outline is not None else "rejected")
-            r.outline_history.append(
-                OutlineHistoryEntry(
-                    action=action,
-                    approved=req.approved,
-                    base_version=current_version,
-                    new_version=new_version,
-                    change_reason=req.change_reason,
-                    at=now_iso(),
-                )
-            )
-
-        await self.store.update_run(run_id, apply_confirm)
-        if req.outline is not None:
-            await self._publish(
-                run_id,
-                EventType.OUTLINE_UPDATED,
-                {
-                    "approved": req.approved,
-                    "base_version": req.base_version,
-                    "new_version": req.outline.version,
-                    "change_reason": req.change_reason,
-                },
-            )
-        if req.approved:
-            self._spawn(self._execute_generation_pipeline(run_id))
-        updated = await self.store.get_run(run_id)
-        assert updated is not None
-        return RunSummaryResponse(run_id=updated.run_id, trace_id=updated.trace_id, status=updated.status)
+        return await self._kernel.confirm_outline(run_id, req)
 
     async def _publish(self, run_id: str, event_type: EventType, payload: dict[str, Any]) -> None:
-        run = await self.store.get_run(run_id)
-        if run is None:
-            return
-        event = RunEvent(seq=len(run.events) + 1, event=event_type, ts=now_iso(), payload=payload)
-        await self.store.append_event(run_id, event)
+        await self._kernel.publish(run_id, event_type, payload)
 
     def _retryable_http_statuses(self) -> set[int]:
         # 529 is provider overload; 429/5xx are transient in most LLM gateways.
@@ -886,20 +809,10 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         return await self._call_llm_with_timeout_retry(run_id=run_id, phase=phase, action=action)
 
     async def _generate_outline(self, run_id: str) -> None:
-        await self._outline_flow.execute(run_id)
+        await self._kernel.start_outline(run_id)
 
     async def _execute_generation_pipeline(self, run_id: str) -> None:
-        run = await self.store.get_run(run_id)
-        if run is None or run.outline is None:
-            await self._fail_run(run_id, "SLIDES_GENERATING", "OUTLINE_MISSING", retryable=False)
-            return
-        try:
-            if run.input.generation_mode == GenerationMode.TEMPLATE:
-                await self._generate_from_template(run_id)
-            else:
-                await self._generate_from_scratch(run_id)
-        except Exception:
-            await self._fail_run(run_id, "SLIDES_GENERATING", "GENERATION_PIPELINE_ERROR", retryable=True)
+        await self._kernel.execute_generation_pipeline(run_id)
 
     async def _generate_from_scratch(self, run_id: str) -> None:
         await self._scratch_flow.execute(run_id)
@@ -911,35 +824,22 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         mode: GenerationMode,
         design: DesignProfile,
     ) -> bool:
-        return await self._quality_service.complete_post_compile_quality(run_id=run_id, mode=mode, design=design)
+        return await self.quality_engine.complete_post_compile_quality(run_id=run_id, mode=mode, design=design)
 
     async def _finalize_run_success(self, run_id: str, *, from_stage: str, reason: str) -> None:
-        def apply_success(r: RunRecord) -> None:
-            r.status = RunStatus.SUCCEEDED
-            r.error_code = None
-            r.failed_stage = None
-            r.retryable = False
-            r.error_details = {}
-
-        await self.store.update_run(run_id, apply_success)
-        self._clear_run_llm_budget(run_id)
-        await self._publish(
-            run_id,
-            EventType.RUN_FINALIZED,
-            {"final_status": RunStatus.SUCCEEDED.value, "from_stage": from_stage, "reason": reason},
-        )
+        await self._kernel.finalize_run_success(run_id, from_stage=from_stage, reason=reason)
 
     async def _generate_from_template(self, run_id: str) -> None:
         await self._template_flow.execute(run_id)
 
     def _template_work_paths(self, artifact_dir: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
-        return self._compile_service.template_work_paths(artifact_dir)
+        return self.template_engine.template_work_paths(artifact_dir)
 
     def _pack_template_unpacked(self, *, unpacked: Path, edited: Path) -> None:
-        self._compile_service.pack_template_unpacked(unpacked=unpacked, edited=edited)
+        self.template_engine.pack_template_unpacked(unpacked=unpacked, edited=edited)
 
     async def _compile_template_js(self, *, template_slides_dir: Path) -> bool:
-        return await self._compile_service.compile_template_js(template_slides_dir=template_slides_dir)
+        return await self.template_engine.compile_template_js(template_slides_dir=template_slides_dir)
 
     async def _apply_template_nodes_once(
         self,
@@ -950,7 +850,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         use_review: bool,
         forced_issues: list[str] | None,
     ) -> list[SlideArtifact] | None:
-        return await self._compile_service.apply_template_nodes_once(
+        return await self.template_engine.apply_template_nodes_once(
             run_id=run_id,
             unpacked=unpacked,
             design=design,
@@ -959,7 +859,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         )
 
     async def _revise_template_slides(self, *, run_id: str, design: DesignProfile, forced_issues: list[str] | None) -> bool:
-        return await self._compile_service.revise_template_slides(
+        return await self.template_engine.revise_template_slides(
             run_id=run_id,
             design=design,
             forced_issues=forced_issues,
@@ -1023,7 +923,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
                     ),
                 )
                 candidate = generated
-                rule_violations = self._quality_service.check_slide_content_rules(candidate, node)
+                rule_violations = self.quality_engine.check_slide_content_rules(candidate, node)
                 reviewed = await self._call_llm_with_timeout_retry(
                     run_id=run_id,
                     phase=f"slide.{slide_no}.legacy.review",
@@ -1268,7 +1168,7 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
                     slide_no=slide_no,
                     page_type=node.page_type,
                 )
-                generated = self._quality_service.extract_candidate_from_js(
+                generated = self.quality_engine.extract_candidate_from_js(
                     js_code=js_code,
                     fallback_node=node,
                     citations=citations,
@@ -2808,13 +2708,26 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         )
 
     async def _mandatory_polish_cycle(self, run_id: str, *, mode: GenerationMode, design: DesignProfile) -> bool:
-        return await self._quality_service.mandatory_polish_cycle(run_id, mode=mode, design=design)
+        return await self.quality_engine.mandatory_polish_cycle(run_id, mode=mode, design=design)
 
     async def _repair_loop(self, run_id: str, *, mode: GenerationMode, design: DesignProfile) -> bool:
-        return await self._quality_service.repair_loop(run_id, mode=mode, design=design)
+        return await self.quality_engine.repair_loop(run_id, mode=mode, design=design)
 
     async def _compile_scratch_slides(self, run_id: str) -> bool:
-        return await self._compile_service.compile_scratch_slides(run_id)
+        run = await self.store.get_run(run_id)
+        if run is None:
+            return False
+        result = await self.compile_engine.compile_scratch_run(
+            run_id=run_id,
+            slides_dir=Path(run.artifact_dir) / "slides",
+            slide_count=len(run.slides),
+            theme=self._resolve_design_profile(
+                topic=run.input.topic,
+                template_style=self._resolved_template_style(run),
+                requirements_report=run.research_report if isinstance(run.research_report, dict) else {},
+            ).theme,
+        )
+        return bool(result["ok"])
 
     async def _revise_scratch_slides(
         self,
@@ -2823,29 +2736,29 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         design: DesignProfile,
         forced_issues: list[str] | None,
     ) -> bool:
-        return await self._quality_service.revise_scratch_slides(
+        return await self.quality_engine.revise_scratch_slides(
             run_id=run_id,
             design=design,
             forced_issues=forced_issues,
         )
 
     async def _append_chart_truth_report(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self._reporting_service.append_chart_truth_report(run_id=run_id, entry=entry)
+        await self.reporting_engine.append_chart_truth_report(run_id=run_id, entry=entry)
 
     async def _append_quality_entry(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self._reporting_service.append_quality_entry(run_id=run_id, entry=entry)
+        await self.reporting_engine.append_quality_entry(run_id=run_id, entry=entry)
 
     async def _append_quality_gate_entry(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self._reporting_service.append_quality_gate_entry(run_id=run_id, entry=entry)
+        await self.reporting_engine.append_quality_gate_entry(run_id=run_id, entry=entry)
 
     async def _append_candidate_selection_entry(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self._reporting_service.append_candidate_selection_entry(run_id=run_id, entry=entry)
+        await self.reporting_engine.append_candidate_selection_entry(run_id=run_id, entry=entry)
 
     async def _append_artifact_cleanup_entry(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self._reporting_service.append_artifact_cleanup_entry(run_id=run_id, entry=entry)
+        await self.reporting_engine.append_artifact_cleanup_entry(run_id=run_id, entry=entry)
 
     async def _append_repair_history(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self._reporting_service.append_repair_history(run_id=run_id, entry=entry)
+        await self.reporting_engine.append_repair_history(run_id=run_id, entry=entry)
 
     async def _fail_run(
         self,
@@ -2855,27 +2768,12 @@ class RunOrchestrator(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
         retryable: bool,
         error_details: dict[str, Any] | None = None,
     ) -> None:
-        def apply_fail(r: RunRecord) -> None:
-            r.status = RunStatus.FAILED
-            r.error_code = error_code
-            r.failed_stage = stage
-            r.retryable = retryable
-            r.error_details = dict(error_details or {})
-
-        await self.store.update_run(run_id, apply_fail)
-        payload: dict[str, Any] = {"error_code": error_code, "failed_stage": stage, "retryable": retryable}
-        if error_details:
-            payload["error_details"] = error_details
-        self._clear_run_llm_budget(run_id)
-        await self._publish(
+        await self._kernel.fail_run(
             run_id,
-            EventType.RUN_FAILED,
-            payload,
-        )
-        await self._publish(
-            run_id,
-            EventType.RUN_FINALIZED,
-            {"final_status": RunStatus.FAILED.value, "from_stage": stage, "reason": error_code},
+            stage,
+            error_code,
+            retryable,
+            error_details=error_details,
         )
 
     def _normalize_citations(self, citations: list[str], rag_source_ids: list[str], slide_no: int) -> list[str]:
@@ -2913,14 +2811,6 @@ def build_orchestrator(base_dir: Path) -> RunOrchestrator:
         llm_client=llm_client,
         settings=settings,
     )
-
-
-
-
-
-
-
-
 
 
 
