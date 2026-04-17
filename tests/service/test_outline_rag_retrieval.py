@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from service.app import create_app
 from service.llm_client import MockLLMClient
 from service.orchestrator import RunOrchestrator
+from service.rag.stratumind_client import StratumindSearchError
 from service.store import RunStore
 
 from tests.support.runtime_helpers import make_settings, wait_status
@@ -40,6 +41,27 @@ class _FakeRAGClient:
             "total": len(self.results),
             "ranking_stage": "vector",
         }
+
+
+class _FailingRAGClient:
+    def __init__(self, *, enabled: bool = True) -> None:
+        self.enabled = enabled
+
+    async def search_text(
+        self,
+        *,
+        project_id: str,
+        query: str,
+        top_k: int,
+        file_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        raise StratumindSearchError(
+            message="stratumind request failed",
+            code="STRATUMIND_REQUEST_ERROR",
+            status_code=503,
+            retryable=True,
+            details={"reason": "All connection attempts failed"},
+        )
 
 
 class _SpyLLM(MockLLMClient):
@@ -132,6 +154,40 @@ def test_outline_should_continue_when_no_selected_sources_and_no_hits(tmp_path: 
     assert events
     assert events[-1]["payload"]["mode"] == "project_all"
     assert events[-1]["payload"]["hit_count"] == 0
+
+
+def test_outline_should_continue_when_unselected_rag_retrieval_errors(tmp_path: Path) -> None:
+    client = _make_client(tmp_path, rag_client=_FailingRAGClient())
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "BGP route policy",
+            "project_id": "p-rag-error-unselected",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 4,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    assert detail["outline"] is not None
+
+
+def test_outline_should_fail_when_selected_rag_retrieval_errors(tmp_path: Path) -> None:
+    client = _make_client(tmp_path, rag_client=_FailingRAGClient())
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "BGP route policy",
+            "project_id": "p-rag-error-selected",
+            "rag_source_ids": ["file-1"],
+            "template_style": "default",
+            "target_slide_count": 4,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"FAILED"})
+    assert detail["error_code"] == "OUTLINE_RAG_RETRIEVAL_FAILED"
 
 
 def test_outline_should_pass_retrieved_snippets_to_llm(tmp_path: Path) -> None:

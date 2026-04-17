@@ -33,23 +33,39 @@ class OutlineFlowService:
                     "has_rag": bool(run.input.rag_source_ids),
                 },
             )
+            selected_sources = [item for item in run.input.rag_source_ids if str(item).strip()]
             try:
                 rag_context_snippets, rag_retrieval = await orch._retrieve_outline_rag_context(run_id=run_id, run=run)
             except StratumindSearchError as exc:
-                await orch._fail_run(
-                    run_id,
-                    "OUTLINE_DRAFTING",
-                    "OUTLINE_RAG_RETRIEVAL_FAILED",
-                    retryable=exc.retryable,
-                    error_details={
-                        "error_code": exc.code,
-                        "status_code": exc.status_code,
-                        "reason": exc.message,
-                        "details": exc.details or {},
-                    },
-                )
-                return
-            selected_sources = [item for item in run.input.rag_source_ids if str(item).strip()]
+                if selected_sources:
+                    await orch._fail_run(
+                        run_id,
+                        "OUTLINE_DRAFTING",
+                        "OUTLINE_RAG_RETRIEVAL_FAILED",
+                        retryable=exc.retryable,
+                        error_details={
+                            "error_code": exc.code,
+                            "status_code": exc.status_code,
+                            "reason": exc.message,
+                            "details": exc.details or {},
+                        },
+                    )
+                    return
+                rag_context_snippets = []
+                rag_retrieval = {
+                    "mode": "project_all",
+                    "selected_file_count": 0,
+                    "top_k": orch._rag_query_top_k(target_slide_count=run.input.target_slide_count),
+                    "enabled": bool(getattr(orch.rag_client, "enabled", False)),
+                    "hit_count": 0,
+                    "degraded": True,
+                    "degrade_reason": "retrieval_error",
+                    "error_code": exc.code,
+                    "status_code": exc.status_code,
+                    "retryable": exc.retryable,
+                    "reason": exc.message,
+                    "details": exc.details or {},
+                }
             if selected_sources and not rag_context_snippets:
                 error_code = (
                     "OUTLINE_RAG_UNAVAILABLE"
