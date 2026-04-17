@@ -203,6 +203,7 @@ class MalformedOutlineThenRepairLLM(MockLLMClient):
             topic=kwargs["topic"],
             project_id=kwargs["project_id"],
             rag_source_ids=kwargs["rag_source_ids"],
+            rag_context_snippets=kwargs.get("rag_context_snippets", []),
             template_style=kwargs["template_style"],
             target_slide_count=kwargs["target_slide_count"],
             on_token=noop,

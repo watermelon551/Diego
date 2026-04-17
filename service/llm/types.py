@@ -66,6 +66,7 @@ class LLMClient(Protocol):
         topic: str,
         project_id: str,
         rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
         template_style: str,
         target_slide_count: int,
     ) -> dict[str, Any]: ...
@@ -86,6 +87,7 @@ class LLMClient(Protocol):
         topic: str,
         project_id: str,
         rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
         template_style: str,
         target_slide_count: int,
         on_token: TokenCallback,
@@ -97,6 +99,7 @@ class LLMClient(Protocol):
         topic: str,
         project_id: str,
         rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
         template_style: str,
         target_slide_count: int,
         previous_response: str,

@@ -52,6 +52,11 @@ class Settings:
     compile_provider: str = "auto"
     pagevra_base_url: str = ""
     pagevra_compile_timeout_sec: float = 180.0
+    stratumind_base_url: str = ""
+    stratumind_timeout_sec: float = 12.0
+    rag_top_k: int = 10
+    rag_context_max_snippets: int = 10
+    rag_context_max_chars: int = 700
 
 
 def _require_env(name: str) -> str:
@@ -107,6 +112,9 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     pagevra_compile_timeout_sec = _env_float("PAGEVRA_COMPILE_TIMEOUT_SEC", 180.0)
     if pagevra_compile_timeout_sec <= 0:
         raise ValueError("PAGEVRA_COMPILE_TIMEOUT_SEC must be > 0")
+    stratumind_timeout_sec = _env_float("STRATUMIND_TIMEOUT_SECONDS", 12.0)
+    if stratumind_timeout_sec <= 0:
+        raise ValueError("STRATUMIND_TIMEOUT_SECONDS must be > 0")
 
     outline_timeout_backoff_sec = _env_float("OUTLINE_TIMEOUT_BACKOFF_SEC", 1.0)
     if outline_timeout_backoff_sec < 0:
@@ -167,6 +175,11 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         compile_provider=compile_provider,
         pagevra_base_url=os.getenv("PAGEVRA_BASE_URL", "").strip().rstrip("/"),
         pagevra_compile_timeout_sec=pagevra_compile_timeout_sec,
+        stratumind_base_url=os.getenv("STRATUMIND_BASE_URL", "").strip().rstrip("/"),
+        stratumind_timeout_sec=stratumind_timeout_sec,
+        rag_top_k=_env_int("DIEGO_RAG_TOP_K", 10),
+        rag_context_max_snippets=_env_int("DIEGO_RAG_CONTEXT_MAX_SNIPPETS", 10),
+        rag_context_max_chars=_env_int("DIEGO_RAG_CONTEXT_MAX_CHARS", 700),
     )
 
 

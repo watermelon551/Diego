@@ -77,6 +77,9 @@ Copy-Item .env.example .env
 
 - `LLM_API_STYLE`: `openai_chat | anthropic_messages`
 - `GENERATION_ENGINE`: `agentic_v2 | legacy`
+- `STRATUMIND_BASE_URL`: 例如 `http://stratumind:8110`
+- `STRATUMIND_TIMEOUT_SECONDS`
+- `DIEGO_RAG_TOP_K`
 - `ASSET_PROVIDER`: `mock | none | auto | unsplash | pexels`
 - `UNSPLASH_ACCESS_KEY` / `PEXELS_API_KEY`
 - `QA_FINALIZE_TIMEOUT_SEC`
@@ -138,7 +141,7 @@ docker compose down
 | --- | --- | --- | --- | --- |
 | `topic` | `string` | 是 | - | 主题 |
 | `project_id` | `string` | 是 | - | 项目标识 |
-| `rag_source_ids` | `string[]` | 否 | `[]` | 检索来源或项目素材线索 |
+| `rag_source_ids` | `string[]` | 否 | `[]` | RAG 文件过滤条件；为空时检索整个项目库，非空时仅检索选中文件 |
 | `template_style` | `string` | 否 | `default` | 风格提示 |
 | `style_preset` | `string` | 否 | `auto` | 风格预设（会归一化并校验） |
 | `target_slide_count` | `int` | 否 | `8` | 目标页数，范围 `1..50` |

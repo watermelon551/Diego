@@ -9,6 +9,7 @@ from ...design.style_catalog import STYLE_PRESET_AUTO
 from ...llm import LLMTimeoutError, OutlineFormatError
 from ...models import EventType, OutlineDocument, OutlineHistoryEntry, RunRecord, RunStatus
 from ...infra.store import now_iso
+from ...rag import StratumindSearchError
 
 
 class OutlineFlowService:
@@ -33,6 +34,42 @@ class OutlineFlowService:
                 },
             )
             try:
+                rag_context_snippets, rag_retrieval = await orch._retrieve_outline_rag_context(run_id=run_id, run=run)
+            except StratumindSearchError as exc:
+                await orch._fail_run(
+                    run_id,
+                    "OUTLINE_DRAFTING",
+                    "OUTLINE_RAG_RETRIEVAL_FAILED",
+                    retryable=exc.retryable,
+                    error_details={
+                        "error_code": exc.code,
+                        "status_code": exc.status_code,
+                        "reason": exc.message,
+                        "details": exc.details or {},
+                    },
+                )
+                return
+            selected_sources = [item for item in run.input.rag_source_ids if str(item).strip()]
+            if selected_sources and not rag_context_snippets:
+                error_code = (
+                    "OUTLINE_RAG_UNAVAILABLE"
+                    if not bool(rag_retrieval.get("enabled", True))
+                    else "OUTLINE_RAG_NO_MATCH_FOR_SELECTED_SOURCES"
+                )
+                await orch._fail_run(
+                    run_id,
+                    "OUTLINE_DRAFTING",
+                    error_code,
+                    retryable=False,
+                    error_details={
+                        "project_id": run.input.project_id,
+                        "topic": run.input.topic,
+                        "selected_file_ids": selected_sources,
+                        "retrieval": rag_retrieval,
+                    },
+                )
+                return
+            try:
                 base_research = await orch._call_outline_with_timeout_retry(
                     run_id=run_id,
                     phase="requirements.analyze",
@@ -40,6 +77,7 @@ class OutlineFlowService:
                         topic=run.input.topic,
                         project_id=run.input.project_id,
                         rag_source_ids=run.input.rag_source_ids,
+                        rag_context_snippets=rag_context_snippets,
                         template_style=requested_template_style,
                         target_slide_count=run.input.target_slide_count,
                     ),
@@ -68,6 +106,8 @@ class OutlineFlowService:
                 run=run,
                 research_brief=base_research,
                 design_intent=design_intent,
+                rag_context_snippets=rag_context_snippets,
+                rag_retrieval=rag_retrieval,
             )
             requirements_report = orch._apply_style_preset_to_requirements(run=run, report=requirements_report)
             effective_template_style = str(requirements_report.get("effective_template_style", "")).strip() or run.input.template_style
@@ -92,6 +132,9 @@ class OutlineFlowService:
                 "style_signature": design_intent_payload.get("style_signature", ""),
                 "layout_family": design_intent_payload.get("layout_family", ""),
                 "density_profile": design_intent_payload.get("density_profile", ""),
+                "rag_mode": rag_retrieval.get("mode", ""),
+                "rag_hit_count": rag_retrieval.get("hit_count", 0),
+                "rag_degraded": rag_retrieval.get("degraded", False),
             }
             await orch._publish(run_id, EventType.REQUIREMENTS_ANALYZING_COMPLETED, requirements_payload)
             await orch._publish(run_id, EventType.REQUIREMENTS_ANALYZED, requirements_payload)
@@ -114,6 +157,7 @@ class OutlineFlowService:
                                 topic=run.input.topic,
                                 project_id=run.input.project_id,
                                 rag_source_ids=run.input.rag_source_ids,
+                                rag_context_snippets=rag_context_snippets,
                                 template_style=effective_template_style,
                                 target_slide_count=run.input.target_slide_count,
                                 on_token=on_token,
@@ -137,6 +181,7 @@ class OutlineFlowService:
                                 topic=run.input.topic,
                                 project_id=run.input.project_id,
                                 rag_source_ids=run.input.rag_source_ids,
+                                rag_context_snippets=rag_context_snippets,
                                 template_style=effective_template_style,
                                 target_slide_count=run.input.target_slide_count,
                                 previous_response=previous_response,
@@ -232,6 +277,7 @@ class OutlineFlowService:
                             topic=run.input.topic,
                             project_id=run.input.project_id,
                             rag_source_ids=run.input.rag_source_ids,
+                            rag_context_snippets=rag_context_snippets,
                             template_style=effective_template_style,
                             target_slide_count=run.input.target_slide_count,
                             previous_response=fmt_err.raw_response,
@@ -286,6 +332,8 @@ class OutlineFlowService:
                     "audience": requirements_report.get("audience", ""),
                     "purpose": requirements_report.get("purpose", ""),
                     "tone": requirements_report.get("tone", ""),
+                    "rag_hit_count": rag_retrieval.get("hit_count", 0),
+                    "rag_mode": rag_retrieval.get("mode", ""),
                 },
             )
             await orch._publish(

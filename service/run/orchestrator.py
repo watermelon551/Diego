@@ -28,6 +28,7 @@ from ..llm import (
     OutlineFormatError,
     SlideSpec,
 )
+from ..rag import StratumindSearchClient, StratumindSearchError, build_rag_context_snippets
 from ..models import (
     ConfirmOutlineRequest,
     CreateRunRequest,
@@ -93,12 +94,17 @@ class RunOrchestrator:
         templates_base: Path,
         llm_client: LLMClient,
         settings: Settings,
+        rag_client: StratumindSearchClient | None = None,
     ) -> None:
         self.store = store
         self.artifacts_base = artifacts_base
         self.templates_base = templates_base
         self.llm_client = llm_client
         self.settings = settings
+        self.rag_client = rag_client or StratumindSearchClient(
+            base_url=settings.stratumind_base_url,
+            timeout_sec=settings.stratumind_timeout_sec,
+        )
         # Keep subprocess monkeypatch compatibility via legacy shim imports.
         self.subprocess = subprocess
         self.slide_concurrency = max(1, settings.slide_concurrency)
@@ -584,6 +590,8 @@ class RunOrchestrator:
         run: RunRecord,
         research_brief: dict[str, Any],
         design_intent: dict[str, Any] | None = None,
+        rag_context_snippets: list[dict[str, Any]] | None = None,
+        rag_retrieval: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         report: dict[str, Any] = dict(research_brief or {})
         intent_raw = dict(design_intent or {})
@@ -636,9 +644,91 @@ class RunOrchestrator:
                 "page_count_fixed": run.input.target_slide_count,
                 "content_source_mode": self._resolve_content_source_mode(run),
                 "image_source_mode": self._resolve_image_source_mode(run),
+                "rag_context_snippets": list(rag_context_snippets or []),
+                "rag_retrieval": dict(rag_retrieval or {}),
             }
         )
         return report
+
+    def _rag_query_top_k(self, *, target_slide_count: int) -> int:
+        baseline = max(1, int(getattr(self.settings, "rag_top_k", 10)))
+        return max(baseline, max(1, int(target_slide_count)))
+
+    async def _retrieve_outline_rag_context(
+        self,
+        *,
+        run_id: str,
+        run: RunRecord,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        selected_file_ids = [str(item).strip() for item in (run.input.rag_source_ids or []) if str(item).strip()]
+        retrieval_mode = "selected_files" if selected_file_ids else "project_all"
+        top_k = self._rag_query_top_k(target_slide_count=run.input.target_slide_count)
+        await self._publish(
+            run_id,
+            EventType.RAG_RETRIEVAL_STARTED,
+            {
+                "mode": retrieval_mode,
+                "selected_file_count": len(selected_file_ids),
+                "top_k": top_k,
+                "query": run.input.topic,
+            },
+        )
+        if not self.rag_client.enabled:
+            payload = {
+                "mode": retrieval_mode,
+                "selected_file_count": len(selected_file_ids),
+                "top_k": top_k,
+                "enabled": False,
+                "hit_count": 0,
+                "reason": "stratumind_not_configured",
+            }
+            await self._publish(run_id, EventType.RAG_RETRIEVAL_COMPLETED, payload)
+            return [], payload
+        try:
+            response = await self.rag_client.search_text(
+                project_id=run.input.project_id,
+                query=run.input.topic,
+                top_k=top_k,
+                file_ids=selected_file_ids or None,
+            )
+        except StratumindSearchError as exc:
+            await self._publish(
+                run_id,
+                EventType.RAG_RETRIEVAL_FAILED,
+                {
+                    "mode": retrieval_mode,
+                    "selected_file_count": len(selected_file_ids),
+                    "error_code": exc.code,
+                    "status_code": exc.status_code,
+                    "retryable": exc.retryable,
+                    "reason": exc.message,
+                    "details": exc.details or {},
+                },
+            )
+            raise
+        snippets = build_rag_context_snippets(
+            response,
+            max_items=max(1, int(getattr(self.settings, "rag_context_max_snippets", 10))),
+            max_chars=max(120, int(getattr(self.settings, "rag_context_max_chars", 700))),
+        )
+        raw_total = response.get("total", len(snippets))
+        try:
+            total = int(raw_total)
+        except (TypeError, ValueError):
+            total = len(snippets)
+        payload = {
+            "mode": retrieval_mode,
+            "selected_file_count": len(selected_file_ids),
+            "top_k": top_k,
+            "enabled": True,
+            "hit_count": len(snippets),
+            "total": total,
+            "ranking_stage": str(response.get("ranking_stage", "")).strip(),
+            "degraded": bool(response.get("degraded", False)),
+            "degrade_reason": str(response.get("degrade_reason", "")).strip(),
+        }
+        await self._publish(run_id, EventType.RAG_RETRIEVAL_COMPLETED, payload)
+        return snippets, payload
 
     def _normalize_hex6(self, raw: str) -> str | None:
         value = (raw or "").strip().lstrip("#")

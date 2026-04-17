@@ -44,13 +44,15 @@ class OpenAICompatibleLLMClient:
         topic: str,
         project_id: str,
         rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
         template_style: str,
         target_slide_count: int,
     ) -> dict[str, Any]:
         system_prompt = (
             "You are a presentation research planner. "
             "Return JSON only with keys: audience, purpose, tone, narrative_arc, page_focus(list[str]), "
-            "design_notes(list[str]), style_intent, effective_template_style."
+            "design_notes(list[str]), style_intent, effective_template_style. "
+            "When rag_context_snippets is non-empty, ground page_focus and design_notes in that evidence."
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -58,6 +60,7 @@ class OpenAICompatibleLLMClient:
             f"template_style={template_style}\n"
             f"target_slide_count={target_slide_count}\n"
             f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
             "Provide concise, practical planning guidance."
         )
         text = await self._chat_text(
@@ -130,6 +133,7 @@ class OpenAICompatibleLLMClient:
         topic: str,
         project_id: str,
         rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
         template_style: str,
         target_slide_count: int,
         on_token: TokenCallback,
@@ -147,6 +151,7 @@ class OpenAICompatibleLLMClient:
             f"template_style={template_style}\n"
             f"target_slide_count={target_slide_count}\n"
             f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
             "Plan varied layouts and avoid repeating adjacent layouts. Output JSON only."
         )
         response_format = self._outline_response_format(target_slide_count=target_slide_count)
@@ -175,6 +180,7 @@ class OpenAICompatibleLLMClient:
         topic: str,
         project_id: str,
         rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
         template_style: str,
         target_slide_count: int,
         previous_response: str,
@@ -192,6 +198,7 @@ class OpenAICompatibleLLMClient:
             f"template_style={template_style}\n"
             f"target_slide_count={target_slide_count}\n"
             f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
             f"error_category={error_category}\n"
             f"error_details={json.dumps(error_details, ensure_ascii=False)}\n"
             "Previous invalid response below. Fix only the format/schema issues while preserving content intent.\n"
