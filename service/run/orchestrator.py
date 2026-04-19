@@ -81,7 +81,7 @@ from .engines import AssetResolver, CompileEngine, QualityEngine, ReportingEngin
 from .flows import OutlineFlowService, ScratchFlowService, TemplateFlowService
 from .kernel import RunKernel
 from .runtime_support import LegacyCompileServiceAdapter, RuntimeSupport
-from .slide_preview import render_slide_html_preview, render_slide_via_pagevra
+from .slide_preview import render_slide_via_pagevra
 from .stages import FinalizeQualityStage, OutlineStage, ScratchGenerationStage, TemplateGenerationStage
 
 
@@ -364,11 +364,7 @@ class RunOrchestrator:
         theme: dict[str, Any],
     ) -> dict[str, Any]:
         if not bool(getattr(self.settings, "pagevra_preview_enabled", True)):
-            return await render_slide_html_preview(
-                slide_js_path=slide_js_path,
-                theme=theme,
-                subprocess_runner=self.subprocess.run,
-            )
+            raise RuntimeError("PAGEVRA_PREVIEW_ENABLED must be true for PPT SVG preview compile")
         pagevra_base_url = str(getattr(self.settings, "pagevra_base_url", "") or "").strip().rstrip("/")
         if not pagevra_base_url:
             raise RuntimeError("PAGEVRA_BASE_URL is required when PAGEVRA_PREVIEW_ENABLED=true")
@@ -378,7 +374,7 @@ class RunOrchestrator:
             slide_no=slide_no,
             pagevra_base_url=pagevra_base_url,
             timeout_sec=float(getattr(self.settings, "pagevra_preview_timeout_sec", 30.0) or 30.0),
-            subprocess_runner=self.subprocess.run,
+            provider_run_id=run_id,
         )
 
     async def regenerate_single_slide(
@@ -473,8 +469,9 @@ class RunOrchestrator:
             {
                 "slide_no": slide_no,
                 "status": status,
-                "html_preview": preview.get("html_preview"),
-                "image_url": preview.get("image_url"),
+                "preview": preview.get("preview"),
+                "preview_format": "svg",
+                "svg_data_url": preview.get("svg_data_url"),
                 "preview_width": preview.get("width", 1280),
                 "preview_height": preview.get("height", 720),
                 "is_final": True,

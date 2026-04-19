@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -29,37 +28,38 @@ class _FakeAsyncClient:
         return None
 
     async def post(self, _url: str, json: dict) -> _FakeResponse:
-        assert json["render"]["outputs"] == ["preview"]
+        assert _url.endswith("/compile/bundles")
+        assert json["mode"] == "single_slide"
+        assert json["entrypoint"] == "slides/slide1.js"
+        assert json["metadata"]["compile_context"]["theme"]["accent"] == "123456"
         return _FakeResponse(200, self._payload)
 
 
 @pytest.mark.anyio
-async def test_render_slide_via_pagevra_accepts_image_only_preview(
+async def test_render_slide_via_pagevra_requires_svg_compile_preview(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     slide_js_path = tmp_path / "slide1.js"
-    slide_js_path.write_text("export default {};\n", encoding="utf-8")
-
-    monkeypatch.setattr(
-        "service.run.slide_preview._capture_slide_payload",
-        AsyncMock(return_value={"title": "Preview", "operations": []}),
-    )
-    monkeypatch.setattr(
-        "service.run.slide_preview._build_pagevra_render_input",
-        lambda **_: {
-            "render_job_id": "preview-job",
-            "page_id": "slide-1",
-            "page_index": 0,
-            "render": {"outputs": ["preview"]},
-        },
-    )
+    slide_js_path.write_text("module.exports = { createSlide: () => undefined };\n", encoding="utf-8")
     monkeypatch.setattr(
         "service.run.slide_preview.httpx.AsyncClient",
         lambda *args, **kwargs: _FakeAsyncClient(
             payload={
                 "state": "success",
-                "preview_image_data_url": "data:image/png;base64,preview",
+                "job_id": "compile-1",
+                "artifacts": {
+                    "preview_pages": [
+                        {
+                            "index": 0,
+                            "slide_id": "slide-01",
+                            "format": "svg",
+                            "svg_data_url": "data:image/svg+xml;base64,preview",
+                            "width": 960,
+                            "height": 540,
+                        }
+                    ]
+                },
             }
         ),
     )
@@ -71,7 +71,9 @@ async def test_render_slide_via_pagevra_accepts_image_only_preview(
         pagevra_base_url="http://pagevra.test",
     )
 
-    assert result["image_url"] == "data:image/png;base64,preview"
-    assert result["html_preview"] is None
-    assert result["width"] == 1280
-    assert result["height"] == 720
+    assert result["preview_format"] == "svg"
+    assert result["svg_data_url"] == "data:image/svg+xml;base64,preview"
+    assert result["preview"]["format"] == "svg"
+    assert result["width"] == 960
+    assert result["height"] == 540
+    assert result["pagevra_job_id"] == "compile-1"

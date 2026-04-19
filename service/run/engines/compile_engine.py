@@ -27,28 +27,7 @@ class CompileEngine:
             self.runtime._build_compile_script(total=slide_count, theme=theme),
             encoding="utf-8",
         )
-        # Diego remains the compile orchestrator, but Pagevra is now the preferred
-        # execution target for scratch compile. Local execution stays as fallback.
-        provider = str(getattr(self.runtime.settings, "compile_provider", "local") or "local").strip().lower()
-        if provider == "pagevra":
-            return await self._compile_scratch_via_pagevra(run_id=run_id, slides_dir=slides_dir)
-        if provider == "auto":
-            remote_result = await self._compile_scratch_via_pagevra(
-                run_id=run_id,
-                slides_dir=slides_dir,
-                swallow_failure=True,
-            )
-            if remote_result["ok"]:
-                return remote_result
-            local_result = await self._compile_scratch_local(slides_dir=slides_dir)
-            local_result["fallback_used"] = True
-            local_result["fallback_from"] = "pagevra"
-            local_result["requested_provider"] = "auto"
-            return local_result
-        local_result = await self._compile_scratch_local(slides_dir=slides_dir)
-        local_result["fallback_used"] = False
-        local_result["requested_provider"] = provider
-        return local_result
+        return await self._compile_scratch_via_pagevra(run_id=run_id, slides_dir=slides_dir, theme=theme)
 
     async def build_compile_bundle(self, run_id: str) -> dict[str, Any]:
         run = await self.runtime.store.get_run(run_id)
@@ -88,6 +67,7 @@ class CompileEngine:
         *,
         run_id: str,
         slides_dir: Path,
+        theme: dict[str, Any] | None = None,
         swallow_failure: bool = False,
     ) -> dict[str, Any]:
         base_url = str(getattr(self.runtime.settings, "pagevra_base_url", "") or "").strip().rstrip("/")
@@ -116,7 +96,7 @@ class CompileEngine:
                     retryable=False,
                     details={"provider": "pagevra", "reason": "run_not_found"},
                 )
-            bundle = await self._build_scratch_compile_bundle(run=run, slides_dir=slides_dir)
+            bundle = await self._build_scratch_compile_bundle(run=run, slides_dir=slides_dir, theme=theme)
             timeout = float(getattr(self.runtime.settings, "pagevra_compile_timeout_sec", 180.0) or 180.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(f"{base_url}/compile/bundles", json=bundle)
@@ -204,7 +184,7 @@ class CompileEngine:
                 details={"provider": "pagevra", "reason": str(exc)},
             ) from exc
 
-    async def _build_scratch_compile_bundle(self, *, run: Any, slides_dir: Path) -> dict[str, Any]:
+    async def _build_scratch_compile_bundle(self, *, run: Any, slides_dir: Path, theme: dict[str, Any] | None = None) -> dict[str, Any]:
         files: list[dict[str, str]] = []
         assets: list[dict[str, str]] = []
         for file_path in sorted(slides_dir.rglob("*")):
@@ -240,5 +220,8 @@ class CompileEngine:
             "metadata": {
                 "artifact_dir": str(run.artifact_dir),
                 "theme_source": "diego",
+                "compile_context": {
+                    "theme": theme or {},
+                },
             },
         }

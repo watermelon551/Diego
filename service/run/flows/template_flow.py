@@ -142,8 +142,9 @@ class TemplateFlowService:
                 {
                     "slide_no": artifact.slide_no,
                     "status": artifact.status,
-                    "html_preview": preview.get("html_preview"),
-                    "image_url": preview.get("image_url"),
+                    "preview": preview.get("preview"),
+                    "preview_format": "svg",
+                    "svg_data_url": preview.get("svg_data_url"),
                     "preview_width": preview.get("width", 1280),
                     "preview_height": preview.get("height", 720),
                     "is_final": True,
