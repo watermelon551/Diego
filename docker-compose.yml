@@ -11,8 +11,13 @@ services:
       - .env
     environment:
       PYTHONUNBUFFERED: "1"
+      DIEGO_RUN_STORE: "postgres"
+      DIEGO_DATABASE_URL: "postgresql://postgres:postgres@diego-postgres:5432/diego"
     ports:
       - "8000:8000"
+    depends_on:
+      diego-postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test:
@@ -29,3 +34,25 @@ services:
     cpus: 2.0
     mem_limit: 2g
     pids_limit: 256
+    volumes:
+      - diego-runtime:/app/.runtime
+
+  diego-postgres:
+    image: postgres:16-alpine
+    container_name: diego-postgres
+    environment:
+      POSTGRES_DB: diego
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d diego"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    volumes:
+      - diego-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  diego-runtime:
+  diego-postgres-data:

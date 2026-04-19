@@ -56,7 +56,7 @@ from ..design.style_catalog import (
     resolve_style_choice,
     resolve_style_dna_choice,
 )
-from ..infra.store import RunStore, now_iso
+from ..infra.store import PostgresRunStore, RunStore, now_iso
 
 
 from .types import (
@@ -89,7 +89,7 @@ class RunOrchestrator:
     def __init__(
         self,
         *,
-        store: RunStore,
+        store: Any,
         artifacts_base: Path,
         templates_base: Path,
         llm_client: LLMClient,
@@ -237,10 +237,50 @@ class RunOrchestrator:
         }
 
     def _spawn(self, coro: Any) -> None:
-        def runner() -> None:
-            asyncio.run(coro)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            def runner() -> None:
+                asyncio.run(coro)
 
-        threading.Thread(target=runner, daemon=True).start()
+            threading.Thread(target=runner, daemon=True).start()
+            return
+
+        task = loop.create_task(coro)
+        task.add_done_callback(self._on_background_task_done)
+
+    @staticmethod
+    def _on_background_task_done(task: asyncio.Task[Any]) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            traceback.print_exc()
+
+    async def recover_interrupted_runs(self) -> dict[str, int]:
+        interrupted_statuses = {
+            RunStatus.OUTLINE_DRAFTING,
+            RunStatus.SLIDES_GENERATING,
+            RunStatus.COMPILING,
+        }
+        runs = await self.store.list_runs()
+        recovered = 0
+        for run in runs:
+            if run.status not in interrupted_statuses:
+                continue
+            recovered += 1
+            await self._kernel.fail_run(
+                run.run_id,
+                run.status.value,
+                "RUN_INTERRUPTED_BY_RESTART",
+                retryable=True,
+                error_details={
+                    "reason": "service_restarted",
+                    "previous_status": run.status.value,
+                },
+            )
+        return {"scanned": len(runs), "recovered": recovered}
 
     async def upload_template(self, *, filename: str, content: bytes) -> TemplateUploadResponse:
         template_id = str(uuid4())
@@ -2894,8 +2934,18 @@ def build_orchestrator(base_dir: Path) -> RunOrchestrator:
         sanitize_think_tags=settings.llm_sanitize_think_tags,
         json_repair_retry=settings.llm_json_repair_retry,
     )
+    resolved_store: Any
+    if settings.run_store == "postgres":
+        resolved_store = PostgresRunStore(
+            base_dir=base_dir,
+            database_url=settings.database_url,
+            event_poll_interval_sec=settings.event_poll_interval_sec,
+        )
+    else:
+        resolved_store = RunStore(base_dir=base_dir)
+
     return RunOrchestrator(
-        store=RunStore(base_dir=base_dir),
+        store=resolved_store,
         artifacts_base=artifacts_dir,
         templates_base=templates_dir,
         llm_client=llm_client,

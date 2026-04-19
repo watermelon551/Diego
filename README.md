@@ -116,7 +116,8 @@ docker compose down
 
 - Compose 服务名为 `diego-service`，默认映射到 `http://127.0.0.1:8000`。
 - 健康检查探针为 `GET /healthz`。
-- 当前采用容器内临时存储（不挂载宿主卷），容器销毁后 `.runtime` 产物不会保留。
+- 默认以 `DIEGO_RUN_STORE=postgres` 持久化 run 元数据，并挂载 `diego-runtime` volume 保留 `.runtime` 产物。
+- 若切回 `DIEGO_RUN_STORE=memory`，容器重启会丢失内存态 run。
 
 ## 3. 接口说明
 

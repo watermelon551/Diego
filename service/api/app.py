@@ -45,6 +45,15 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
     orch = orchestrator or build_orchestrator(resolved_base)
     ctx = AppContext(orchestrator=orch)
 
+    @app.on_event("startup")
+    async def _startup_runtime_recovery() -> None:
+        await ctx.orchestrator.store.initialize()
+        if (
+            getattr(ctx.orchestrator.settings, "run_store", "memory") == "postgres"
+            and bool(getattr(ctx.orchestrator.settings, "recovery_scan_on_boot", True))
+        ):
+            await ctx.orchestrator.recover_interrupted_runs()
+
     @app.get("/healthz")
     async def healthz():
         return {"status": "ok", "service": "diego"}

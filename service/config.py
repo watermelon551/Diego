@@ -57,6 +57,10 @@ class Settings:
     rag_top_k: int = 10
     rag_context_max_snippets: int = 10
     rag_context_max_chars: int = 700
+    run_store: str = "memory"
+    database_url: str = ""
+    recovery_scan_on_boot: bool = True
+    event_poll_interval_sec: float = 0.5
 
 
 def _require_env(name: str) -> str:
@@ -128,6 +132,15 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     qa_finalize_timeout_sec = _env_float("QA_FINALIZE_TIMEOUT_SEC", 300.0)
     if qa_finalize_timeout_sec <= 0:
         raise ValueError("QA_FINALIZE_TIMEOUT_SEC must be > 0")
+    run_store = os.getenv("DIEGO_RUN_STORE", "memory").strip().lower()
+    if run_store not in {"memory", "postgres"}:
+        raise ValueError(f"invalid DIEGO_RUN_STORE={run_store!r}")
+    database_url = os.getenv("DIEGO_DATABASE_URL", "").strip()
+    if run_store == "postgres" and not database_url:
+        raise ValueError("DIEGO_DATABASE_URL is required when DIEGO_RUN_STORE=postgres")
+    event_poll_interval_sec = _env_float("DIEGO_EVENT_POLL_INTERVAL_SEC", 0.5)
+    if event_poll_interval_sec <= 0:
+        raise ValueError("DIEGO_EVENT_POLL_INTERVAL_SEC must be > 0")
 
     return Settings(
         llm_api_style=os.getenv("LLM_API_STYLE", "openai_chat").strip().lower(),
@@ -180,6 +193,10 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         rag_top_k=_env_int("DIEGO_RAG_TOP_K", 10),
         rag_context_max_snippets=_env_int("DIEGO_RAG_CONTEXT_MAX_SNIPPETS", 10),
         rag_context_max_chars=_env_int("DIEGO_RAG_CONTEXT_MAX_CHARS", 700),
+        run_store=run_store,
+        database_url=database_url,
+        recovery_scan_on_boot=_env_bool("DIEGO_RECOVERY_SCAN_ON_BOOT", True),
+        event_poll_interval_sec=event_poll_interval_sec,
     )
 
 
