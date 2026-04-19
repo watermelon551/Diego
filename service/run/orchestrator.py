@@ -81,7 +81,7 @@ from .engines import AssetResolver, CompileEngine, QualityEngine, ReportingEngin
 from .flows import OutlineFlowService, ScratchFlowService, TemplateFlowService
 from .kernel import RunKernel
 from .runtime_support import LegacyCompileServiceAdapter, RuntimeSupport
-from .slide_preview import render_slide_html_preview
+from .slide_preview import render_slide_html_preview, render_slide_via_pagevra
 from .stages import FinalizeQualityStage, OutlineStage, ScratchGenerationStage, TemplateGenerationStage
 
 
@@ -339,19 +339,11 @@ class RunOrchestrator:
         if not str(slide_js_path) or not slide_js_path.exists() or not slide_js_path.is_file():
             raise FileNotFoundError("slide js artifact missing")
 
-        effective_template_style = self._resolved_template_style(run)
-        requirements_report = (
-            run.research_report if isinstance(run.research_report, dict) else {}
-        )
-        design = self._resolve_design_profile(
-            topic=run.input.topic,
-            template_style=effective_template_style,
-            requirements_report=requirements_report,
-        )
-        preview = await render_slide_html_preview(
+        preview = await self.render_slide_preview_or_fallback(
+            run_id=run_id,
+            slide_no=slide_no,
             slide_js_path=slide_js_path,
-            theme=design.theme,
-            subprocess_runner=self.subprocess.run,
+            theme=self._resolve_run_design(run).theme,
         )
         page_index = slide_no - 1
         return {
@@ -362,6 +354,441 @@ class RunOrchestrator:
             "status": "ready",
             **preview,
         }
+
+    async def render_slide_preview_or_fallback(
+        self,
+        *,
+        run_id: str,
+        slide_no: int,
+        slide_js_path: Path,
+        theme: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not bool(getattr(self.settings, "pagevra_preview_enabled", True)):
+            return await render_slide_html_preview(
+                slide_js_path=slide_js_path,
+                theme=theme,
+                subprocess_runner=self.subprocess.run,
+            )
+        pagevra_base_url = str(getattr(self.settings, "pagevra_base_url", "") or "").strip().rstrip("/")
+        if not pagevra_base_url:
+            raise RuntimeError("PAGEVRA_BASE_URL is required when PAGEVRA_PREVIEW_ENABLED=true")
+        return await render_slide_via_pagevra(
+            slide_js_path=slide_js_path,
+            theme=theme,
+            slide_no=slide_no,
+            pagevra_base_url=pagevra_base_url,
+            timeout_sec=float(getattr(self.settings, "pagevra_preview_timeout_sec", 30.0) or 30.0),
+            subprocess_runner=self.subprocess.run,
+        )
+
+    async def regenerate_single_slide(
+        self,
+        *,
+        run_id: str,
+        slide_no: int,
+        instruction: str,
+        preserve_style: bool,
+    ) -> RunSummaryResponse | None:
+        if slide_no < 1:
+            raise ValueError("slide_no must be >= 1")
+        run = await self.store.get_run(run_id)
+        if run is None:
+            return None
+        if run.status != RunStatus.SUCCEEDED:
+            raise ValueError("run must be in SUCCEEDED state")
+        if run.outline is None:
+            raise ValueError("run outline missing")
+        if slide_no > len(run.outline.nodes):
+            raise ValueError("slide_no out of range")
+        if not any(int(getattr(item, "slide_no", 0) or 0) == slide_no for item in run.slides):
+            raise ValueError("slide artifact missing")
+
+        await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SLIDES_GENERATING))
+        self._spawn(
+            self._regenerate_single_slide_task(
+                run_id=run_id,
+                slide_no=slide_no,
+                instruction=instruction.strip(),
+                preserve_style=preserve_style,
+            )
+        )
+        return RunSummaryResponse(
+            run_id=run.run_id,
+            trace_id=run.trace_id,
+            status=RunStatus.SLIDES_GENERATING,
+        )
+
+    async def _regenerate_single_slide_task(
+        self,
+        *,
+        run_id: str,
+        slide_no: int,
+        instruction: str,
+        preserve_style: bool,
+    ) -> None:
+        try:
+            run = await self.store.get_run(run_id)
+            if run is None or run.outline is None:
+                return
+            if run.input.generation_mode == GenerationMode.TEMPLATE:
+                await self._regenerate_single_template_slide(
+                    run_id=run_id,
+                    slide_no=slide_no,
+                    instruction=instruction,
+                    preserve_style=preserve_style,
+                    run=run,
+                )
+            else:
+                await self._regenerate_single_scratch_slide(
+                    run_id=run_id,
+                    slide_no=slide_no,
+                    instruction=instruction,
+                    preserve_style=preserve_style,
+                    run=run,
+                )
+        except Exception as exc:
+            await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SUCCEEDED))
+            await self._publish(
+                run_id,
+                EventType.SLIDE_FAILED,
+                {
+                    "slide_no": slide_no,
+                    "phase": "slide.regenerate",
+                    "reason": self._exception_reason(exc),
+                    "details": {"error_type": type(exc).__name__},
+                },
+            )
+
+    async def _publish_slide_generated_preview(
+        self,
+        *,
+        run_id: str,
+        slide_no: int,
+        status: str,
+        preview: dict[str, Any],
+    ) -> None:
+        await self._publish(
+            run_id,
+            EventType.SLIDE_GENERATED,
+            {
+                "slide_no": slide_no,
+                "status": status,
+                "html_preview": preview.get("html_preview"),
+                "preview_width": preview.get("width", 1280),
+                "preview_height": preview.get("height", 720),
+                "is_final": True,
+            },
+        )
+
+    async def _regenerate_single_scratch_slide(
+        self,
+        *,
+        run_id: str,
+        slide_no: int,
+        instruction: str,
+        preserve_style: bool,
+        run: RunRecord,
+    ) -> None:
+        design = self._resolve_run_design(run)
+        effective_template_style = self._resolved_template_style(run)
+        node = run.outline.nodes[slide_no - 1]
+        slide = next(item for item in run.slides if int(getattr(item, "slide_no", 0) or 0) == slide_no)
+        slide_path = Path(str(getattr(slide, "js_path", "") or "").strip())
+        if not str(slide_path) or not slide_path.exists() or not slide_path.is_file():
+            raise FileNotFoundError("slide js artifact missing")
+
+        rule_violations = [instruction]
+        if preserve_style:
+            rule_violations.append("Preserve the current visual style unless the instruction explicitly changes it.")
+
+        if self._use_agentic_engine():
+            js_code = await self._call_llm_with_timeout_retry(
+                run_id=run_id,
+                phase=f"slide.{slide_no}.regenerate.repair",
+                action=lambda: self.llm_client.critique_slide_js(
+                    topic=run.input.topic,
+                    template_style=effective_template_style,
+                    slide_no=slide_no,
+                    target_slide_count=run.input.target_slide_count,
+                    outline_node=node,
+                    candidate_js=slide.js_code,
+                    issues=rule_violations,
+                    failure_context={"trigger": "single_slide_regenerate"},
+                    visual_policy=run.input.visual_policy,
+                ),
+            )
+            js_code, normalize_fixes = self._normalize_generated_slide_js(
+                js_code,
+                slide_no=slide_no,
+                node=node,
+                target_slide_count=run.input.target_slide_count,
+            )
+            auto_fixes: list[str] = []
+            if self.slide_auto_canonicalize:
+                js_code, auto_fixes = self._auto_canonicalize_slide_js(
+                    js_code,
+                    slide_no=slide_no,
+                    node=node,
+                    target_slide_count=run.input.target_slide_count,
+                )
+            if normalize_fixes or auto_fixes:
+                await self._publish(
+                    run_id,
+                    EventType.SLIDE_AUTO_FIX_APPLIED,
+                    {
+                        "slide_no": slide_no,
+                        "round": 1,
+                        "candidate": 1,
+                        "fixes": self._dedupe_preserve_order(normalize_fixes + auto_fixes)[:24],
+                    },
+                )
+            js_code = self._apply_local_js_guardrails(
+                js_code=js_code,
+                slide_no=slide_no,
+                page_type=node.page_type,
+            )
+            reviewed = self.quality_engine.extract_candidate_from_js(
+                js_code=js_code,
+                fallback_node=node,
+                citations=slide.citations,
+            )
+        else:
+            candidate = self.quality_engine.extract_candidate_from_js(
+                js_code=slide.js_code,
+                fallback_node=node,
+                citations=slide.citations,
+            )
+            reviewed = await self._call_llm_with_timeout_retry(
+                run_id=run_id,
+                phase=f"slide.{slide_no}.regenerate.review",
+                action=lambda: self.llm_client.review_slide(
+                    topic=run.input.topic,
+                    template_style=effective_template_style,
+                    slide_no=slide_no,
+                    target_slide_count=run.input.target_slide_count,
+                    outline_node=node,
+                    candidate=candidate,
+                    rule_violations=rule_violations,
+                ),
+            )
+            js_code = self._render_skill_slide_js(
+                slide_no=slide_no,
+                total=run.input.target_slide_count,
+                node=node,
+                generated=reviewed,
+                design=design,
+                chart_plan=self._build_chart_plan_from_bullets(
+                    node=OutlineNode(
+                        title=reviewed.title,
+                        bullets=list(reviewed.bullets),
+                        page_type=node.page_type,
+                        layout_hint=reviewed.layout_hint or node.layout_hint,
+                    ),
+                    source_refs=slide.citations,
+                ),
+            )
+
+        citations = self._normalize_citations(reviewed.citations, run.input.rag_source_ids, slide_no)
+        updated_node = OutlineNode(
+            title=reviewed.title,
+            bullets=list(reviewed.bullets),
+            page_type=node.page_type,
+            layout_hint=reviewed.layout_hint or node.layout_hint,
+        )
+        chart_plan = self._build_chart_plan_from_bullets(
+            node=updated_node,
+            source_refs=citations,
+        )
+        slide_path.write_text(js_code, encoding="utf-8")
+        artifact = SlideArtifact(
+            slide_no=slide_no,
+            js_path=str(slide_path),
+            js_code=js_code,
+            status="ok",
+            citations=citations,
+        )
+        preview = await self.render_slide_preview_or_fallback(
+            run_id=run_id,
+            slide_no=slide_no,
+            slide_js_path=slide_path,
+            theme=design.theme,
+        )
+
+        def apply_slide_update(r: RunRecord) -> None:
+            r.status = RunStatus.COMPILING
+            r.outline.nodes[slide_no - 1] = updated_node
+            r.citation_map[slide_no] = list(citations)
+            for index, existing in enumerate(r.slides):
+                if int(getattr(existing, "slide_no", 0) or 0) == slide_no:
+                    r.slides[index] = artifact
+                    break
+
+        await self.store.update_run(run_id, apply_slide_update)
+        await self._append_chart_truth_report(
+            run_id=run_id,
+            entry={
+                "slide_no": slide_no,
+                "has_verified_data": chart_plan.has_verified_data,
+                "mode": chart_plan.mode,
+                "source": chart_plan.source,
+                "note": chart_plan.note,
+                "labels": chart_plan.labels,
+            },
+        )
+        await self._publish(
+            run_id,
+            EventType.CHART_TRUTH_CHECKED,
+            {
+                "slide_no": slide_no,
+                "has_verified_data": chart_plan.has_verified_data,
+                "mode": chart_plan.mode,
+                "source": chart_plan.source,
+            },
+        )
+        await self._publish_slide_generated_preview(
+            run_id=run_id,
+            slide_no=slide_no,
+            status=artifact.status,
+            preview=preview,
+        )
+
+        compile_start = time.perf_counter()
+        compile_result = await self.compile_engine.compile_scratch_run(
+            run_id=run_id,
+            slides_dir=Path(run.artifact_dir) / "slides",
+            slide_count=len(run.slides),
+            theme=design.theme,
+        )
+        if not compile_result["ok"]:
+            raise RuntimeError(str(compile_result.get("reason") or "scratch recompile failed"))
+
+        def apply_compile(r: RunRecord) -> None:
+            r.compile_js_path = str(compile_result["compile_js_path"])
+            r.pptx_path = str(compile_result["pptx_path"])
+            r.compile_provider = str(compile_result.get("provider") or "")
+            r.compile_fallback_used = bool(compile_result.get("fallback_used"))
+            r.stage_timings.compile_ms = int((time.perf_counter() - compile_start) * 1000)
+            r.status = RunStatus.SUCCEEDED
+
+        await self.store.update_run(run_id, apply_compile)
+        await self._publish(
+            run_id,
+            EventType.COMPILE_COMPLETED,
+            {
+                "file": str(compile_result["pptx_path"]),
+                "provider": compile_result.get("provider", "local"),
+                "requested_provider": compile_result.get("requested_provider", self.settings.compile_provider),
+                "fallback_used": bool(compile_result.get("fallback_used")),
+                "fallback_from": compile_result.get("fallback_from"),
+                "reason": "single_slide_regenerate",
+            },
+        )
+
+    async def _regenerate_single_template_slide(
+        self,
+        *,
+        run_id: str,
+        slide_no: int,
+        instruction: str,
+        preserve_style: bool,
+        run: RunRecord,
+    ) -> None:
+        artifact_dir = Path(run.artifact_dir)
+        _, _, _, unpacked, edited, template_slides_dir, template_compile_js, _ = self.template_engine.template_work_paths(artifact_dir)
+        if not unpacked.exists():
+            raise FileNotFoundError("template working directory missing")
+        slide_files = self._rebuild_template_structure(
+            unpacked=unpacked,
+            target_count=len(run.outline.nodes),
+        )
+        if slide_no > len(slide_files):
+            raise ValueError("template slide xml missing")
+
+        design = self._resolve_run_design(run)
+        node = run.outline.nodes[slide_no - 1]
+        slide = next(item for item in run.slides if int(getattr(item, "slide_no", 0) or 0) == slide_no)
+        citations = self._normalize_citations(slide.citations, run.input.rag_source_ids, slide_no)
+        candidate = self.template_engine.extract_candidate_from_template_slide(
+            unpacked=unpacked,
+            slide_xml=slide_files[slide_no - 1],
+            fallback_node=node,
+            citations=citations,
+        )
+        rule_violations = [instruction]
+        if preserve_style:
+            rule_violations.append("Preserve the current visual style unless the instruction explicitly changes it.")
+        reviewed = await self._call_llm_with_timeout_retry(
+            run_id=run_id,
+            phase=f"template.slide.{slide_no}.regenerate.review",
+            action=lambda: self.llm_client.review_slide(
+                topic=run.input.topic,
+                template_style=self._resolved_template_style(run),
+                slide_no=slide_no,
+                target_slide_count=run.input.target_slide_count,
+                outline_node=node,
+                candidate=candidate,
+                rule_violations=rule_violations,
+            ),
+        )
+        updated_node = OutlineNode(
+            title=reviewed.title,
+            bullets=list(reviewed.bullets),
+            page_type=node.page_type,
+            layout_hint=reviewed.layout_hint or node.layout_hint,
+        )
+
+        def apply_outline_update(r: RunRecord) -> None:
+            r.status = RunStatus.COMPILING
+            r.outline.nodes[slide_no - 1] = updated_node
+
+        await self.store.update_run(run_id, apply_outline_update)
+        artifacts = await self.template_engine.apply_template_nodes_once(
+            run_id=run_id,
+            unpacked=unpacked,
+            design=design,
+            use_review=False,
+            forced_issues=None,
+        )
+        if not artifacts:
+            raise RuntimeError("template slide regeneration did not produce artifacts")
+        self.template_engine.pack_template_unpacked(unpacked=unpacked, edited=edited)
+        compile_start = time.perf_counter()
+        compiled = await self.template_engine.compile_template_js(template_slides_dir=template_slides_dir)
+        if not compiled:
+            raise RuntimeError("template slide regenerate compile failed")
+        artifact = next(item for item in artifacts if int(getattr(item, "slide_no", 0) or 0) == slide_no)
+        preview = await self.render_slide_preview_or_fallback(
+            run_id=run_id,
+            slide_no=slide_no,
+            slide_js_path=Path(str(artifact.js_path or "")),
+            theme=design.theme,
+        )
+
+        def apply_compile(r: RunRecord) -> None:
+            r.compile_js_path = str(template_compile_js)
+            r.pptx_path = str(edited)
+            r.stage_timings.compile_ms = int((time.perf_counter() - compile_start) * 1000)
+            r.citation_map = {item.slide_no: list(item.citations) for item in artifacts}
+            r.slides = artifacts
+            r.status = RunStatus.SUCCEEDED
+
+        await self.store.update_run(run_id, apply_compile)
+        await self._publish_slide_generated_preview(
+            run_id=run_id,
+            slide_no=slide_no,
+            status=str(getattr(artifact, "status", "ok") or "ok"),
+            preview=preview,
+        )
+        await self._publish(
+            run_id,
+            EventType.COMPILE_COMPLETED,
+            {
+                "file": str(edited),
+                "mode": "template-regenerate",
+                "compile_js": str(template_compile_js),
+                "reason": "single_slide_regenerate",
+            },
+        )
 
     async def confirm_outline(self, run_id: str, req: ConfirmOutlineRequest) -> RunSummaryResponse | None:
         return await self._kernel.confirm_outline(run_id, req)
@@ -511,6 +938,15 @@ class RunOrchestrator:
         report = run.research_report if isinstance(run.research_report, dict) else {}
         style = str(report.get("effective_template_style", "")).strip()
         return style or run.input.template_style
+
+    def _resolve_run_design(self, run: RunRecord) -> DesignProfile:
+        return self._resolve_design_profile(
+            topic=run.input.topic,
+            template_style=self._resolved_template_style(run),
+            requirements_report=(
+                run.research_report if isinstance(run.research_report, dict) else {}
+            ),
+        )
 
     def _resolve_content_source_mode(self, run: RunRecord) -> str:
         return "rag_first" if run.input.rag_source_ids else "model_only"

@@ -111,6 +111,43 @@ class TemplateFlowService:
             r.citation_map = {item.slide_no: list(item.citations) for item in artifacts}
 
         await orch.store.update_run(run_id, apply_compile)
+        try:
+            previews = await asyncio.gather(
+                *(
+                    orch.render_slide_preview_or_fallback(
+                        run_id=run_id,
+                        slide_no=item.slide_no,
+                        slide_js_path=Path(str(item.js_path or "")),
+                        theme=design.theme,
+                    )
+                    for item in artifacts
+                )
+            )
+        except Exception as exc:
+            await orch._fail_run(
+                run_id,
+                "COMPILING",
+                "SLIDE_PREVIEW_RENDER_FAILED",
+                retryable=True,
+                error_details={
+                    "reason": orch._exception_reason(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return
+        for artifact, preview in zip(artifacts, previews, strict=False):
+            await orch._publish(
+                run_id,
+                EventType.SLIDE_GENERATED,
+                {
+                    "slide_no": artifact.slide_no,
+                    "status": artifact.status,
+                    "html_preview": preview.get("html_preview"),
+                    "preview_width": preview.get("width", 1280),
+                    "preview_height": preview.get("height", 720),
+                    "is_final": True,
+                },
+            )
         await orch._publish(
             run_id,
             EventType.COMPILE_COMPLETED,

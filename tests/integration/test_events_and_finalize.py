@@ -7,7 +7,7 @@ def test_event_stream_has_required_events(tmp_path: Path) -> None:
         json={
             "topic": "Observability",
             "project_id": "p3",
-            "rag_source_ids": ["s1", "s2"],
+            "rag_source_ids": [],
             "template_style": "default",
             "target_slide_count": 2,
             "generation_mode": "scratch",

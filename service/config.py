@@ -51,6 +51,8 @@ class Settings:
     qa_finalize_timeout_sec: float = 300.0
     compile_provider: str = "auto"
     pagevra_base_url: str = ""
+    pagevra_preview_enabled: bool = True
+    pagevra_preview_timeout_sec: float = 30.0
     pagevra_compile_timeout_sec: float = 180.0
     stratumind_base_url: str = ""
     stratumind_timeout_sec: float = 12.0
@@ -116,6 +118,9 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     pagevra_compile_timeout_sec = _env_float("PAGEVRA_COMPILE_TIMEOUT_SEC", 180.0)
     if pagevra_compile_timeout_sec <= 0:
         raise ValueError("PAGEVRA_COMPILE_TIMEOUT_SEC must be > 0")
+    pagevra_preview_timeout_sec = _env_float("PAGEVRA_PREVIEW_TIMEOUT_SEC", 30.0)
+    if pagevra_preview_timeout_sec <= 0:
+        raise ValueError("PAGEVRA_PREVIEW_TIMEOUT_SEC must be > 0")
     stratumind_timeout_sec = _env_float("STRATUMIND_TIMEOUT_SECONDS", 12.0)
     if stratumind_timeout_sec <= 0:
         raise ValueError("STRATUMIND_TIMEOUT_SECONDS must be > 0")
@@ -187,6 +192,8 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         qa_finalize_timeout_sec=qa_finalize_timeout_sec,
         compile_provider=compile_provider,
         pagevra_base_url=os.getenv("PAGEVRA_BASE_URL", "").strip().rstrip("/"),
+        pagevra_preview_enabled=_env_bool("PAGEVRA_PREVIEW_ENABLED", True),
+        pagevra_preview_timeout_sec=pagevra_preview_timeout_sec,
         pagevra_compile_timeout_sec=pagevra_compile_timeout_sec,
         stratumind_base_url=os.getenv("STRATUMIND_BASE_URL", "").strip().rstrip("/"),
         stratumind_timeout_sec=stratumind_timeout_sec,

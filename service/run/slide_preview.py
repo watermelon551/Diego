@@ -7,11 +7,15 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
+
+import httpx
 
 _SLIDE_WIDTH_IN = 10.0
 _SLIDE_HEIGHT_IN = 5.625
-_VIEWPORT_WIDTH_PX = 1600
-_VIEWPORT_HEIGHT_PX = 900
+_VIEWPORT_WIDTH_PX = 1280
+_VIEWPORT_HEIGHT_PX = 720
+_DEFAULT_PAGEVRA_TEMPLATE_ID = "document-teaching"
 
 
 def _capture_runner_script() -> str:
@@ -80,6 +84,65 @@ def _capture_runner_script() -> str:
             "});",
         ]
     )
+
+
+async def _capture_slide_payload(
+    *,
+    slide_js_path: Path,
+    theme: dict[str, Any],
+    timeout_sec: float,
+    subprocess_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    if not slide_js_path.exists() or not slide_js_path.is_file():
+        raise FileNotFoundError(f"slide js not found: {slide_js_path}")
+
+    runner_path = slide_js_path.parent / (
+        f".html-preview-runner-{slide_js_path.stem}-{uuid4().hex[:8]}.js"
+    )
+    runner_path.write_text(_capture_runner_script(), encoding="utf-8")
+    run = subprocess_runner or subprocess.run
+    cmd = [
+        "node",
+        runner_path.name,
+        slide_js_path.name,
+        json.dumps(theme or {}, ensure_ascii=False),
+    ]
+    try:
+        try:
+            result = await asyncio.to_thread(
+                run,
+                cmd,
+                cwd=slide_js_path.parent,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=max(1.0, float(timeout_sec or 30.0)),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"slide preview capture timed out after {max(1.0, float(timeout_sec or 30.0)):.1f}s"
+            ) from exc
+    finally:
+        runner_path.unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        reason = (result.stderr or result.stdout or "slide html preview failed").strip()
+        raise RuntimeError(reason[:1200])
+
+    stdout = str(result.stdout or "").strip()
+    if not stdout:
+        raise RuntimeError("slide html preview capture returned empty output")
+
+    try:
+        captured = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"slide html preview returned invalid JSON: {stdout[:200]}") from exc
+
+    if not isinstance(captured, dict):
+        raise RuntimeError("slide html preview capture payload is invalid")
+    return captured
 
 
 def _coerce_float(value: Any, default: float = 0.0) -> float:
@@ -352,54 +415,341 @@ def _build_preview_html(*, captured: dict[str, Any], slide_dir: Path, theme: dic
     )
 
 
+def _iter_operations(captured: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+    operations = captured.get("operations") if isinstance(captured.get("operations"), list) else []
+    return [
+        item
+        for item in operations
+        if isinstance(item, dict)
+        and str(item.get("kind") or "").strip().lower() == kind
+        and isinstance(item.get("payload"), dict)
+    ]
+
+
+def _slide_config(captured: dict[str, Any]) -> dict[str, Any]:
+    config = captured.get("slide_config")
+    return dict(config) if isinstance(config, dict) else {}
+
+
+def _normalize_lines(text: str) -> list[str]:
+    return [line.strip() for line in str(text or "").splitlines() if line.strip()]
+
+
+def _dedupe_text(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _extract_text_entries(captured: dict[str, Any]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for item in _iter_operations(captured, "text"):
+        payload = dict(item.get("payload") or {})
+        options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+        text = _normalize_text_content(payload.get("content")).strip()
+        if not text:
+            continue
+        entries.append(
+            {
+                "text": text,
+                "font_size": _coerce_float(options.get("fontSize"), default=16.0),
+                "x": _coerce_float(options.get("x"), default=0.0),
+                "y": _coerce_float(options.get("y"), default=0.0),
+                "bold": bool(options.get("bold")),
+            }
+        )
+    return entries
+
+
+def _resolve_page_kind(captured: dict[str, Any]) -> str:
+    config = _slide_config(captured)
+    raw = (
+        config.get("page_type")
+        or config.get("pageType")
+        or config.get("type")
+        or config.get("kind")
+    )
+    normalized = str(raw or "").strip().lower()
+    mapping = {
+        "cover": "cover",
+        "toc": "toc",
+        "section": "section",
+        "summary": "summary_page",
+        "summary_page": "summary_page",
+    }
+    return mapping.get(normalized, "content")
+
+
+def _pick_page_title(captured: dict[str, Any]) -> str:
+    config = _slide_config(captured)
+    configured = str(config.get("title") or config.get("heading") or "").strip()
+    if configured:
+        return configured
+    entries = _extract_text_entries(captured)
+    if not entries:
+        return ""
+    ranked = sorted(
+        entries,
+        key=lambda item: (
+            -float(item.get("font_size") or 0.0),
+            float(item.get("y") or 0.0),
+            float(item.get("x") or 0.0),
+        ),
+    )
+    return str(ranked[0].get("text") or "").splitlines()[0].strip()
+
+
+def _extract_page_copy(captured: dict[str, Any], title: str) -> tuple[list[str], list[str]]:
+    config = _slide_config(captured)
+    configured_bullets = config.get("bullets")
+    bullets = []
+    if isinstance(configured_bullets, list):
+        bullets = _dedupe_text([str(item).strip() for item in configured_bullets])
+
+    paragraphs: list[str] = []
+    title_consumed = False
+    for entry in sorted(
+        _extract_text_entries(captured),
+        key=lambda item: (float(item.get("y") or 0.0), float(item.get("x") or 0.0)),
+    ):
+        for line in _normalize_lines(str(entry.get("text") or "")):
+            normalized = line[2:].strip() if line.startswith("- ") else line
+            if title and normalized == title and not title_consumed:
+                title_consumed = True
+                continue
+            if line.startswith("- "):
+                bullets.append(normalized)
+            else:
+                paragraphs.append(normalized)
+    return _dedupe_text(bullets), _dedupe_text(paragraphs)
+
+
+def _collect_numeric_pairs(data: Any) -> list[tuple[str, float]]:
+    pairs: list[tuple[str, float]] = []
+    if not isinstance(data, list):
+        return pairs
+    for index, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            continue
+        direct_value = item.get("value")
+        if direct_value is None:
+            direct_value = item.get("y")
+        if direct_value is None and isinstance(item.get("values"), list):
+            values = item.get("values") or []
+            numeric = [
+                _coerce_float(value, default=float("nan"))
+                for value in values
+                if isinstance(value, (int, float, str))
+            ]
+            numeric = [value for value in numeric if value == value]
+            if numeric:
+                direct_value = sum(numeric)
+        if direct_value is None and isinstance(item.get("data"), list):
+            numeric = []
+            for point in item.get("data") or []:
+                if isinstance(point, dict):
+                    value = point.get("value")
+                    if value is None:
+                        value = point.get("y")
+                else:
+                    value = point
+                parsed = _coerce_float(value, default=float("nan"))
+                if parsed == parsed:
+                    numeric.append(parsed)
+            if numeric:
+                direct_value = sum(numeric)
+        parsed_value = _coerce_float(direct_value, default=float("nan"))
+        if parsed_value != parsed_value:
+            continue
+        label = str(
+            item.get("name")
+            or item.get("label")
+            or item.get("category")
+            or item.get("series")
+            or f"Series {index}"
+        ).strip()
+        if not label:
+            label = f"Series {index}"
+        pairs.append((label, parsed_value))
+    return pairs
+
+
+def _escape_mermaid_label(text: str) -> str:
+    return str(text or "").replace('"', "'")
+
+
+def _build_mermaid_chart_code(payload: dict[str, Any]) -> str | None:
+    chart_type = str(payload.get("chartType") or "").strip().lower()
+    pairs = _collect_numeric_pairs(payload.get("data"))
+    if chart_type not in {"pie", "doughnut", "donut"} or not pairs:
+        return None
+    lines = ["pie showData"]
+    for label, value in pairs[:8]:
+        lines.append(f'    "{_escape_mermaid_label(label)}" : {value:g}')
+    return "\n".join(lines)
+
+
+def _summarize_chart_payload(payload: dict[str, Any]) -> str:
+    chart_type = str(payload.get("chartType") or "chart").strip().upper() or "CHART"
+    pairs = _collect_numeric_pairs(payload.get("data"))
+    if not pairs:
+        return f"{chart_type} chart"
+    summary = ", ".join(f"{label} {value:g}" for label, value in pairs[:4])
+    return f"{chart_type} chart: {summary}"
+
+
+def _collect_pagevra_image_blocks(*, captured: dict[str, Any], slide_dir: Path) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for item in _iter_operations(captured, "image"):
+        payload = dict(item.get("payload") or {})
+        options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+        src = _resolve_image_source(options=options, slide_dir=slide_dir)
+        if not src:
+            continue
+        alt = str(options.get("altText") or options.get("alt") or "Slide image").strip() or "Slide image"
+        blocks.append({"type": "image", "src": src, "alt": alt})
+    return blocks[:2]
+
+
+def _collect_pagevra_chart_blocks(captured: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for item in _iter_operations(captured, "chart"):
+        payload = dict(item.get("payload") or {})
+        mermaid = _build_mermaid_chart_code(payload)
+        if mermaid:
+            blocks.append({"type": "mermaid", "code": mermaid, "title": str(payload.get("chartType") or "chart")})
+            continue
+        blocks.append({"type": "paragraph", "text": _summarize_chart_payload(payload)})
+    return blocks[:2]
+
+
+def _build_pagevra_structure(*, page_kind: str, bullets: list[str], paragraphs: list[str]) -> dict[str, Any] | None:
+    if page_kind == "cover":
+        cover: dict[str, Any] = {}
+        if bullets:
+            cover["eyebrow"] = bullets[0]
+        if paragraphs:
+            cover["subtitle"] = paragraphs[0]
+        return {"cover": cover} if cover else None
+    if page_kind == "summary_page":
+        summary: dict[str, Any] = {}
+        if bullets:
+            summary["key_points"] = bullets[:6]
+        if paragraphs:
+            summary["closing_note"] = paragraphs[0]
+        return {"summary_page": summary} if summary else None
+    return None
+
+
+def _build_layout_hints(blocks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    has_visual = any(block.get("type") in {"image", "mermaid"} for block in blocks)
+    if not has_visual:
+        return None
+    return {
+        "visual_priority": "balanced",
+        "allow_columns": True,
+        "emphasis_level": "medium",
+    }
+
+
+def _operations_to_pagevra_page(
+    *,
+    captured: dict[str, Any],
+    slide_js_path: Path,
+    slide_no: int,
+    theme: dict[str, str],
+) -> dict[str, Any]:
+    page_index = max(0, slide_no - 1)
+    page_kind = _resolve_page_kind(captured)
+    title = _pick_page_title(captured) or f"Slide {slide_no}"
+    bullets, paragraphs = _extract_page_copy(captured, title)
+    blocks: list[dict[str, Any]] = [{"type": "heading", "text": title, "level": 1}]
+    if bullets:
+        blocks.append({"type": "bullet_list", "items": bullets[:8], "ordered": False})
+    for paragraph in paragraphs[:3]:
+        if paragraph != title:
+            blocks.append({"type": "paragraph", "text": paragraph})
+    blocks.extend(_collect_pagevra_image_blocks(captured=captured, slide_dir=slide_js_path.parent))
+    blocks.extend(_collect_pagevra_chart_blocks(captured))
+    if not blocks:
+        blocks.append({"type": "paragraph", "text": f"Slide {slide_no}"})
+
+    structure = _build_pagevra_structure(page_kind=page_kind, bullets=bullets, paragraphs=paragraphs)
+    page: dict[str, Any] = {
+        "page_id": f"slide-{slide_no}",
+        "page_index": page_index,
+        "title": title,
+        "kind": page_kind,
+        "layout": page_kind,
+        "blocks": blocks[:8],
+        "metadata": {
+            "source": "diego",
+            "background": _resolve_background_color(captured=captured, theme=theme),
+        },
+    }
+    layout_hints = _build_layout_hints(blocks)
+    if layout_hints:
+        page["layout_hints"] = layout_hints
+    if structure:
+        page["structure"] = structure
+    return page
+
+
+def _build_pagevra_render_input(
+    *,
+    captured: dict[str, Any],
+    slide_js_path: Path,
+    slide_no: int,
+    theme: dict[str, str],
+) -> dict[str, Any]:
+    output_dir = (slide_js_path.parent / ".pagevra-preview").resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    page = _operations_to_pagevra_page(
+        captured=captured,
+        slide_js_path=slide_js_path,
+        slide_no=slide_no,
+        theme=theme,
+    )
+    return {
+        "render_job_id": f"diego-preview-{slide_js_path.stem}-{uuid4().hex[:8]}",
+        "page_id": page["page_id"],
+        "page_index": page["page_index"],
+        "document_title": page.get("title") or f"Slide {slide_no}",
+        "output_dir": str(output_dir),
+        "render": {
+            "outputs": ["preview"],
+            "theme": {
+                "theme_id": "default",
+                "template_id": _DEFAULT_PAGEVRA_TEMPLATE_ID,
+                "overrides": {
+                    "accent_color": theme["accent"],
+                    "background": theme["bg"],
+                    "foreground": theme["secondary"],
+                },
+            },
+        },
+        "page": page,
+    }
+
+
 async def render_slide_html_preview(
     *,
     slide_js_path: Path,
     theme: dict[str, Any],
     subprocess_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> dict[str, Any]:
-    if not slide_js_path.exists() or not slide_js_path.is_file():
-        raise FileNotFoundError(f"slide js not found: {slide_js_path}")
-
-    runner_path = slide_js_path.parent / f".html-preview-runner-{slide_js_path.stem}.js"
-    runner_path.write_text(_capture_runner_script(), encoding="utf-8")
-    run = subprocess_runner or subprocess.run
-    cmd = [
-        "node",
-        runner_path.name,
-        slide_js_path.name,
-        json.dumps(theme or {}, ensure_ascii=False),
-    ]
-    try:
-        result = await asyncio.to_thread(
-            run,
-            cmd,
-            cwd=slide_js_path.parent,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-    finally:
-        runner_path.unlink(missing_ok=True)
-
-    if result.returncode != 0:
-        reason = (result.stderr or result.stdout or "slide html preview failed").strip()
-        raise RuntimeError(reason[:1200])
-
-    stdout = str(result.stdout or "").strip()
-    if not stdout:
-        raise RuntimeError("slide html preview capture returned empty output")
-
-    try:
-        captured = json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"slide html preview returned invalid JSON: {stdout[:200]}") from exc
-
-    if not isinstance(captured, dict):
-        raise RuntimeError("slide html preview capture payload is invalid")
-
+    captured = await _capture_slide_payload(
+        slide_js_path=slide_js_path,
+        theme=theme,
+        timeout_sec=30.0,
+        subprocess_runner=subprocess_runner,
+    )
     normalized_theme = _normalize_theme(theme if isinstance(theme, dict) else captured.get("theme"))
     html_preview = _build_preview_html(
         captured=captured,
@@ -410,4 +760,78 @@ async def render_slide_html_preview(
         "html_preview": html_preview,
         "width": _VIEWPORT_WIDTH_PX,
         "height": _VIEWPORT_HEIGHT_PX,
+    }
+
+
+async def render_slide_via_pagevra(
+    *,
+    slide_js_path: Path,
+    theme: dict[str, Any],
+    slide_no: int,
+    pagevra_base_url: str,
+    timeout_sec: float = 30.0,
+    subprocess_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    base_url = str(pagevra_base_url or "").strip().rstrip("/")
+    if not base_url:
+        raise RuntimeError("pagevra_base_url is required for page preview rendering")
+
+    captured = await _capture_slide_payload(
+        slide_js_path=slide_js_path,
+        theme=theme,
+        timeout_sec=timeout_sec,
+        subprocess_runner=subprocess_runner,
+    )
+    normalized_theme = _normalize_theme(theme if isinstance(theme, dict) else captured.get("theme"))
+    payload = _build_pagevra_render_input(
+        captured=captured,
+        slide_js_path=slide_js_path,
+        slide_no=slide_no,
+        theme=normalized_theme,
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=max(1.0, float(timeout_sec or 30.0))) as client:
+            response = await client.post(f"{base_url}/render/pages", json=payload)
+    except httpx.TimeoutException as exc:
+        raise RuntimeError(
+            f"pagevra preview render timed out after {max(1.0, float(timeout_sec or 30.0)):.1f}s"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"pagevra preview render request failed: {exc}") from exc
+
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"pagevra preview render returned invalid JSON: {response.text[:200]}"
+        ) from exc
+
+    if not isinstance(body, dict):
+        raise RuntimeError("pagevra preview render returned invalid payload")
+    if response.status_code >= 400:
+        reason = str(body.get("error") or body.get("state_reason") or response.text[:200]).strip()
+        raise RuntimeError(f"pagevra preview render failed: {reason}")
+    if str(body.get("state") or "").strip().lower() != "success":
+        reason = str(body.get("state_reason") or body.get("error") or "page_render_failed").strip()
+        raise RuntimeError(f"pagevra preview render failed: {reason}")
+
+    html_preview = str(body.get("html_preview") or "")
+    if not html_preview.strip():
+        html_previews = body.get("html_previews")
+        if isinstance(html_previews, list):
+            first_preview = next(
+                (str(item).strip() for item in html_previews if str(item or "").strip()),
+                "",
+            )
+            html_preview = first_preview
+    if not html_preview.strip():
+        raise RuntimeError("pagevra preview render returned empty html_preview")
+
+    warnings = body.get("warnings") if isinstance(body.get("warnings"), list) else []
+    return {
+        "html_preview": html_preview,
+        "width": _VIEWPORT_WIDTH_PX,
+        "height": _VIEWPORT_HEIGHT_PX,
+        "warnings": warnings,
     }

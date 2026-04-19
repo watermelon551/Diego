@@ -101,6 +101,8 @@ def make_settings(**overrides) -> Settings:
         outline_structured_output=True,
         compile_provider="local",
         pagevra_base_url="",
+        pagevra_preview_enabled=False,
+        pagevra_preview_timeout_sec=10.0,
         pagevra_compile_timeout_sec=10.0,
     )
     return replace(settings, **overrides) if overrides else settings
@@ -114,7 +116,9 @@ def make_client(tmp_path: Path, llm_client: MockLLMClient | None = None, **setti
         llm_client=llm_client or MockLLMClient(),
         settings=make_settings(**settings_overrides),
     )
-    return TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+    client.__enter__()
+    return client
 
 
 def wait_status(client: TestClient, run_id: str, expected: set[str], timeout: float = 8.0) -> dict:

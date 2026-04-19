@@ -62,7 +62,24 @@ class ScratchFlowService:
                     r.citation_map[slide_no] = artifact.citations
 
                 await orch.store.update_run(run_id, apply_slide)
-                await orch._publish(run_id, EventType.SLIDE_GENERATED, {"slide_no": slide_no, "status": artifact.status})
+                preview = await orch.render_slide_preview_or_fallback(
+                    run_id=run_id,
+                    slide_no=slide_no,
+                    slide_js_path=Path(str(artifact.js_path or "")),
+                    theme=design.theme,
+                )
+                await orch._publish(
+                    run_id,
+                    EventType.SLIDE_GENERATED,
+                    {
+                        "slide_no": slide_no,
+                        "status": artifact.status,
+                        "html_preview": preview.get("html_preview"),
+                        "preview_width": preview.get("width", 1280),
+                        "preview_height": preview.get("height", 720),
+                        "is_final": True,
+                    },
+                )
 
         results = await asyncio.gather(
             *(generate_one(i, node) for i, node in enumerate(run.outline.nodes, start=1)),

@@ -193,6 +193,11 @@ class ConfirmOutlineRequest(BaseModel):
         return self
 
 
+class RegenerateSlideRequest(BaseModel):
+    instruction: str = Field(min_length=1)
+    preserve_style: bool = True
+
+
 class OutlineHistoryEntry(BaseModel):
     action: str
     approved: bool

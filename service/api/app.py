@@ -7,7 +7,13 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
-from ..models import ConfirmOutlineRequest, CreateRunRequest, PromptRunRequest, RunStatus
+from ..models import (
+    ConfirmOutlineRequest,
+    CreateRunRequest,
+    PromptRunRequest,
+    RegenerateSlideRequest,
+    RunStatus,
+)
 from ..run import RunOrchestrator, build_orchestrator
 
 
@@ -102,6 +108,23 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
         if preview is None:
             raise HTTPException(status_code=404, detail="run not found")
         return preview
+
+    @app.post("/v1/ppt/runs/{run_id}/slides/{slide_no}/regenerate")
+    async def regenerate_slide(run_id: str, slide_no: int, req: RegenerateSlideRequest):
+        if slide_no < 1:
+            raise HTTPException(status_code=400, detail="slide_no must be >= 1")
+        try:
+            result = await ctx.orchestrator.regenerate_single_slide(
+                run_id=run_id,
+                slide_no=slide_no,
+                instruction=req.instruction,
+                preserve_style=req.preserve_style,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return result
 
     @app.get("/v1/ppt/runs/{run_id}/artifacts/pptx")
     async def download_pptx(run_id: str):
