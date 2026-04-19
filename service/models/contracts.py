@@ -249,6 +249,8 @@ class RunDetailResponse(BaseModel):
     run_id: str
     trace_id: str
     status: RunStatus
+    pptx_ready: bool = False
+    artifacts: dict[str, Any] = Field(default_factory=dict)
     outline: Optional[OutlineDocument]
     outline_history: list[OutlineHistoryEntry]
     slides: list[SlideArtifact]

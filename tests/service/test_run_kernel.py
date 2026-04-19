@@ -145,6 +145,32 @@ def test_kernel_fail_and_finalize_should_update_terminal_state(tmp_path: Path) -
     asyncio.run(scenario())
 
 
+def test_kernel_get_run_detail_should_expose_pptx_readiness(tmp_path: Path) -> None:
+    orch = _make_orchestrator(tmp_path)
+    kernel = orch._kernel
+    pptx_path = tmp_path / "artifacts" / "ready.pptx"
+    pptx_path.parent.mkdir(parents=True, exist_ok=True)
+    pptx_path.write_bytes(b"pptx")
+    run = RunRecord(
+        run_id="r-ready",
+        trace_id="t-ready",
+        status=RunStatus.COMPILING,
+        input=CreateRunRequest(topic="Kernel Ready", project_id="p4"),
+        artifact_dir=str(tmp_path / "artifacts" / "r-ready"),
+        pptx_path=str(pptx_path),
+    )
+    asyncio.run(orch.store.add_run(run))
+
+    async def scenario() -> None:
+        detail = await kernel.get_run_detail("r-ready")
+        assert detail is not None
+        assert detail.pptx_ready is True
+        assert detail.artifacts["pptx"]["path"] == str(pptx_path)
+        assert detail.artifacts["pptx"]["downloadable"] is True
+
+    asyncio.run(scenario())
+
+
 def test_recover_interrupted_runs_marks_inflight_runs_failed(tmp_path: Path) -> None:
     orch = _make_orchestrator(tmp_path)
     inflight = RunRecord(

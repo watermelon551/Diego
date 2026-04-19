@@ -131,8 +131,6 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
         run = await ctx.orchestrator.store.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
-        if run.status != RunStatus.SUCCEEDED:
-            raise HTTPException(status_code=409, detail="run is not in succeeded state")
         pptx_path = Path(str(run.pptx_path or "").strip())
         if not str(pptx_path):
             raise HTTPException(status_code=404, detail="pptx artifact not found")

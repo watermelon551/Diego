@@ -106,6 +106,41 @@ def test_confirm_gate_and_scratch_success_flow(tmp_path: Path) -> None:
     assert all(item.get("js_path") and Path(item["js_path"]).exists() for item in final_data["slides"])
     assert final_data["qa_report"]["passed"] is True
 
+
+def test_run_detail_and_download_should_expose_pptx_before_succeeded_guard(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
+    client.__enter__()
+
+    pptx_path = tmp_path / "artifacts" / "manual-ready.pptx"
+    pptx_path.parent.mkdir(parents=True, exist_ok=True)
+    pptx_path.write_bytes(b"manual-pptx")
+    run = RunRecord(
+        run_id="r-manual-ready",
+        trace_id="t-manual-ready",
+        status=RunStatus.COMPILING,
+        input=CreateRunRequest(topic="Manual Ready", project_id="p-manual"),
+        artifact_dir=str(tmp_path / "artifacts" / "r-manual-ready"),
+        pptx_path=str(pptx_path),
+    )
+    asyncio.run(orch.store.add_run(run))
+
+    detail = client.get("/v1/ppt/runs/r-manual-ready")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["pptx_ready"] is True
+    assert payload["artifacts"]["pptx"]["downloadable"] is True
+
+    download = client.get("/v1/ppt/runs/r-manual-ready/artifacts/pptx")
+    assert download.status_code == 200
+    assert download.content == b"manual-pptx"
+
 def test_scratch_compile_can_use_pagevra_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResponse:
         def __init__(self, status_code: int, payload: dict | None = None, content: bytes = b"") -> None:

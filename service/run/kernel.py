@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -54,10 +55,22 @@ class RunKernel:
         run = await self.orch.store.get_run(run_id)
         if run is None:
             return None
+        pptx_path = str(run.pptx_path or "").strip()
+        pptx_ready = bool(
+            pptx_path and Path(pptx_path).exists() and Path(pptx_path).is_file()
+        )
+        artifacts: dict[str, Any] = {}
+        if pptx_path:
+            artifacts["pptx"] = {
+                "path": pptx_path,
+                "downloadable": pptx_ready,
+            }
         return RunDetailResponse(
             run_id=run.run_id,
             trace_id=run.trace_id,
             status=run.status,
+            pptx_ready=pptx_ready,
+            artifacts=artifacts,
             outline=run.outline,
             outline_history=run.outline_history,
             slides=run.slides,
