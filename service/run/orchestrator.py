@@ -474,6 +474,7 @@ class RunOrchestrator:
                 "slide_no": slide_no,
                 "status": status,
                 "html_preview": preview.get("html_preview"),
+                "image_url": preview.get("image_url"),
                 "preview_width": preview.get("width", 1280),
                 "preview_height": preview.get("height", 720),
                 "is_final": True,

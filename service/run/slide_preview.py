@@ -816,6 +816,16 @@ async def render_slide_via_pagevra(
         reason = str(body.get("state_reason") or body.get("error") or "page_render_failed").strip()
         raise RuntimeError(f"pagevra preview render failed: {reason}")
 
+    image_url = str(body.get("preview_image_data_url") or "")
+    if not image_url.strip():
+        preview_image_data_urls = body.get("preview_image_data_urls")
+        if isinstance(preview_image_data_urls, list):
+            first_image = next(
+                (str(item).strip() for item in preview_image_data_urls if str(item or "").strip()),
+                "",
+            )
+            image_url = first_image
+
     html_preview = str(body.get("html_preview") or "")
     if not html_preview.strip():
         html_previews = body.get("html_previews")
@@ -825,12 +835,13 @@ async def render_slide_via_pagevra(
                 "",
             )
             html_preview = first_preview
-    if not html_preview.strip():
-        raise RuntimeError("pagevra preview render returned empty html_preview")
+    if not html_preview.strip() and not image_url.strip():
+        raise RuntimeError("pagevra preview render returned neither html_preview nor preview_image_data_url")
 
     warnings = body.get("warnings") if isinstance(body.get("warnings"), list) else []
     return {
-        "html_preview": html_preview,
+        "html_preview": html_preview or None,
+        "image_url": image_url or None,
         "width": _VIEWPORT_WIDTH_PX,
         "height": _VIEWPORT_HEIGHT_PX,
         "warnings": warnings,
