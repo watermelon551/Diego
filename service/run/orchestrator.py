@@ -32,6 +32,7 @@ from ..rag import StratumindSearchClient, StratumindSearchError, build_rag_conte
 from ..models import (
     ConfirmOutlineRequest,
     CreateRunRequest,
+    EditableSlideScene,
     EventType,
     GenerationMode,
     OutlineNode,
@@ -41,6 +42,8 @@ from ..models import (
     RunRecord,
     RunStatus,
     RunSummaryResponse,
+    SaveSlideSceneRequest,
+    SaveSlideSceneResponse,
     SlideArtifact,
     SlidePageType,
     TemplateDetailResponse,
@@ -81,6 +84,14 @@ from .engines import AssetResolver, CompileEngine, QualityEngine, ReportingEngin
 from .flows import OutlineFlowService, ScratchFlowService, TemplateFlowService
 from .kernel import RunKernel
 from .runtime_support import LegacyCompileServiceAdapter, RuntimeSupport
+from .slide_scene import (
+    SlideSceneConflictError,
+    SlideSceneNodeNotFoundError,
+    SlideSceneUnsupportedError,
+    apply_scene_operations,
+    build_slide_scene,
+    scene_outline_values,
+)
 from .slide_preview import render_slide_via_pagevra
 from .stages import FinalizeQualityStage, OutlineStage, ScratchGenerationStage, TemplateGenerationStage
 
@@ -325,19 +336,7 @@ class RunOrchestrator:
         if run is None:
             return None
 
-        slide = next(
-            (
-                item
-                for item in run.slides
-                if int(getattr(item, "slide_no", 0) or 0) == slide_no
-            ),
-            None,
-        )
-        if slide is None:
-            raise ValueError("slide preview not ready")
-        slide_js_path = Path(str(getattr(slide, "js_path", "") or "").strip())
-        if not str(slide_js_path) or not slide_js_path.exists() or not slide_js_path.is_file():
-            raise FileNotFoundError("slide js artifact missing")
+        slide, slide_js_path = self._require_slide_js_artifact(run=run, slide_no=slide_no, not_ready_message="slide preview not ready")
 
         preview = await self.render_slide_preview_or_fallback(
             run_id=run_id,
@@ -345,15 +344,119 @@ class RunOrchestrator:
             slide_js_path=slide_js_path,
             theme=self._resolve_run_design(run).theme,
         )
-        page_index = slide_no - 1
-        return {
-            "run_id": run_id,
-            "slide_no": slide_no,
-            "page_index": page_index,
-            "slide_id": f"{run_id}-slide-{page_index}",
-            "status": "ready",
-            **preview,
-        }
+        return self._build_slide_preview_payload(run_id=run_id, slide_no=slide_no, preview=preview)
+
+    async def get_slide_scene(self, run_id: str, slide_no: int) -> EditableSlideScene | None:
+        if slide_no < 1:
+            raise ValueError("slide_no must be >= 1")
+        run = await self.store.get_run(run_id)
+        if run is None:
+            return None
+        _, slide_js_path = self._require_slide_js_artifact(run=run, slide_no=slide_no, not_ready_message="slide scene not ready")
+        js_code = slide_js_path.read_text(encoding="utf-8")
+        parsed = build_slide_scene(js_code=js_code, run_id=run_id, slide_no=slide_no)
+        return parsed.scene
+
+    async def save_slide_scene(
+        self,
+        *,
+        run_id: str,
+        slide_no: int,
+        req: SaveSlideSceneRequest,
+    ) -> SaveSlideSceneResponse | None:
+        if slide_no < 1:
+            raise ValueError("slide_no must be >= 1")
+        run = await self.store.get_run(run_id)
+        if run is None:
+            return None
+        if run.status != RunStatus.SUCCEEDED:
+            raise ValueError("run must be in SUCCEEDED state")
+        slide, slide_js_path = self._require_slide_js_artifact(run=run, slide_no=slide_no, not_ready_message="slide scene not ready")
+        js_code = slide_js_path.read_text(encoding="utf-8")
+        parsed_scene = build_slide_scene(js_code=js_code, run_id=run_id, slide_no=slide_no)
+        next_js_code, next_scene = apply_scene_operations(
+            js_code=js_code,
+            parsed_scene=parsed_scene,
+            scene_version=req.scene_version,
+            operations=[item.model_dump() for item in req.operations],
+            run_id=run_id,
+            slide_no=slide_no,
+        )
+        if next_scene.scene.readonly:
+            raise SlideSceneUnsupportedError(next_scene.scene.readonly_reason or "slide is read-only")
+
+        slide_js_path.write_text(next_js_code, encoding="utf-8")
+        design = self._resolve_run_design(run)
+        compile_start = time.perf_counter()
+        try:
+            preview = await self.render_slide_preview_or_fallback(
+                run_id=run_id,
+                slide_no=slide_no,
+                slide_js_path=slide_js_path,
+                theme=design.theme,
+            )
+            compile_result = await self._recompile_run_after_scene_save(run=run)
+        except Exception:
+            slide_js_path.write_text(js_code, encoding="utf-8")
+            raise
+
+        updated_artifact = SlideArtifact(
+            slide_no=slide.slide_no,
+            js_path=str(slide_js_path),
+            js_code=next_js_code,
+            status=str(getattr(slide, "status", "ok") or "ok"),
+            citations=list(getattr(slide, "citations", []) or []),
+        )
+        current_outline_node = run.outline.nodes[slide_no - 1] if run.outline is not None and slide_no <= len(run.outline.nodes) else None
+        updated_outline_node = (
+            self._scene_to_outline_node(existing=current_outline_node, scene=next_scene.scene)
+            if current_outline_node is not None
+            else None
+        )
+
+        def apply_save(r: RunRecord) -> None:
+            r.status = RunStatus.SUCCEEDED
+            r.stage_timings.compile_ms = int((time.perf_counter() - compile_start) * 1000)
+            if updated_outline_node is not None and r.outline is not None and slide_no <= len(r.outline.nodes):
+                r.outline.nodes[slide_no - 1] = updated_outline_node
+            for index, existing in enumerate(r.slides):
+                if int(getattr(existing, "slide_no", 0) or 0) == slide_no:
+                    r.slides[index] = updated_artifact
+                    break
+            r.compile_js_path = str(compile_result.get("compile_js_path") or r.compile_js_path or "")
+            r.pptx_path = str(compile_result.get("pptx_path") or r.pptx_path or "")
+            provider = compile_result.get("provider")
+            if provider is not None:
+                r.compile_provider = str(provider)
+            if "fallback_used" in compile_result:
+                r.compile_fallback_used = bool(compile_result.get("fallback_used"))
+
+        await self.store.update_run(run_id, apply_save)
+        await self._publish_slide_generated_preview(
+            run_id=run_id,
+            slide_no=slide_no,
+            status=updated_artifact.status,
+            preview=preview,
+        )
+        await self._publish(
+            run_id,
+            EventType.COMPILE_COMPLETED,
+            {
+                "file": str(compile_result.get("pptx_path") or ""),
+                "provider": compile_result.get("provider", ""),
+                "fallback_used": bool(compile_result.get("fallback_used")),
+                "reason": "scene_save",
+            },
+        )
+        return SaveSlideSceneResponse(
+            run_id=run_id,
+            slide_id=next_scene.scene.slide_id,
+            slide_index=next_scene.scene.slide_index,
+            slide_no=slide_no,
+            status="ready",
+            scene=next_scene.scene,
+            preview=self._build_slide_preview_payload(run_id=run_id, slide_no=slide_no, preview=preview),
+        )
 
     async def render_slide_preview_or_fallback(
         self,
@@ -376,6 +479,72 @@ class RunOrchestrator:
             timeout_sec=float(getattr(self.settings, "pagevra_preview_timeout_sec", 30.0) or 30.0),
             provider_run_id=run_id,
         )
+
+    def _require_slide_js_artifact(
+        self,
+        *,
+        run: RunRecord,
+        slide_no: int,
+        not_ready_message: str,
+    ) -> tuple[SlideArtifact, Path]:
+        slide = next(
+            (
+                item
+                for item in run.slides
+                if int(getattr(item, "slide_no", 0) or 0) == slide_no
+            ),
+            None,
+        )
+        if slide is None:
+            raise ValueError(not_ready_message)
+        slide_js_path = Path(str(getattr(slide, "js_path", "") or "").strip())
+        if not str(slide_js_path) or not slide_js_path.exists() or not slide_js_path.is_file():
+            raise FileNotFoundError("slide js artifact missing")
+        return slide, slide_js_path
+
+    def _build_slide_preview_payload(self, *, run_id: str, slide_no: int, preview: dict[str, Any]) -> dict[str, Any]:
+        page_index = slide_no - 1
+        return {
+            "run_id": run_id,
+            "slide_no": slide_no,
+            "page_index": page_index,
+            "slide_id": f"{run_id}-slide-{page_index}",
+            "status": "ready",
+            **preview,
+        }
+
+    def _scene_to_outline_node(self, *, existing: OutlineNode | None, scene: EditableSlideScene) -> OutlineNode | None:
+        if existing is None:
+            return None
+        title, bullets = scene_outline_values(scene)
+        return OutlineNode(
+            title=title or existing.title,
+            bullets=bullets if bullets is not None else list(existing.bullets),
+            page_type=existing.page_type,
+            layout_hint=existing.layout_hint,
+        )
+
+    async def _recompile_run_after_scene_save(self, *, run: RunRecord) -> dict[str, Any]:
+        if run.input.generation_mode == GenerationMode.TEMPLATE:
+            _, _, _, _, _, template_slides_dir, template_compile_js, template_compiled_pptx = self.template_engine.template_work_paths(Path(run.artifact_dir))
+            compiled = await self.template_engine.compile_template_js(template_slides_dir=template_slides_dir)
+            if not compiled:
+                raise RuntimeError("template scene save compile failed")
+            return {
+                "compile_js_path": str(template_compile_js),
+                "pptx_path": str(template_compiled_pptx),
+                "provider": "template_js",
+                "fallback_used": False,
+            }
+        compile_result = await self.compile_engine.compile_scratch_run(
+            run_id=run.run_id,
+            slides_dir=Path(run.artifact_dir) / "slides",
+            slide_count=len(run.slides),
+            theme=self._resolve_run_design(run).theme,
+        )
+        if not compile_result["ok"]:
+            raise RuntimeError(str(compile_result.get("reason") or "scene save recompile failed"))
+        return compile_result
 
     async def regenerate_single_slide(
         self,

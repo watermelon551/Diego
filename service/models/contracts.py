@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -196,6 +196,57 @@ class ConfirmOutlineRequest(BaseModel):
 class RegenerateSlideRequest(BaseModel):
     instruction: str = Field(min_length=1)
     preserve_style: bool = True
+
+
+class EditableSlideNodeBBox(BaseModel):
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class EditableSlideNode(BaseModel):
+    node_id: str = Field(min_length=1)
+    kind: Literal["text", "image"]
+    label: str = Field(min_length=1)
+    text: Optional[str] = None
+    src: Optional[str] = None
+    alt: Optional[str] = None
+    bbox: Optional[EditableSlideNodeBBox] = None
+    style: dict[str, Any] = Field(default_factory=dict)
+    edit_capabilities: list[str] = Field(default_factory=list)
+
+
+class EditableSlideScene(BaseModel):
+    run_id: str = Field(min_length=1)
+    slide_id: str = Field(min_length=1)
+    slide_index: int = Field(ge=0)
+    slide_no: int = Field(ge=1)
+    scene_version: str = Field(min_length=1)
+    nodes: list[EditableSlideNode] = Field(default_factory=list)
+    readonly: bool = False
+    readonly_reason: Optional[str] = None
+
+
+class SaveSlideSceneOperation(BaseModel):
+    op: Literal["replace_text", "replace_image"]
+    node_id: str = Field(min_length=1)
+    value: str
+
+
+class SaveSlideSceneRequest(BaseModel):
+    scene_version: str = Field(min_length=1)
+    operations: list[SaveSlideSceneOperation] = Field(default_factory=list, min_length=1)
+
+
+class SaveSlideSceneResponse(BaseModel):
+    run_id: str = Field(min_length=1)
+    slide_id: str = Field(min_length=1)
+    slide_index: int = Field(ge=0)
+    slide_no: int = Field(ge=1)
+    status: str = Field(default="ready")
+    scene: EditableSlideScene
+    preview: dict[str, Any] = Field(default_factory=dict)
 
 
 class OutlineHistoryEntry(BaseModel):

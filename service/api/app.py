@@ -10,11 +10,18 @@ from fastapi.responses import FileResponse, StreamingResponse
 from ..models import (
     ConfirmOutlineRequest,
     CreateRunRequest,
+    SaveSlideSceneRequest,
     PromptRunRequest,
     RegenerateSlideRequest,
     RunStatus,
 )
-from ..run import RunOrchestrator, build_orchestrator
+from ..run import (
+    RunOrchestrator,
+    SlideSceneConflictError,
+    SlideSceneNodeNotFoundError,
+    SlideSceneUnsupportedError,
+    build_orchestrator,
+)
 
 
 class AppContext:
@@ -108,6 +115,38 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
         if preview is None:
             raise HTTPException(status_code=404, detail="run not found")
         return preview
+
+    @app.get("/v1/ppt/runs/{run_id}/slides/{slide_no}/scene")
+    async def get_slide_scene(run_id: str, slide_no: int):
+        if slide_no < 1:
+            raise HTTPException(status_code=400, detail="slide_no must be >= 1")
+        try:
+            scene = await ctx.orchestrator.get_slide_scene(run_id, slide_no)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if scene is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return scene
+
+    @app.post("/v1/ppt/runs/{run_id}/slides/{slide_no}/scene/save")
+    async def save_slide_scene(run_id: str, slide_no: int, req: SaveSlideSceneRequest):
+        if slide_no < 1:
+            raise HTTPException(status_code=400, detail="slide_no must be >= 1")
+        try:
+            result = await ctx.orchestrator.save_slide_scene(run_id=run_id, slide_no=slide_no, req=req)
+        except SlideSceneConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (SlideSceneUnsupportedError, SlideSceneNodeNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return result
 
     @app.post("/v1/ppt/runs/{run_id}/slides/{slide_no}/regenerate")
     async def regenerate_slide(run_id: str, slide_no: int, req: RegenerateSlideRequest):
