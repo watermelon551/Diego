@@ -28,7 +28,11 @@ from ..llm import (
     OutlineFormatError,
     SlideSpec,
 )
-from ..rag import StratumindSearchClient, StratumindSearchError, build_rag_context_snippets
+from ..rag import (
+    StratumindSearchClient,
+    StratumindSearchError,
+    build_rag_context_snippets,
+)
 from ..models import (
     ConfirmOutlineRequest,
     CreateRunRequest,
@@ -51,7 +55,16 @@ from ..models import (
     TemplateUploadResponse,
     VisualPolicy,
 )
-from ..design.skill_profile import PALETTES, FONT_PAIRS, STYLE_RECIPES, DesignProfile, StyleRecipe, allowed_layouts_for, choose_design_profile, enforce_layout_variety
+from ..design.skill_profile import (
+    PALETTES,
+    FONT_PAIRS,
+    STYLE_RECIPES,
+    DesignProfile,
+    StyleRecipe,
+    allowed_layouts_for,
+    choose_design_profile,
+    enforce_layout_variety,
+)
 from ..design.style_catalog import (
     STYLE_PRESET_AUTO,
     get_style_dna_by_id,
@@ -80,7 +93,14 @@ from ..slides.js_asset_contract import (
     extract_planned_asset_paths,
     has_image_placeholder_text,
 )
-from .engines import AssetResolver, CompileEngine, QualityEngine, ReportingEngine, ScratchSlideEngine, TemplateEngine
+from .engines import (
+    AssetResolver,
+    CompileEngine,
+    QualityEngine,
+    ReportingEngine,
+    ScratchSlideEngine,
+    TemplateEngine,
+)
 from .flows import OutlineFlowService, ScratchFlowService, TemplateFlowService
 from .kernel import RunKernel
 from .runtime_support import LegacyCompileServiceAdapter, RuntimeSupport
@@ -93,7 +113,12 @@ from .slide_scene import (
     scene_outline_values,
 )
 from .slide_preview import render_slide_via_pagevra
-from .stages import FinalizeQualityStage, OutlineStage, ScratchGenerationStage, TemplateGenerationStage
+from .stages import (
+    FinalizeQualityStage,
+    OutlineStage,
+    ScratchGenerationStage,
+    TemplateGenerationStage,
+)
 
 
 class RunOrchestrator:
@@ -122,32 +147,74 @@ class RunOrchestrator:
         self.slide_retry = max(1, settings.slide_retry)
         self.llm_max_retries = max(1, settings.llm_max_retries)
         self.outline_timeout_retries = max(0, settings.outline_timeout_retries)
-        self.outline_timeout_backoff_sec = max(0.0, settings.outline_timeout_backoff_sec)
+        self.outline_timeout_backoff_sec = max(
+            0.0, settings.outline_timeout_backoff_sec
+        )
         self.repair_rounds = max(1, settings.repair_rounds)
         self.max_slide_repair_rounds = max(1, settings.max_slide_repair_rounds)
-        self.llm_request_concurrency = max(1, int(getattr(settings, "llm_request_concurrency", 6)))
-        self.slide_candidate_workers = max(1, min(5, int(getattr(settings, "slide_candidate_workers", 3))))
-        self.llm_timeout_jitter_sec = max(0.0, float(getattr(settings, "llm_timeout_jitter_sec", 0.2)))
-        self.slide_fatal_early_stop_rounds = max(1, int(getattr(settings, "slide_fatal_early_stop_rounds", 2)))
+        self.llm_request_concurrency = max(
+            1, int(getattr(settings, "llm_request_concurrency", 6))
+        )
+        self.slide_candidate_workers = max(
+            1, min(5, int(getattr(settings, "slide_candidate_workers", 3)))
+        )
+        self.llm_timeout_jitter_sec = max(
+            0.0, float(getattr(settings, "llm_timeout_jitter_sec", 0.2))
+        )
+        self.slide_fatal_early_stop_rounds = max(
+            1, int(getattr(settings, "slide_fatal_early_stop_rounds", 2))
+        )
         self.run_max_llm_calls = max(0, int(getattr(settings, "run_max_llm_calls", 0)))
-        self.keep_failed_candidate_js = bool(getattr(settings, "keep_failed_candidate_js", True))
-        self.slide_auto_canonicalize = bool(getattr(settings, "slide_auto_canonicalize", True))
-        self.slide_diag_max_js_lines = max(40, int(getattr(settings, "slide_diag_max_js_lines", 260)))
-        self.slide_diag_max_stderr_chars = max(2000, int(getattr(settings, "slide_diag_max_stderr_chars", 12000)))
-        self.preview_qa_concurrency = max(1, int(getattr(settings, "preview_qa_concurrency", self.slide_concurrency)))
-        self.asset_fetch_concurrency = max(1, int(getattr(settings, "asset_fetch_concurrency", 2)))
-        self.llm_concurrency_build = max(1, int(getattr(settings, "llm_concurrency_build", 3)))
-        self.llm_concurrency_evaluate = max(1, int(getattr(settings, "llm_concurrency_evaluate", 2)))
-        self.llm_concurrency_repair = max(1, int(getattr(settings, "llm_concurrency_repair", 1)))
-        self.timeout_streak_degrade_threshold = max(1, int(getattr(settings, "timeout_streak_degrade_threshold", 3)))
-        self.timeout_streak_recover_window_sec = max(0.0, float(getattr(settings, "timeout_streak_recover_window_sec", 120.0)))
-        self._llm_request_gate = threading.BoundedSemaphore(self.llm_request_concurrency)
-        self._llm_phase_build_gate = threading.BoundedSemaphore(min(self.llm_request_concurrency, self.llm_concurrency_build))
-        self._llm_phase_evaluate_gate = threading.BoundedSemaphore(min(self.llm_request_concurrency, self.llm_concurrency_evaluate))
-        self._llm_phase_repair_gate = threading.BoundedSemaphore(min(self.llm_request_concurrency, self.llm_concurrency_repair))
+        self.keep_failed_candidate_js = bool(
+            getattr(settings, "keep_failed_candidate_js", True)
+        )
+        self.slide_auto_canonicalize = bool(
+            getattr(settings, "slide_auto_canonicalize", True)
+        )
+        self.slide_diag_max_js_lines = max(
+            40, int(getattr(settings, "slide_diag_max_js_lines", 260))
+        )
+        self.slide_diag_max_stderr_chars = max(
+            2000, int(getattr(settings, "slide_diag_max_stderr_chars", 12000))
+        )
+        self.preview_qa_concurrency = max(
+            1, int(getattr(settings, "preview_qa_concurrency", self.slide_concurrency))
+        )
+        self.asset_fetch_concurrency = max(
+            1, int(getattr(settings, "asset_fetch_concurrency", 2))
+        )
+        self.llm_concurrency_build = max(
+            1, int(getattr(settings, "llm_concurrency_build", 3))
+        )
+        self.llm_concurrency_evaluate = max(
+            1, int(getattr(settings, "llm_concurrency_evaluate", 2))
+        )
+        self.llm_concurrency_repair = max(
+            1, int(getattr(settings, "llm_concurrency_repair", 1))
+        )
+        self.timeout_streak_degrade_threshold = max(
+            1, int(getattr(settings, "timeout_streak_degrade_threshold", 3))
+        )
+        self.timeout_streak_recover_window_sec = max(
+            0.0, float(getattr(settings, "timeout_streak_recover_window_sec", 120.0))
+        )
+        self._llm_request_gate = threading.BoundedSemaphore(
+            self.llm_request_concurrency
+        )
+        self._llm_phase_build_gate = threading.BoundedSemaphore(
+            min(self.llm_request_concurrency, self.llm_concurrency_build)
+        )
+        self._llm_phase_evaluate_gate = threading.BoundedSemaphore(
+            min(self.llm_request_concurrency, self.llm_concurrency_evaluate)
+        )
+        self._llm_phase_repair_gate = threading.BoundedSemaphore(
+            min(self.llm_request_concurrency, self.llm_concurrency_repair)
+        )
         self._llm_pressure_gate = threading.BoundedSemaphore(1)
         self._preview_qa_gate = threading.BoundedSemaphore(self.preview_qa_concurrency)
-        self._asset_fetch_gate = threading.BoundedSemaphore(self.asset_fetch_concurrency)
+        self._asset_fetch_gate = threading.BoundedSemaphore(
+            self.asset_fetch_concurrency
+        )
         self._timeout_lock = threading.Lock()
         self._timeout_streak = 0
         self._last_timeout_monotonic = 0.0
@@ -187,7 +254,9 @@ class RunOrchestrator:
         try:
             return getattr(self._support, name)
         except AttributeError as exc:
-            raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}") from exc
+            raise AttributeError(
+                f"{type(self).__name__!s} has no attribute {name!r}"
+            ) from exc
 
     def _use_agentic_engine(self) -> bool:
         return self.settings.generation_engine == "agentic_v2"
@@ -206,21 +275,37 @@ class RunOrchestrator:
             "PENTAGON",
             "PIE",
         ]
-        default_charts = ["BAR", "LINE", "PIE", "DOUGHNUT", "SCATTER", "BUBBLE", "RADAR"]
+        default_charts = [
+            "BAR",
+            "LINE",
+            "PIE",
+            "DOUGHNUT",
+            "SCATTER",
+            "BUBBLE",
+            "RADAR",
+        ]
         shapes = list(default_shapes)
         charts = list(default_charts)
         types_path = Path.cwd() / "node_modules" / "pptxgenjs" / "types" / "index.d.ts"
         try:
             if types_path.exists():
                 text = types_path.read_text(encoding="utf-8", errors="ignore")
-                shapes_block = re.search(r"shapes\s*:\s*\{(?P<body>[\s\S]{0,9000}?)\}\s*;", text)
+                shapes_block = re.search(
+                    r"shapes\s*:\s*\{(?P<body>[\s\S]{0,9000}?)\}\s*;", text
+                )
                 if shapes_block:
-                    parsed = re.findall(r"\b([A-Z][A-Z0-9_]+)\s*:", shapes_block.group("body"))
+                    parsed = re.findall(
+                        r"\b([A-Z][A-Z0-9_]+)\s*:", shapes_block.group("body")
+                    )
                     if parsed:
                         shapes = self._dedupe_preserve_order(parsed)
-                chart_block = re.search(r"ChartType[\s\S]{0,3000}\{(?P<body>[\s\S]{0,5000}?)\}", text)
+                chart_block = re.search(
+                    r"ChartType[\s\S]{0,3000}\{(?P<body>[\s\S]{0,5000}?)\}", text
+                )
                 if chart_block:
-                    parsed = re.findall(r"\b([A-Z][A-Z0-9_]+)\s*:", chart_block.group("body"))
+                    parsed = re.findall(
+                        r"\b([A-Z][A-Z0-9_]+)\s*:", chart_block.group("body")
+                    )
                     if parsed:
                         charts = self._dedupe_preserve_order(parsed)
         except Exception:
@@ -251,6 +336,7 @@ class RunOrchestrator:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
+
             def runner() -> None:
                 asyncio.run(coro)
 
@@ -293,7 +379,9 @@ class RunOrchestrator:
             )
         return {"scanned": len(runs), "recovered": recovered}
 
-    async def upload_template(self, *, filename: str, content: bytes) -> TemplateUploadResponse:
+    async def upload_template(
+        self, *, filename: str, content: bytes
+    ) -> TemplateUploadResponse:
         template_id = str(uuid4())
         target_dir = self.templates_base / template_id
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -309,7 +397,9 @@ class RunOrchestrator:
         await self.store.add_template(record)
         return TemplateUploadResponse(template_id=template_id, filename=sanitized_name)
 
-    async def get_template_detail(self, template_id: str) -> TemplateDetailResponse | None:
+    async def get_template_detail(
+        self, template_id: str
+    ) -> TemplateDetailResponse | None:
         record = await self.store.get_template(template_id)
         if record is None:
             return None
@@ -329,14 +419,18 @@ class RunOrchestrator:
     async def build_compile_bundle(self, run_id: str) -> dict[str, Any]:
         return await self.compile_engine.build_compile_bundle(run_id)
 
-    async def get_slide_preview(self, run_id: str, slide_no: int) -> dict[str, Any] | None:
+    async def get_slide_preview(
+        self, run_id: str, slide_no: int
+    ) -> dict[str, Any] | None:
         if slide_no < 1:
             raise ValueError("slide_no must be >= 1")
         run = await self.store.get_run(run_id)
         if run is None:
             return None
 
-        slide, slide_js_path = self._require_slide_js_artifact(run=run, slide_no=slide_no, not_ready_message="slide preview not ready")
+        slide, slide_js_path = self._require_slide_js_artifact(
+            run=run, slide_no=slide_no, not_ready_message="slide preview not ready"
+        )
 
         preview = await self.render_slide_preview_or_fallback(
             run_id=run_id,
@@ -344,18 +438,54 @@ class RunOrchestrator:
             slide_js_path=slide_js_path,
             theme=self._resolve_run_design(run).theme,
         )
-        return self._build_slide_preview_payload(run_id=run_id, slide_no=slide_no, preview=preview)
+        return self._build_slide_preview_payload(
+            run_id=run_id, slide_no=slide_no, preview=preview
+        )
 
-    async def get_slide_scene(self, run_id: str, slide_no: int) -> EditableSlideScene | None:
+    async def get_slide_scene(
+        self, run_id: str, slide_no: int
+    ) -> EditableSlideScene | None:
         if slide_no < 1:
             raise ValueError("slide_no must be >= 1")
         run = await self.store.get_run(run_id)
         if run is None:
             return None
-        _, slide_js_path = self._require_slide_js_artifact(run=run, slide_no=slide_no, not_ready_message="slide scene not ready")
+        _, slide_js_path = self._require_slide_js_artifact(
+            run=run, slide_no=slide_no, not_ready_message="slide scene not ready"
+        )
         js_code = slide_js_path.read_text(encoding="utf-8")
         parsed = build_slide_scene(js_code=js_code, run_id=run_id, slide_no=slide_no)
         return parsed.scene
+
+    async def get_slide_asset_path(
+        self, run_id: str, slide_no: int, asset_path: str
+    ) -> Path | None:
+        if slide_no < 1:
+            raise ValueError("slide_no must be >= 1")
+        requested_path = str(asset_path or "").strip()
+        if not requested_path:
+            raise ValueError("asset path is required")
+        if requested_path.startswith(("http://", "https://", "data:", "blob:")):
+            raise ValueError("asset path must reference a local slide asset")
+        run = await self.store.get_run(run_id)
+        if run is None:
+            return None
+        _, slide_js_path = self._require_slide_js_artifact(
+            run=run, slide_no=slide_no, not_ready_message="slide asset not ready"
+        )
+        candidate = Path(requested_path)
+        if not candidate.is_absolute():
+            candidate = (slide_js_path.parent / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        artifact_root = Path(str(run.artifact_dir or "").strip()).resolve()
+        try:
+            candidate.relative_to(artifact_root)
+        except ValueError as exc:
+            raise ValueError("asset path escapes run artifact root") from exc
+        if not candidate.exists() or not candidate.is_file():
+            raise FileNotFoundError("slide asset file missing")
+        return candidate
 
     async def save_slide_scene(
         self,
@@ -371,9 +501,13 @@ class RunOrchestrator:
             return None
         if run.status != RunStatus.SUCCEEDED:
             raise ValueError("run must be in SUCCEEDED state")
-        slide, slide_js_path = self._require_slide_js_artifact(run=run, slide_no=slide_no, not_ready_message="slide scene not ready")
+        slide, slide_js_path = self._require_slide_js_artifact(
+            run=run, slide_no=slide_no, not_ready_message="slide scene not ready"
+        )
         js_code = slide_js_path.read_text(encoding="utf-8")
-        parsed_scene = build_slide_scene(js_code=js_code, run_id=run_id, slide_no=slide_no)
+        parsed_scene = build_slide_scene(
+            js_code=js_code, run_id=run_id, slide_no=slide_no
+        )
         next_js_code, next_scene = apply_scene_operations(
             js_code=js_code,
             parsed_scene=parsed_scene,
@@ -383,7 +517,9 @@ class RunOrchestrator:
             slide_no=slide_no,
         )
         if next_scene.scene.readonly:
-            raise SlideSceneUnsupportedError(next_scene.scene.readonly_reason or "slide is read-only")
+            raise SlideSceneUnsupportedError(
+                next_scene.scene.readonly_reason or "slide is read-only"
+            )
 
         slide_js_path.write_text(next_js_code, encoding="utf-8")
         design = self._resolve_run_design(run)
@@ -407,23 +543,38 @@ class RunOrchestrator:
             status=str(getattr(slide, "status", "ok") or "ok"),
             citations=list(getattr(slide, "citations", []) or []),
         )
-        current_outline_node = run.outline.nodes[slide_no - 1] if run.outline is not None and slide_no <= len(run.outline.nodes) else None
+        current_outline_node = (
+            run.outline.nodes[slide_no - 1]
+            if run.outline is not None and slide_no <= len(run.outline.nodes)
+            else None
+        )
         updated_outline_node = (
-            self._scene_to_outline_node(existing=current_outline_node, scene=next_scene.scene)
+            self._scene_to_outline_node(
+                existing=current_outline_node, scene=next_scene.scene
+            )
             if current_outline_node is not None
             else None
         )
 
         def apply_save(r: RunRecord) -> None:
             r.status = RunStatus.SUCCEEDED
-            r.stage_timings.compile_ms = int((time.perf_counter() - compile_start) * 1000)
-            if updated_outline_node is not None and r.outline is not None and slide_no <= len(r.outline.nodes):
+            r.stage_timings.compile_ms = int(
+                (time.perf_counter() - compile_start) * 1000
+            )
+            r.render_version += 1
+            if (
+                updated_outline_node is not None
+                and r.outline is not None
+                and slide_no <= len(r.outline.nodes)
+            ):
                 r.outline.nodes[slide_no - 1] = updated_outline_node
             for index, existing in enumerate(r.slides):
                 if int(getattr(existing, "slide_no", 0) or 0) == slide_no:
                     r.slides[index] = updated_artifact
                     break
-            r.compile_js_path = str(compile_result.get("compile_js_path") or r.compile_js_path or "")
+            r.compile_js_path = str(
+                compile_result.get("compile_js_path") or r.compile_js_path or ""
+            )
             r.pptx_path = str(compile_result.get("pptx_path") or r.pptx_path or "")
             provider = compile_result.get("provider")
             if provider is not None:
@@ -431,7 +582,7 @@ class RunOrchestrator:
             if "fallback_used" in compile_result:
                 r.compile_fallback_used = bool(compile_result.get("fallback_used"))
 
-        await self.store.update_run(run_id, apply_save)
+        updated_run = await self.store.update_run(run_id, apply_save)
         await self._publish_slide_generated_preview(
             run_id=run_id,
             slide_no=slide_no,
@@ -453,9 +604,12 @@ class RunOrchestrator:
             slide_id=next_scene.scene.slide_id,
             slide_index=next_scene.scene.slide_index,
             slide_no=slide_no,
+            render_version=int(getattr(updated_run, "render_version", 0) or 0),
             status="ready",
             scene=next_scene.scene,
-            preview=self._build_slide_preview_payload(run_id=run_id, slide_no=slide_no, preview=preview),
+            preview=self._build_slide_preview_payload(
+                run_id=run_id, slide_no=slide_no, preview=preview
+            ),
         )
 
     async def render_slide_preview_or_fallback(
@@ -467,16 +621,26 @@ class RunOrchestrator:
         theme: dict[str, Any],
     ) -> dict[str, Any]:
         if not bool(getattr(self.settings, "pagevra_preview_enabled", True)):
-            raise RuntimeError("PAGEVRA_PREVIEW_ENABLED must be true for PPT SVG preview compile")
-        pagevra_base_url = str(getattr(self.settings, "pagevra_base_url", "") or "").strip().rstrip("/")
+            raise RuntimeError(
+                "PAGEVRA_PREVIEW_ENABLED must be true for PPT SVG preview compile"
+            )
+        pagevra_base_url = (
+            str(getattr(self.settings, "pagevra_base_url", "") or "")
+            .strip()
+            .rstrip("/")
+        )
         if not pagevra_base_url:
-            raise RuntimeError("PAGEVRA_BASE_URL is required when PAGEVRA_PREVIEW_ENABLED=true")
+            raise RuntimeError(
+                "PAGEVRA_BASE_URL is required when PAGEVRA_PREVIEW_ENABLED=true"
+            )
         return await render_slide_via_pagevra(
             slide_js_path=slide_js_path,
             theme=theme,
             slide_no=slide_no,
             pagevra_base_url=pagevra_base_url,
-            timeout_sec=float(getattr(self.settings, "pagevra_preview_timeout_sec", 30.0) or 30.0),
+            timeout_sec=float(
+                getattr(self.settings, "pagevra_preview_timeout_sec", 30.0) or 30.0
+            ),
             provider_run_id=run_id,
         )
 
@@ -498,11 +662,17 @@ class RunOrchestrator:
         if slide is None:
             raise ValueError(not_ready_message)
         slide_js_path = Path(str(getattr(slide, "js_path", "") or "").strip())
-        if not str(slide_js_path) or not slide_js_path.exists() or not slide_js_path.is_file():
+        if (
+            not str(slide_js_path)
+            or not slide_js_path.exists()
+            or not slide_js_path.is_file()
+        ):
             raise FileNotFoundError("slide js artifact missing")
         return slide, slide_js_path
 
-    def _build_slide_preview_payload(self, *, run_id: str, slide_no: int, preview: dict[str, Any]) -> dict[str, Any]:
+    def _build_slide_preview_payload(
+        self, *, run_id: str, slide_no: int, preview: dict[str, Any]
+    ) -> dict[str, Any]:
         page_index = slide_no - 1
         return {
             "run_id": run_id,
@@ -513,7 +683,9 @@ class RunOrchestrator:
             **preview,
         }
 
-    def _scene_to_outline_node(self, *, existing: OutlineNode | None, scene: EditableSlideScene) -> OutlineNode | None:
+    def _scene_to_outline_node(
+        self, *, existing: OutlineNode | None, scene: EditableSlideScene
+    ) -> OutlineNode | None:
         if existing is None:
             return None
         title, bullets = scene_outline_values(scene)
@@ -524,10 +696,23 @@ class RunOrchestrator:
             layout_hint=existing.layout_hint,
         )
 
-    async def _recompile_run_after_scene_save(self, *, run: RunRecord) -> dict[str, Any]:
+    async def _recompile_run_after_scene_save(
+        self, *, run: RunRecord
+    ) -> dict[str, Any]:
         if run.input.generation_mode == GenerationMode.TEMPLATE:
-            _, _, _, _, _, template_slides_dir, template_compile_js, template_compiled_pptx = self.template_engine.template_work_paths(Path(run.artifact_dir))
-            compiled = await self.template_engine.compile_template_js(template_slides_dir=template_slides_dir)
+            (
+                _,
+                _,
+                _,
+                _,
+                _,
+                template_slides_dir,
+                template_compile_js,
+                template_compiled_pptx,
+            ) = self.template_engine.template_work_paths(Path(run.artifact_dir))
+            compiled = await self.template_engine.compile_template_js(
+                template_slides_dir=template_slides_dir
+            )
             if not compiled:
                 raise RuntimeError("template scene save compile failed")
             return {
@@ -543,7 +728,9 @@ class RunOrchestrator:
             theme=self._resolve_run_design(run).theme,
         )
         if not compile_result["ok"]:
-            raise RuntimeError(str(compile_result.get("reason") or "scene save recompile failed"))
+            raise RuntimeError(
+                str(compile_result.get("reason") or "scene save recompile failed")
+            )
         return compile_result
 
     async def regenerate_single_slide(
@@ -553,6 +740,7 @@ class RunOrchestrator:
         slide_no: int,
         instruction: str,
         preserve_style: bool,
+        expected_render_version: int | None = None,
     ) -> RunSummaryResponse | None:
         if slide_no < 1:
             raise ValueError("slide_no must be >= 1")
@@ -561,14 +749,26 @@ class RunOrchestrator:
             return None
         if run.status != RunStatus.SUCCEEDED:
             raise ValueError("run must be in SUCCEEDED state")
+        if (
+            expected_render_version is not None
+            and run.render_version != expected_render_version
+        ):
+            raise ValueError(
+                "render version conflict: "
+                f"expected {expected_render_version}, current {run.render_version}"
+            )
         if run.outline is None:
             raise ValueError("run outline missing")
         if slide_no > len(run.outline.nodes):
             raise ValueError("slide_no out of range")
-        if not any(int(getattr(item, "slide_no", 0) or 0) == slide_no for item in run.slides):
+        if not any(
+            int(getattr(item, "slide_no", 0) or 0) == slide_no for item in run.slides
+        ):
             raise ValueError("slide artifact missing")
 
-        await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SLIDES_GENERATING))
+        await self.store.update_run(
+            run_id, lambda r: setattr(r, "status", RunStatus.SLIDES_GENERATING)
+        )
         self._spawn(
             self._regenerate_single_slide_task(
                 run_id=run_id,
@@ -612,7 +812,9 @@ class RunOrchestrator:
                     run=run,
                 )
         except Exception as exc:
-            await self.store.update_run(run_id, lambda r: setattr(r, "status", RunStatus.SUCCEEDED))
+            await self.store.update_run(
+                run_id, lambda r: setattr(r, "status", RunStatus.SUCCEEDED)
+            )
             await self._publish(
                 run_id,
                 EventType.SLIDE_FAILED,
@@ -659,14 +861,20 @@ class RunOrchestrator:
         design = self._resolve_run_design(run)
         effective_template_style = self._resolved_template_style(run)
         node = run.outline.nodes[slide_no - 1]
-        slide = next(item for item in run.slides if int(getattr(item, "slide_no", 0) or 0) == slide_no)
+        slide = next(
+            item
+            for item in run.slides
+            if int(getattr(item, "slide_no", 0) or 0) == slide_no
+        )
         slide_path = Path(str(getattr(slide, "js_path", "") or "").strip())
         if not str(slide_path) or not slide_path.exists() or not slide_path.is_file():
             raise FileNotFoundError("slide js artifact missing")
 
         rule_violations = [instruction]
         if preserve_style:
-            rule_violations.append("Preserve the current visual style unless the instruction explicitly changes it.")
+            rule_violations.append(
+                "Preserve the current visual style unless the instruction explicitly changes it."
+            )
 
         if self._use_agentic_engine():
             js_code = await self._call_llm_with_timeout_retry(
@@ -706,7 +914,9 @@ class RunOrchestrator:
                         "slide_no": slide_no,
                         "round": 1,
                         "candidate": 1,
-                        "fixes": self._dedupe_preserve_order(normalize_fixes + auto_fixes)[:24],
+                        "fixes": self._dedupe_preserve_order(
+                            normalize_fixes + auto_fixes
+                        )[:24],
                     },
                 )
             js_code = self._apply_local_js_guardrails(
@@ -755,7 +965,9 @@ class RunOrchestrator:
                 ),
             )
 
-        citations = self._normalize_citations(reviewed.citations, run.input.rag_source_ids, slide_no)
+        citations = self._normalize_citations(
+            reviewed.citations, run.input.rag_source_ids, slide_no
+        )
         updated_node = OutlineNode(
             title=reviewed.title,
             bullets=list(reviewed.bullets),
@@ -827,15 +1039,20 @@ class RunOrchestrator:
             theme=design.theme,
         )
         if not compile_result["ok"]:
-            raise RuntimeError(str(compile_result.get("reason") or "scratch recompile failed"))
+            raise RuntimeError(
+                str(compile_result.get("reason") or "scratch recompile failed")
+            )
 
         def apply_compile(r: RunRecord) -> None:
             r.compile_js_path = str(compile_result["compile_js_path"])
             r.pptx_path = str(compile_result["pptx_path"])
             r.compile_provider = str(compile_result.get("provider") or "")
             r.compile_fallback_used = bool(compile_result.get("fallback_used"))
-            r.stage_timings.compile_ms = int((time.perf_counter() - compile_start) * 1000)
+            r.stage_timings.compile_ms = int(
+                (time.perf_counter() - compile_start) * 1000
+            )
             r.status = RunStatus.SUCCEEDED
+            r.render_version += 1
 
         await self.store.update_run(run_id, apply_compile)
         await self._publish(
@@ -844,7 +1061,9 @@ class RunOrchestrator:
             {
                 "file": str(compile_result["pptx_path"]),
                 "provider": compile_result.get("provider", "local"),
-                "requested_provider": compile_result.get("requested_provider", self.settings.compile_provider),
+                "requested_provider": compile_result.get(
+                    "requested_provider", self.settings.compile_provider
+                ),
                 "fallback_used": bool(compile_result.get("fallback_used")),
                 "fallback_from": compile_result.get("fallback_from"),
                 "reason": "single_slide_regenerate",
@@ -861,7 +1080,9 @@ class RunOrchestrator:
         run: RunRecord,
     ) -> None:
         artifact_dir = Path(run.artifact_dir)
-        _, _, _, unpacked, edited, template_slides_dir, template_compile_js, _ = self.template_engine.template_work_paths(artifact_dir)
+        _, _, _, unpacked, edited, template_slides_dir, template_compile_js, _ = (
+            self.template_engine.template_work_paths(artifact_dir)
+        )
         if not unpacked.exists():
             raise FileNotFoundError("template working directory missing")
         slide_files = self._rebuild_template_structure(
@@ -873,8 +1094,14 @@ class RunOrchestrator:
 
         design = self._resolve_run_design(run)
         node = run.outline.nodes[slide_no - 1]
-        slide = next(item for item in run.slides if int(getattr(item, "slide_no", 0) or 0) == slide_no)
-        citations = self._normalize_citations(slide.citations, run.input.rag_source_ids, slide_no)
+        slide = next(
+            item
+            for item in run.slides
+            if int(getattr(item, "slide_no", 0) or 0) == slide_no
+        )
+        citations = self._normalize_citations(
+            slide.citations, run.input.rag_source_ids, slide_no
+        )
         candidate = self.template_engine.extract_candidate_from_template_slide(
             unpacked=unpacked,
             slide_xml=slide_files[slide_no - 1],
@@ -883,7 +1110,9 @@ class RunOrchestrator:
         )
         rule_violations = [instruction]
         if preserve_style:
-            rule_violations.append("Preserve the current visual style unless the instruction explicitly changes it.")
+            rule_violations.append(
+                "Preserve the current visual style unless the instruction explicitly changes it."
+            )
         reviewed = await self._call_llm_with_timeout_retry(
             run_id=run_id,
             phase=f"template.slide.{slide_no}.regenerate.review",
@@ -920,10 +1149,16 @@ class RunOrchestrator:
             raise RuntimeError("template slide regeneration did not produce artifacts")
         self.template_engine.pack_template_unpacked(unpacked=unpacked, edited=edited)
         compile_start = time.perf_counter()
-        compiled = await self.template_engine.compile_template_js(template_slides_dir=template_slides_dir)
+        compiled = await self.template_engine.compile_template_js(
+            template_slides_dir=template_slides_dir
+        )
         if not compiled:
             raise RuntimeError("template slide regenerate compile failed")
-        artifact = next(item for item in artifacts if int(getattr(item, "slide_no", 0) or 0) == slide_no)
+        artifact = next(
+            item
+            for item in artifacts
+            if int(getattr(item, "slide_no", 0) or 0) == slide_no
+        )
         preview = await self.render_slide_preview_or_fallback(
             run_id=run_id,
             slide_no=slide_no,
@@ -934,10 +1169,13 @@ class RunOrchestrator:
         def apply_compile(r: RunRecord) -> None:
             r.compile_js_path = str(template_compile_js)
             r.pptx_path = str(edited)
-            r.stage_timings.compile_ms = int((time.perf_counter() - compile_start) * 1000)
+            r.stage_timings.compile_ms = int(
+                (time.perf_counter() - compile_start) * 1000
+            )
             r.citation_map = {item.slide_no: list(item.citations) for item in artifacts}
             r.slides = artifacts
             r.status = RunStatus.SUCCEEDED
+            r.render_version += 1
 
         await self.store.update_run(run_id, apply_compile)
         await self._publish_slide_generated_preview(
@@ -957,10 +1195,14 @@ class RunOrchestrator:
             },
         )
 
-    async def confirm_outline(self, run_id: str, req: ConfirmOutlineRequest) -> RunSummaryResponse | None:
+    async def confirm_outline(
+        self, run_id: str, req: ConfirmOutlineRequest
+    ) -> RunSummaryResponse | None:
         return await self._kernel.confirm_outline(run_id, req)
 
-    async def _publish(self, run_id: str, event_type: EventType, payload: dict[str, Any]) -> None:
+    async def _publish(
+        self, run_id: str, event_type: EventType, payload: dict[str, Any]
+    ) -> None:
         await self._kernel.publish(run_id, event_type, payload)
 
     def _retryable_http_statuses(self) -> set[int]:
@@ -1018,9 +1260,14 @@ class RunOrchestrator:
 
     def _llm_phase_bucket(self, phase: str) -> str:
         lowered = str(phase or "").lower()
-        if any(token in lowered for token in (".repair", "repair", ".revise", "polish")):
+        if any(
+            token in lowered for token in (".repair", "repair", ".revise", "polish")
+        ):
             return "repair"
-        if any(token in lowered for token in (".evaluate", ".review", "critic", "quality", "qa")):
+        if any(
+            token in lowered
+            for token in (".evaluate", ".review", "critic", "quality", "qa")
+        ):
             return "evaluate"
         return "build"
 
@@ -1040,7 +1287,9 @@ class RunOrchestrator:
             return False
         if self.timeout_streak_recover_window_sec <= 0:
             return True
-        return (time.monotonic() - last_timeout) <= self.timeout_streak_recover_window_sec
+        return (
+            time.monotonic() - last_timeout
+        ) <= self.timeout_streak_recover_window_sec
 
     def _note_timeout(self) -> None:
         with self._timeout_lock:
@@ -1067,7 +1316,9 @@ class RunOrchestrator:
             60,
             int(target_slide_count) * (max(1, self.max_slide_repair_rounds) * 2 + 4),
         )
-        limit = self.run_max_llm_calls if self.run_max_llm_calls > 0 else dynamic_default
+        limit = (
+            self.run_max_llm_calls if self.run_max_llm_calls > 0 else dynamic_default
+        )
         with self._run_budget_lock:
             self._run_llm_call_counts[run_id] = 0
             self._run_llm_call_limits[run_id] = max(1, limit)
@@ -1086,7 +1337,9 @@ class RunOrchestrator:
             next_count = self._run_llm_call_counts.get(run_id, 0) + 1
             self._run_llm_call_counts[run_id] = next_count
             if next_count > limit:
-                raise RuntimeError(f"llm call budget exceeded at {phase}: {next_count}>{limit}")
+                raise RuntimeError(
+                    f"llm call budget exceeded at {phase}: {next_count}>{limit}"
+                )
 
     def _is_timeout_failure_payload(self, payload: dict[str, Any]) -> bool:
         reason = str(payload.get("reason", "")).lower()
@@ -1094,9 +1347,12 @@ class RunOrchestrator:
         if "timeout" in reason or "Timeout" in error_type:
             return True
         # Treat transient overload/rate-limit server codes as timeout-like pressure signals.
-        if any(code in reason for code in (" 429", " 500", " 502", " 503", " 504", " 529")):
+        if any(
+            code in reason for code in (" 429", " 500", " 502", " 503", " 504", " 529")
+        ):
             return True
         return False
+
     def _exception_reason(self, exc: Exception) -> str:
         reason = str(exc).strip()
         return reason or repr(exc)
@@ -1131,7 +1387,9 @@ class RunOrchestrator:
     def _selected_style_preset(self, run: RunRecord):
         if run.input.generation_mode != GenerationMode.SCRATCH:
             return None
-        return resolve_style_choice(getattr(run.input, "style_preset", STYLE_PRESET_AUTO))
+        return resolve_style_choice(
+            getattr(run.input, "style_preset", STYLE_PRESET_AUTO)
+        )
 
     def _selected_style_dna(self, run: RunRecord):
         if run.input.generation_mode != GenerationMode.SCRATCH:
@@ -1144,7 +1402,11 @@ class RunOrchestrator:
 
     def _resolved_style_dna_id(self, run: RunRecord) -> str | None:
         report = run.research_report if isinstance(run.research_report, dict) else {}
-        design_intent = report.get("design_intent", {}) if isinstance(report.get("design_intent", {}), dict) else {}
+        design_intent = (
+            report.get("design_intent", {})
+            if isinstance(report.get("design_intent", {}), dict)
+            else {}
+        )
         style_dna_id = str(design_intent.get("style_dna_id", "")).strip()
         if style_dna_id:
             return style_dna_id
@@ -1163,24 +1425,44 @@ class RunOrchestrator:
             return preset.template_style_hint
         return run.input.template_style
 
-    def _apply_style_preset_to_requirements(self, *, run: RunRecord, report: dict[str, Any]) -> dict[str, Any]:
+    def _apply_style_preset_to_requirements(
+        self, *, run: RunRecord, report: dict[str, Any]
+    ) -> dict[str, Any]:
         preset = self._selected_style_preset(run)
         style_dna = self._selected_style_dna(run)
         normalized = dict(report or {})
-        normalized["style_preset"] = getattr(run.input, "style_preset", STYLE_PRESET_AUTO)
+        normalized["style_preset"] = getattr(
+            run.input, "style_preset", STYLE_PRESET_AUTO
+        )
         if preset is None and style_dna is None:
             normalized["style_reference_name"] = ""
             return normalized
 
-        reference_name = style_dna.name if style_dna is not None else (preset.name if preset is not None else "")
-        style_intent = style_dna.prompt if style_dna is not None else (preset.prompt if preset is not None else "")
-        effective_template_style = style_dna.template_style_hint if style_dna is not None else (preset.template_style_hint if preset is not None else "")
+        reference_name = (
+            style_dna.name
+            if style_dna is not None
+            else (preset.name if preset is not None else "")
+        )
+        style_intent = (
+            style_dna.prompt
+            if style_dna is not None
+            else (preset.prompt if preset is not None else "")
+        )
+        effective_template_style = (
+            style_dna.template_style_hint
+            if style_dna is not None
+            else (preset.template_style_hint if preset is not None else "")
+        )
         normalized["style_reference_name"] = reference_name
         normalized["style_intent"] = style_intent
         normalized["effective_template_style"] = effective_template_style
 
         notes_raw = normalized.get("design_notes", [])
-        notes = [str(item).strip() for item in notes_raw if str(item).strip()] if isinstance(notes_raw, list) else []
+        notes = (
+            [str(item).strip() for item in notes_raw if str(item).strip()]
+            if isinstance(notes_raw, list)
+            else []
+        )
         if style_intent:
             notes = [style_intent] + [item for item in notes if item != style_intent]
         normalized["design_notes"] = notes[:8]
@@ -1188,13 +1470,26 @@ class RunOrchestrator:
         design_intent = normalized.get("design_intent", {})
         if not isinstance(design_intent, dict):
             design_intent = {}
-        if not str(design_intent.get("style_recipe", "")).strip() and style_dna is not None:
+        if (
+            not str(design_intent.get("style_recipe", "")).strip()
+            and style_dna is not None
+        ):
             design_intent["style_recipe"] = style_dna.style_recipe
         if not str(design_intent.get("rationale", "")).strip():
-            design_intent["rationale"] = f"apply selected style profile: {reference_name or 'auto'}"
-        style_theme = dict(style_dna.theme_hint) if style_dna is not None else get_style_theme_hint(preset.id if preset is not None else "")
+            design_intent["rationale"] = (
+                f"apply selected style profile: {reference_name or 'auto'}"
+            )
+        style_theme = (
+            dict(style_dna.theme_hint)
+            if style_dna is not None
+            else get_style_theme_hint(preset.id if preset is not None else "")
+        )
         if style_theme:
-            existing_theme_raw = design_intent.get("theme") if isinstance(design_intent.get("theme"), dict) else {}
+            existing_theme_raw = (
+                design_intent.get("theme")
+                if isinstance(design_intent.get("theme"), dict)
+                else {}
+            )
             existing_theme: dict[str, str] = {}
             for key in ("primary", "secondary", "accent", "light", "bg"):
                 candidate = self._normalize_hex6(str(existing_theme_raw.get(key, "")))
@@ -1217,13 +1512,19 @@ class RunOrchestrator:
         if style_dna is not None:
             design_intent.setdefault("layout_family", style_dna.layout_family)
             design_intent.setdefault("density_profile", style_dna.density_profile)
-            design_intent.setdefault("visual_strategy_profile", style_dna.visual_strategy_profile)
+            design_intent.setdefault(
+                "visual_strategy_profile", style_dna.visual_strategy_profile
+            )
             design_intent["style_dna_id"] = style_dna.id
             design_intent["style_signature"] = style_dna.style_signature
             if not str(design_intent.get("title_font", "")).strip():
-                design_intent["title_font"] = str(style_dna.typography_profile.get("title_font", ""))
+                design_intent["title_font"] = str(
+                    style_dna.typography_profile.get("title_font", "")
+                )
             if not str(design_intent.get("body_font", "")).strip():
-                design_intent["body_font"] = str(style_dna.typography_profile.get("body_font", ""))
+                design_intent["body_font"] = str(
+                    style_dna.typography_profile.get("body_font", "")
+                )
         normalized["design_intent"] = design_intent
         return normalized
 
@@ -1239,20 +1540,43 @@ class RunOrchestrator:
         report: dict[str, Any] = dict(research_brief or {})
         intent_raw = dict(design_intent or {})
         notes_raw = report.get("design_notes", [])
-        notes = [str(item).strip() for item in notes_raw if str(item).strip()] if isinstance(notes_raw, list) else []
+        notes = (
+            [str(item).strip() for item in notes_raw if str(item).strip()]
+            if isinstance(notes_raw, list)
+            else []
+        )
         page_focus_raw = report.get("page_focus", [])
-        page_focus = [str(item).strip() for item in page_focus_raw if str(item).strip()] if isinstance(page_focus_raw, list) else []
+        page_focus = (
+            [str(item).strip() for item in page_focus_raw if str(item).strip()]
+            if isinstance(page_focus_raw, list)
+            else []
+        )
         tone = str(report.get("tone", "")).strip()
-        style_intent = str(report.get("style_intent", "")).strip() or tone or "professional"
-        effective_template_style = str(report.get("effective_template_style", "")).strip() or run.input.template_style
-        theme_overrides_raw = intent_raw.get("theme") if isinstance(intent_raw.get("theme"), dict) else {}
+        style_intent = (
+            str(report.get("style_intent", "")).strip() or tone or "professional"
+        )
+        effective_template_style = (
+            str(report.get("effective_template_style", "")).strip()
+            or run.input.template_style
+        )
+        theme_overrides_raw = (
+            intent_raw.get("theme") if isinstance(intent_raw.get("theme"), dict) else {}
+        )
         theme_overrides = {
             key: value
             for key, value in {
-                "primary": self._normalize_hex6(str(theme_overrides_raw.get("primary", ""))),
-                "secondary": self._normalize_hex6(str(theme_overrides_raw.get("secondary", ""))),
-                "accent": self._normalize_hex6(str(theme_overrides_raw.get("accent", ""))),
-                "light": self._normalize_hex6(str(theme_overrides_raw.get("light", ""))),
+                "primary": self._normalize_hex6(
+                    str(theme_overrides_raw.get("primary", ""))
+                ),
+                "secondary": self._normalize_hex6(
+                    str(theme_overrides_raw.get("secondary", ""))
+                ),
+                "accent": self._normalize_hex6(
+                    str(theme_overrides_raw.get("accent", ""))
+                ),
+                "light": self._normalize_hex6(
+                    str(theme_overrides_raw.get("light", ""))
+                ),
                 "bg": self._normalize_hex6(str(theme_overrides_raw.get("bg", ""))),
             }.items()
             if value
@@ -1266,7 +1590,9 @@ class RunOrchestrator:
             "density": str(intent_raw.get("density", "")).strip(),
             "layout_family": str(intent_raw.get("layout_family", "")).strip(),
             "density_profile": str(intent_raw.get("density_profile", "")).strip(),
-            "visual_strategy_profile": str(intent_raw.get("visual_strategy_profile", "")).strip(),
+            "visual_strategy_profile": str(
+                intent_raw.get("visual_strategy_profile", "")
+            ).strip(),
             "style_dna_id": str(intent_raw.get("style_dna_id", "")).strip(),
             "style_signature": str(intent_raw.get("style_signature", "")).strip(),
             "rationale": str(intent_raw.get("rationale", "")).strip(),
@@ -1274,10 +1600,13 @@ class RunOrchestrator:
         }
         report.update(
             {
-                "audience": str(report.get("audience", "")).strip() or "general audience",
-                "purpose": str(report.get("purpose", "")).strip() or f"explain {run.input.topic} clearly",
+                "audience": str(report.get("audience", "")).strip()
+                or "general audience",
+                "purpose": str(report.get("purpose", "")).strip()
+                or f"explain {run.input.topic} clearly",
                 "tone": tone or "professional",
-                "narrative_arc": str(report.get("narrative_arc", "")).strip() or "problem -> analysis -> solution -> summary",
+                "narrative_arc": str(report.get("narrative_arc", "")).strip()
+                or "problem -> analysis -> solution -> summary",
                 "page_focus": page_focus[: run.input.target_slide_count],
                 "design_notes": notes[:8],
                 "style_intent": style_intent,
@@ -1303,7 +1632,11 @@ class RunOrchestrator:
         run_id: str,
         run: RunRecord,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        selected_file_ids = [str(item).strip() for item in (run.input.rag_source_ids or []) if str(item).strip()]
+        selected_file_ids = [
+            str(item).strip()
+            for item in (run.input.rag_source_ids or [])
+            if str(item).strip()
+        ]
         retrieval_mode = "selected_files" if selected_file_ids else "project_all"
         top_k = self._rag_query_top_k(target_slide_count=run.input.target_slide_count)
         await self._publish(
@@ -1351,8 +1684,12 @@ class RunOrchestrator:
             raise
         snippets = build_rag_context_snippets(
             response,
-            max_items=max(1, int(getattr(self.settings, "rag_context_max_snippets", 10))),
-            max_chars=max(120, int(getattr(self.settings, "rag_context_max_chars", 700))),
+            max_items=max(
+                1, int(getattr(self.settings, "rag_context_max_snippets", 10))
+            ),
+            max_chars=max(
+                120, int(getattr(self.settings, "rag_context_max_chars", 700))
+            ),
         )
         raw_total = response.get("total", len(snippets))
         try:
@@ -1381,7 +1718,9 @@ class RunOrchestrator:
             return None
         return value.upper()
 
-    def _resolve_palette_theme(self, *, base: DesignProfile, design_intent: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    def _resolve_palette_theme(
+        self, *, base: DesignProfile, design_intent: dict[str, Any]
+    ) -> tuple[str, dict[str, str]]:
         palette_name = str(design_intent.get("palette_name", "")).strip()
         for name, palette in PALETTES:
             if palette_name and name.lower() == palette_name.lower():
@@ -1394,7 +1733,11 @@ class RunOrchestrator:
                 }
 
         theme = dict(base.theme)
-        theme_payload = design_intent.get("theme") if isinstance(design_intent.get("theme"), dict) else {}
+        theme_payload = (
+            design_intent.get("theme")
+            if isinstance(design_intent.get("theme"), dict)
+            else {}
+        )
         for key in ("primary", "secondary", "accent", "light", "bg"):
             candidate = self._normalize_hex6(str(theme_payload.get(key, "")))
             if candidate:
@@ -1413,13 +1756,20 @@ class RunOrchestrator:
         if explicit in STYLE_RECIPES:
             return explicit
         merged = f"{style_intent} {template_style}".lower()
-        if any(word in merged for word in ("brutal", "sharp", "authority", "finance", "data")):
+        if any(
+            word in merged
+            for word in ("brutal", "sharp", "authority", "finance", "data")
+        ):
             return "sharp"
         if any(word in merged for word in ("premium", "luxury", "editorial", "brand")):
             return "pill"
-        if any(word in merged for word in ("creative", "marketing", "rounded", "friendly")):
+        if any(
+            word in merged for word in ("creative", "marketing", "rounded", "friendly")
+        ):
             return "rounded"
-        if any(word in merged for word in ("soft", "education", "training", "balanced")):
+        if any(
+            word in merged for word in ("soft", "education", "training", "balanced")
+        ):
             return "soft"
         return fallback if fallback in STYLE_RECIPES else "soft"
 
@@ -1430,13 +1780,19 @@ class RunOrchestrator:
         available = {font for pair in FONT_PAIRS for font in pair}
         return normalized_preferred if normalized_preferred in available else fallback
 
-    def _resolve_design_profile(self, *, topic: str, template_style: str, requirements_report: dict[str, Any]) -> DesignProfile:
+    def _resolve_design_profile(
+        self, *, topic: str, template_style: str, requirements_report: dict[str, Any]
+    ) -> DesignProfile:
         design_intent = requirements_report.get("design_intent", {})
         if not isinstance(design_intent, dict):
             design_intent = {}
         style_dna_id = str(design_intent.get("style_dna_id", "")).strip() or None
-        base = choose_design_profile(topic=topic, template_style=template_style, style_dna_id=style_dna_id)
-        palette_name, theme = self._resolve_palette_theme(base=base, design_intent=design_intent)
+        base = choose_design_profile(
+            topic=topic, template_style=template_style, style_dna_id=style_dna_id
+        )
+        palette_name, theme = self._resolve_palette_theme(
+            base=base, design_intent=design_intent
+        )
         style_name = self._resolve_style_recipe_name(
             design_intent=design_intent,
             style_intent=str(requirements_report.get("style_intent", "")),
@@ -1459,6 +1815,7 @@ class RunOrchestrator:
             body_font=body_font,
             style=style,
         )
+
     async def _call_llm_with_timeout_retry(
         self,
         *,
@@ -1475,14 +1832,20 @@ class RunOrchestrator:
             acquired_pressure = False
             try:
                 self._consume_run_llm_budget(run_id=run_id, phase=phase)
-                acquired_global = await asyncio.to_thread(self._llm_request_gate.acquire, True, gate_timeout_sec)
+                acquired_global = await asyncio.to_thread(
+                    self._llm_request_gate.acquire, True, gate_timeout_sec
+                )
                 if not acquired_global:
                     raise TimeoutError("llm request concurrency gate timeout")
-                acquired_phase = await asyncio.to_thread(phase_gate.acquire, True, gate_timeout_sec)
+                acquired_phase = await asyncio.to_thread(
+                    phase_gate.acquire, True, gate_timeout_sec
+                )
                 if not acquired_phase:
                     raise TimeoutError("llm phase concurrency gate timeout")
                 if self._is_under_timeout_pressure():
-                    acquired_pressure = await asyncio.to_thread(self._llm_pressure_gate.acquire, True, gate_timeout_sec)
+                    acquired_pressure = await asyncio.to_thread(
+                        self._llm_pressure_gate.acquire, True, gate_timeout_sec
+                    )
                     if not acquired_pressure:
                         raise TimeoutError("llm pressure gate timeout")
                 result = await action()
@@ -1504,8 +1867,14 @@ class RunOrchestrator:
                     },
                 )
                 if attempt >= max_attempts:
-                    raise LLMTimeoutError(attempts=attempt, reason=reason, phase=phase) from exc
-                jitter = random.uniform(0.0, self.llm_timeout_jitter_sec) if self.llm_timeout_jitter_sec > 0 else 0.0
+                    raise LLMTimeoutError(
+                        attempts=attempt, reason=reason, phase=phase
+                    ) from exc
+                jitter = (
+                    random.uniform(0.0, self.llm_timeout_jitter_sec)
+                    if self.llm_timeout_jitter_sec > 0
+                    else 0.0
+                )
                 delay = self.outline_timeout_backoff_sec * (2 ** (attempt - 1)) + jitter
                 retry_after = self._retry_after_seconds(exc)
                 if retry_after is not None:
@@ -1539,7 +1908,9 @@ class RunOrchestrator:
         phase: str,
         action: Any,
     ) -> Any:
-        return await self._call_llm_with_timeout_retry(run_id=run_id, phase=phase, action=action)
+        return await self._call_llm_with_timeout_retry(
+            run_id=run_id, phase=phase, action=action
+        )
 
     async def _generate_outline(self, run_id: str) -> None:
         await self._kernel.start_outline(run_id)
@@ -1557,22 +1928,32 @@ class RunOrchestrator:
         mode: GenerationMode,
         design: DesignProfile,
     ) -> bool:
-        return await self.quality_engine.complete_post_compile_quality(run_id=run_id, mode=mode, design=design)
+        return await self.quality_engine.complete_post_compile_quality(
+            run_id=run_id, mode=mode, design=design
+        )
 
-    async def _finalize_run_success(self, run_id: str, *, from_stage: str, reason: str) -> None:
-        await self._kernel.finalize_run_success(run_id, from_stage=from_stage, reason=reason)
+    async def _finalize_run_success(
+        self, run_id: str, *, from_stage: str, reason: str
+    ) -> None:
+        await self._kernel.finalize_run_success(
+            run_id, from_stage=from_stage, reason=reason
+        )
 
     async def _generate_from_template(self, run_id: str) -> None:
         await self._template_flow.execute(run_id)
 
-    def _template_work_paths(self, artifact_dir: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
+    def _template_work_paths(
+        self, artifact_dir: Path
+    ) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
         return self.template_engine.template_work_paths(artifact_dir)
 
     def _pack_template_unpacked(self, *, unpacked: Path, edited: Path) -> None:
         self.template_engine.pack_template_unpacked(unpacked=unpacked, edited=edited)
 
     async def _compile_template_js(self, *, template_slides_dir: Path) -> bool:
-        return await self.template_engine.compile_template_js(template_slides_dir=template_slides_dir)
+        return await self.template_engine.compile_template_js(
+            template_slides_dir=template_slides_dir
+        )
 
     async def _apply_template_nodes_once(
         self,
@@ -1591,7 +1972,9 @@ class RunOrchestrator:
             forced_issues=forced_issues,
         )
 
-    async def _revise_template_slides(self, *, run_id: str, design: DesignProfile, forced_issues: list[str] | None) -> bool:
+    async def _revise_template_slides(
+        self, *, run_id: str, design: DesignProfile, forced_issues: list[str] | None
+    ) -> bool:
         return await self.template_engine.revise_template_slides(
             run_id=run_id,
             design=design,
@@ -1625,7 +2008,9 @@ class RunOrchestrator:
             if rel not in referenced:
                 media_file.unlink(missing_ok=True)
 
-    async def _generate_skill_slide(self, *, run_id: str, slide_no: int, node: OutlineNode, design: DesignProfile) -> SlideArtifact:
+    async def _generate_skill_slide(
+        self, *, run_id: str, slide_no: int, node: OutlineNode, design: DesignProfile
+    ) -> SlideArtifact:
         run = await self.store.get_run(run_id)
         assert run is not None
         effective_template_style = self._resolved_template_style(run)
@@ -1656,7 +2041,9 @@ class RunOrchestrator:
                     ),
                 )
                 candidate = generated
-                rule_violations = self.quality_engine.check_slide_content_rules(candidate, node)
+                rule_violations = self.quality_engine.check_slide_content_rules(
+                    candidate, node
+                )
                 reviewed = await self._call_llm_with_timeout_retry(
                     run_id=run_id,
                     phase=f"slide.{slide_no}.legacy.review",
@@ -1670,8 +2057,14 @@ class RunOrchestrator:
                         rule_violations=rule_violations,
                     ),
                 )
-                await self._publish(run_id, EventType.SLIDE_REVIEWED, {"slide_no": slide_no, "violations": rule_violations})
-                citations = self._normalize_citations(reviewed.citations, run.input.rag_source_ids, slide_no)
+                await self._publish(
+                    run_id,
+                    EventType.SLIDE_REVIEWED,
+                    {"slide_no": slide_no, "violations": rule_violations},
+                )
+                citations = self._normalize_citations(
+                    reviewed.citations, run.input.rag_source_ids, slide_no
+                )
                 chart_plan = self._build_chart_plan_from_bullets(
                     node=OutlineNode(
                         title=reviewed.title,
@@ -1744,7 +2137,9 @@ class RunOrchestrator:
         assert run is not None
         effective_template_style = self._resolved_template_style(run)
         style_dna_id = self._resolved_style_dna_id(run)
-        slide_plan = self._build_slide_plan(node=node, design=design, slide_no=slide_no, style_dna_id=style_dna_id)
+        slide_plan = self._build_slide_plan(
+            node=node, design=design, slide_no=slide_no, style_dna_id=style_dna_id
+        )
         self._apply_visual_policy_to_slide_plan(
             slide_plan=slide_plan,
             page_type=node.page_type,
@@ -1759,11 +2154,17 @@ class RunOrchestrator:
             slides_dir=slides_dir,
         )
         if assets:
-            visual_plan = slide_plan.get("visual_plan") if isinstance(slide_plan.get("visual_plan"), dict) else {}
+            visual_plan = (
+                slide_plan.get("visual_plan")
+                if isinstance(slide_plan.get("visual_plan"), dict)
+                else {}
+            )
             visual_plan = dict(visual_plan)
             visual_plan["assets"] = assets
             slide_plan["visual_plan"] = visual_plan
-        slide_brief = self._build_slide_brief(run=run, node=node, slide_no=slide_no, slide_plan=slide_plan)
+        slide_brief = self._build_slide_brief(
+            run=run, node=node, slide_no=slide_no, slide_plan=slide_plan
+        )
         await self._publish(
             run_id,
             EventType.SLIDE_PLAN_COMPLETED,
@@ -1828,7 +2229,9 @@ class RunOrchestrator:
             candidate_plan["repair_round"] = repair_round
             candidate_plan["previous_issues"] = last_major_issues[:8]
             llm_phase = "candidate.build"
-            citations = self._normalize_citations([], run.input.rag_source_ids, slide_no)
+            citations = self._normalize_citations(
+                [], run.input.rag_source_ids, slide_no
+            )
 
             try:
                 if repair_round == 1 or not best_js:
@@ -1862,7 +2265,9 @@ class RunOrchestrator:
                             target_slide_count=run.input.target_slide_count,
                             outline_node=node,
                             candidate_js=best_js,
-                            issues=self._dedupe_preserve_order(last_major_issues + last_warnings),
+                            issues=self._dedupe_preserve_order(
+                                last_major_issues + last_warnings
+                            ),
                             failure_context=last_failure_context,
                             visual_policy=run.input.visual_policy,
                             slide_plan=candidate_plan,
@@ -1893,7 +2298,9 @@ class RunOrchestrator:
                             "slide_no": slide_no,
                             "round": repair_round,
                             "candidate": 1,
-                            "fixes": self._dedupe_preserve_order(normalize_fixes + auto_fixes)[:24],
+                            "fixes": self._dedupe_preserve_order(
+                                normalize_fixes + auto_fixes
+                            )[:24],
                         },
                     )
                 js_code = self._apply_local_js_guardrails(
@@ -1918,7 +2325,9 @@ class RunOrchestrator:
             except Exception as exc:
                 build_issue = f"candidate build failed: {self._exception_reason(exc)}"
                 classified = self._classify_slide_issues([build_issue])
-                selected_repair_directives = self._build_local_repair_directives(classified=classified)
+                selected_repair_directives = self._build_local_repair_directives(
+                    classified=classified
+                )
                 quality_score = self._local_quality_score(classified=classified)
                 last_failure_context = self._build_slide_failure_context(
                     phase=llm_phase,
@@ -1946,8 +2355,12 @@ class RunOrchestrator:
                         "phase": llm_phase,
                         "context": last_failure_context,
                         "error_type": type(exc).__name__,
-                        "stderr_excerpt": last_failure_context.get("stderr_excerpt", ""),
-                        "error_location": last_failure_context.get("error_location", {}),
+                        "stderr_excerpt": last_failure_context.get(
+                            "stderr_excerpt", ""
+                        ),
+                        "error_location": last_failure_context.get(
+                            "error_location", {}
+                        ),
                         "repair_hint": selected_repair_directives[:5],
                     },
                 )
@@ -1969,7 +2382,8 @@ class RunOrchestrator:
                         "candidate": 1,
                         "score": quality_score,
                         "passed": False,
-                        "hard_issue_count": len(classified["blocking"]) + len(classified["high_risk"]),
+                        "hard_issue_count": len(classified["blocking"])
+                        + len(classified["high_risk"]),
                         "llm_issue_count": 0,
                         "error": self._exception_reason(exc),
                         "phase": llm_phase,
@@ -1994,7 +2408,9 @@ class RunOrchestrator:
                         round_no=repair_round,
                         details={"issues": [build_issue]},
                     ) from exc
-                last_major_issues = list(classified["blocking"] + classified["high_risk"])
+                last_major_issues = list(
+                    classified["blocking"] + classified["high_risk"]
+                )
                 last_warnings = list(classified["warnings"])
                 continue
 
@@ -2007,7 +2423,12 @@ class RunOrchestrator:
                 slide_plan=candidate_plan,
             )
             fatal_contract = any(
-                issue in {"missing export contract", "createSlide signature invalid", "createSlide must be synchronous"}
+                issue
+                in {
+                    "missing export contract",
+                    "createSlide signature invalid",
+                    "createSlide must be synchronous",
+                }
                 for issue in hard_issues
             )
 
@@ -2019,13 +2440,17 @@ class RunOrchestrator:
                 preview_mode = "skip_contract_failure"
                 preview_issues.append("preview skipped due to fatal contract issue")
             else:
-                preview_issues, preview_text, preview_diag = await self._run_slide_preview_qa_with_text(
-                    run_id=run_id,
-                    slide_js=candidate_path,
-                    slide_no=slide_no,
+                preview_issues, preview_text, preview_diag = (
+                    await self._run_slide_preview_qa_with_text(
+                        run_id=run_id,
+                        slide_js=candidate_path,
+                        slide_no=slide_no,
+                    )
                 )
 
-            all_issues = self._dedupe_preserve_order(list(hard_issues) + list(preview_issues))
+            all_issues = self._dedupe_preserve_order(
+                list(hard_issues) + list(preview_issues)
+            )
             compile_ok = not any(
                 any(marker in str(issue).lower() for marker in compile_failure_markers)
                 for issue in all_issues
@@ -2037,7 +2462,9 @@ class RunOrchestrator:
             needs_repair = bool(blocking)
             degraded_notes = self._dedupe_preserve_order(high_risk + warnings)
             quality_score = self._local_quality_score(classified=classified)
-            selected_repair_directives = self._build_local_repair_directives(classified=classified)
+            selected_repair_directives = self._build_local_repair_directives(
+                classified=classified
+            )
             if needs_repair:
                 diagnostics = dict(preview_diag or {})
                 diagnostics.setdefault("preview_mode", preview_mode)
@@ -2048,7 +2475,9 @@ class RunOrchestrator:
                     "warnings": len(warnings),
                 }
                 last_failure_context = self._build_slide_failure_context(
-                    phase=("candidate.contract" if fatal_contract else "candidate.preview"),
+                    phase=(
+                        "candidate.contract" if fatal_contract else "candidate.preview"
+                    ),
                     slide_js_path=candidate_path,
                     candidate_js=js_code,
                     issues=all_issues,
@@ -2061,11 +2490,19 @@ class RunOrchestrator:
                         "slide_no": slide_no,
                         "round": repair_round,
                         "candidate": 1,
-                        "phase": ("candidate.contract" if fatal_contract else "candidate.preview"),
+                        "phase": (
+                            "candidate.contract"
+                            if fatal_contract
+                            else "candidate.preview"
+                        ),
                         "context": last_failure_context,
                         "error_type": str(last_failure_context.get("error_class", "")),
-                        "stderr_excerpt": last_failure_context.get("stderr_excerpt", ""),
-                        "error_location": last_failure_context.get("error_location", {}),
+                        "stderr_excerpt": last_failure_context.get(
+                            "stderr_excerpt", ""
+                        ),
+                        "error_location": last_failure_context.get(
+                            "error_location", {}
+                        ),
                         "repair_hint": selected_repair_directives[:5],
                     },
                 )
@@ -2074,7 +2511,9 @@ class RunOrchestrator:
                     slide_no=slide_no,
                     repair_round=repair_round,
                     candidate_no=1,
-                    phase=("candidate.contract" if fatal_contract else "candidate.preview"),
+                    phase=(
+                        "candidate.contract" if fatal_contract else "candidate.preview"
+                    ),
                     issues=all_issues,
                     context=last_failure_context,
                 )
@@ -2211,7 +2650,11 @@ class RunOrchestrator:
             await self._publish(
                 run_id,
                 EventType.SLIDE_CRITIC_COMPLETED,
-                {"slide_no": slide_no, "round": repair_round, "issues": list(last_major_issues)},
+                {
+                    "slide_no": slide_no,
+                    "round": repair_round,
+                    "issues": list(last_major_issues),
+                },
             )
             await self._publish(
                 run_id,
@@ -2238,8 +2681,12 @@ class RunOrchestrator:
                         round_no=repair_round,
                         issues=(last_major_issues + last_warnings)[:20],
                     )
-                all_issues = self._dedupe_preserve_order(last_major_issues + last_warnings)
-                if any("visual_policy violation" in item.lower() for item in all_issues):
+                all_issues = self._dedupe_preserve_order(
+                    last_major_issues + last_warnings
+                )
+                if any(
+                    "visual_policy violation" in item.lower() for item in all_issues
+                ):
                     raise VisualPolicyUnsatisfiedError(
                         f"slide {slide_no} cannot satisfy visual policy: {'; '.join(all_issues[:3])}"
                     )
@@ -2264,7 +2711,11 @@ class RunOrchestrator:
             )
 
         final_js = slide_path.read_text(encoding="utf-8")
-        citations = list(best_citations) if best_citations else self._normalize_citations([], run.input.rag_source_ids, slide_no)
+        citations = (
+            list(best_citations)
+            if best_citations
+            else self._normalize_citations([], run.input.rag_source_ids, slide_no)
+        )
         if best_chart_plan is not None:
             await self._append_chart_truth_report(
                 run_id=run_id,
@@ -2307,13 +2758,21 @@ class RunOrchestrator:
         await self._publish(
             run_id,
             EventType.SLIDE_CODEGEN_COMPLETED,
-            {"slide_no": slide_no, "rounds": round_passed, "degraded_accept": degraded_accept},
+            {
+                "slide_no": slide_no,
+                "rounds": round_passed,
+                "degraded_accept": degraded_accept,
+            },
         )
         return SlideArtifact(
             slide_no=slide_no,
             js_path=str(slide_path),
             js_code=final_js,
-            status=(f"ok_agentic_degraded_round_{round_passed}" if degraded_accept else f"ok_agentic_round_{round_passed}"),
+            status=(
+                f"ok_agentic_degraded_round_{round_passed}"
+                if degraded_accept
+                else f"ok_agentic_round_{round_passed}"
+            ),
             citations=citations,
         )
 
@@ -2326,9 +2785,17 @@ class RunOrchestrator:
         style_dna_id: str | None = None,
     ) -> dict[str, Any]:
         allowed = allowed_layouts_for(node.page_type, style_dna_id=style_dna_id)
-        layout = node.layout_hint if node.layout_hint in allowed else (allowed[0] if allowed else (node.layout_hint or "content-two-column"))
+        layout = (
+            node.layout_hint
+            if node.layout_hint in allowed
+            else (allowed[0] if allowed else (node.layout_hint or "content-two-column"))
+        )
         style_dna = get_style_dna_by_id(style_dna_id)
-        density_profile = str(style_dna.density_profile if style_dna is not None else "balanced").strip().lower()
+        density_profile = (
+            str(style_dna.density_profile if style_dna is not None else "balanced")
+            .strip()
+            .lower()
+        )
         if density_profile == "dense":
             min_margin_in = 0.42 if node.page_type == SlidePageType.CONTENT else 0.32
             min_block_gap_in = 0.2 if node.page_type == SlidePageType.CONTENT else 0.16
@@ -2352,7 +2819,14 @@ class RunOrchestrator:
             elif layout in {"content-timeline", "content-comparison"}:
                 visual_kind = "shape_flow"
 
-        image_slots = 2 if (node.page_type == SlidePageType.CONTENT and visual_kind in {"image_or_showcase", "icon_rows"}) else 0
+        image_slots = (
+            2
+            if (
+                node.page_type == SlidePageType.CONTENT
+                and visual_kind in {"image_or_showcase", "icon_rows"}
+            )
+            else 0
+        )
         return {
             "slide_no": slide_no,
             "page_type": node.page_type.value,
@@ -2378,8 +2852,12 @@ class RunOrchestrator:
                 "title_font": design.title_font,
                 "body_font": design.body_font,
                 "style_dna_id": style_dna_id or "",
-                "layout_family": str(style_dna.layout_family if style_dna is not None else ""),
-                "density_profile": str(style_dna.density_profile if style_dna is not None else ""),
+                "layout_family": str(
+                    style_dna.layout_family if style_dna is not None else ""
+                ),
+                "density_profile": str(
+                    style_dna.density_profile if style_dna is not None else ""
+                ),
             },
             "content_blocks": {
                 "title": node.title,
@@ -2387,13 +2865,21 @@ class RunOrchestrator:
             },
         }
 
-    def _layout_supports_image(self, layout_hint: str | None, *, style_dna_id: str | None = None) -> bool:
+    def _layout_supports_image(
+        self, layout_hint: str | None, *, style_dna_id: str | None = None
+    ) -> bool:
         layout = str(layout_hint or "").strip()
         if not layout:
             return False
-        if layout not in {"content-two-column", "content-showcase", "content-icon-rows"}:
+        if layout not in {
+            "content-two-column",
+            "content-showcase",
+            "content-icon-rows",
+        }:
             return False
-        allowed_content = set(allowed_layouts_for(SlidePageType.CONTENT, style_dna_id=style_dna_id))
+        allowed_content = set(
+            allowed_layouts_for(SlidePageType.CONTENT, style_dna_id=style_dna_id)
+        )
         if allowed_content:
             return layout in allowed_content
         return True
@@ -2418,16 +2904,30 @@ class RunOrchestrator:
             if isinstance(tokens, dict):
                 style_dna_id = str(tokens.get("style_dna_id", "")).strip()
             if not self._layout_supports_image(layout, style_dna_id=style_dna_id):
-                allowed_content = allowed_layouts_for(SlidePageType.CONTENT, style_dna_id=style_dna_id or None)
-                image_candidates = [item for item in allowed_content if self._layout_supports_image(item, style_dna_id=style_dna_id or None)]
-                slide_plan["layout"] = image_candidates[0] if image_candidates else "content-showcase"
+                allowed_content = allowed_layouts_for(
+                    SlidePageType.CONTENT, style_dna_id=style_dna_id or None
+                )
+                image_candidates = [
+                    item
+                    for item in allowed_content
+                    if self._layout_supports_image(
+                        item, style_dna_id=style_dna_id or None
+                    )
+                ]
+                slide_plan["layout"] = (
+                    image_candidates[0] if image_candidates else "content-showcase"
+                )
             visual_plan["kind"] = "image_or_showcase"
-            visual_plan["image_slots"] = max(1, int(visual_plan.get("image_slots", 0) or 0))
+            visual_plan["image_slots"] = max(
+                1, int(visual_plan.get("image_slots", 0) or 0)
+            )
             visual_plan["chart_preferred"] = False
         elif visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY:
             visual_plan["image_slots"] = 0
 
-    def _extract_slide_plan_assets(self, slide_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    def _extract_slide_plan_assets(
+        self, slide_plan: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         visual_plan = slide_plan.get("visual_plan")
         if not isinstance(visual_plan, dict):
             return []
@@ -2441,7 +2941,13 @@ class RunOrchestrator:
             path = str(item.get("path", "")).strip()
             if not path:
                 continue
-            out.append({"path": path, "slot": str(item.get("slot", "")).strip(), "type": str(item.get("type", "")).strip()})
+            out.append(
+                {
+                    "path": path,
+                    "slot": str(item.get("slot", "")).strip(),
+                    "type": str(item.get("type", "")).strip(),
+                }
+            )
         return out
 
     def _apply_local_spec_repairs(
@@ -2466,15 +2972,36 @@ class RunOrchestrator:
         )
         lowered_issues = [str(item).lower() for item in issues if str(item).strip()]
         has_geometry_issue = any(
-            any(marker in item for marker in ("out of slide bounds", "overlaps box", "gap too tight", "margin too tight"))
+            any(
+                marker in item
+                for marker in (
+                    "out of slide bounds",
+                    "overlaps box",
+                    "gap too tight",
+                    "margin too tight",
+                )
+            )
             for item in lowered_issues
         )
         has_fit_issue = any(
-            any(marker in item for marker in ("fit:'shrink'", "title/body size contrast", "title font too small"))
+            any(
+                marker in item
+                for marker in (
+                    "fit:'shrink'",
+                    "title/body size contrast",
+                    "title font too small",
+                )
+            )
             for item in lowered_issues
         )
         has_visual_missing = any(
-            any(marker in item for marker in ("visual_policy violation", "content slide missing non-text visual element"))
+            any(
+                marker in item
+                for marker in (
+                    "visual_policy violation",
+                    "content slide missing non-text visual element",
+                )
+            )
             for item in lowered_issues
         )
 
@@ -2483,7 +3010,10 @@ class RunOrchestrator:
                 repaired.visual_kind = "image"
                 if not self._layout_supports_image(repaired.layout_hint):
                     repaired.layout_hint = "content-showcase"
-            elif visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY and repaired.visual_kind == "image":
+            elif (
+                visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY
+                and repaired.visual_kind == "image"
+            ):
                 repaired.visual_kind = "chart"
             if has_visual_missing and repaired.visual_kind not in {"image", "chart"}:
                 repaired.visual_kind = "chart"
@@ -2493,7 +3023,10 @@ class RunOrchestrator:
                 layout_hint=repaired.layout_hint,
                 page_type=repaired.page_type,
                 repair_round=repair_round,
-                prefer_image_layout=(visual_policy == VisualPolicy.MEDIA_REQUIRED and repaired.page_type == SlidePageType.CONTENT),
+                prefer_image_layout=(
+                    visual_policy == VisualPolicy.MEDIA_REQUIRED
+                    and repaired.page_type == SlidePageType.CONTENT
+                ),
             )
         if has_fit_issue or has_geometry_issue:
             repaired.bullets = self._trim_spec_bullets(
@@ -2514,18 +3047,30 @@ class RunOrchestrator:
         allowed = allowed_layouts_for(page_type, style_dna_id=style_dna_id)
         if not allowed:
             return layout_hint
-        preferred = [name for name in allowed if self._layout_supports_image(name, style_dna_id=style_dna_id)] if prefer_image_layout else []
+        preferred = (
+            [
+                name
+                for name in allowed
+                if self._layout_supports_image(name, style_dna_id=style_dna_id)
+            ]
+            if prefer_image_layout
+            else []
+        )
         if preferred:
             current = str(layout_hint or "").strip()
             if current in preferred:
-                return preferred[(preferred.index(current) + repair_round) % len(preferred)]
+                return preferred[
+                    (preferred.index(current) + repair_round) % len(preferred)
+                ]
             return preferred[(repair_round - 1) % len(preferred)]
         current = str(layout_hint or "").strip()
         if current in allowed:
             return allowed[(allowed.index(current) + repair_round) % len(allowed)]
         return allowed[(repair_round - 1) % len(allowed)]
 
-    def _trim_spec_bullets(self, *, bullets: list[str], page_type: SlidePageType) -> list[str]:
+    def _trim_spec_bullets(
+        self, *, bullets: list[str], page_type: SlidePageType
+    ) -> list[str]:
         src = [str(item).strip() for item in bullets if str(item).strip()]
         if not src:
             return src
@@ -2549,14 +3094,40 @@ class RunOrchestrator:
     ) -> dict[str, Any]:
         report = run.research_report if isinstance(run.research_report, dict) else {}
         page_focus_raw = report.get("page_focus", [])
-        page_focus_list = [str(item).strip() for item in page_focus_raw if str(item).strip()] if isinstance(page_focus_raw, list) else []
+        page_focus_list = (
+            [str(item).strip() for item in page_focus_raw if str(item).strip()]
+            if isinstance(page_focus_raw, list)
+            else []
+        )
         design_notes_raw = report.get("design_notes", [])
-        design_notes = [str(item).strip() for item in design_notes_raw if str(item).strip()] if isinstance(design_notes_raw, list) else []
-        design_intent = report.get("design_intent", {}) if isinstance(report.get("design_intent", {}), dict) else {}
-        style_dna = get_style_dna_by_id(str(design_intent.get("style_dna_id", "")).strip())
-        selected_focus = page_focus_list[slide_no - 1] if 0 < slide_no <= len(page_focus_list) else ""
-        visual_plan = slide_plan.get("visual_plan", {}) if isinstance(slide_plan.get("visual_plan", {}), dict) else {}
-        assets = visual_plan.get("assets", []) if isinstance(visual_plan.get("assets", []), list) else []
+        design_notes = (
+            [str(item).strip() for item in design_notes_raw if str(item).strip()]
+            if isinstance(design_notes_raw, list)
+            else []
+        )
+        design_intent = (
+            report.get("design_intent", {})
+            if isinstance(report.get("design_intent", {}), dict)
+            else {}
+        )
+        style_dna = get_style_dna_by_id(
+            str(design_intent.get("style_dna_id", "")).strip()
+        )
+        selected_focus = (
+            page_focus_list[slide_no - 1]
+            if 0 < slide_no <= len(page_focus_list)
+            else ""
+        )
+        visual_plan = (
+            slide_plan.get("visual_plan", {})
+            if isinstance(slide_plan.get("visual_plan", {}), dict)
+            else {}
+        )
+        assets = (
+            visual_plan.get("assets", [])
+            if isinstance(visual_plan.get("assets", []), list)
+            else []
+        )
         return {
             "audience": str(report.get("audience", "")).strip(),
             "purpose": str(report.get("purpose", "")).strip(),
@@ -2594,11 +3165,36 @@ class RunOrchestrator:
         layout: str,
     ) -> list[dict[str, Any]]:
         seeds = [
-            {"composition": "balanced", "emphasis": "narrative", "density": "medium", "contrast": "high"},
-            {"composition": "visual_heavy", "emphasis": "data", "density": "compact", "contrast": "high"},
-            {"composition": "text_heavy", "emphasis": "explanation", "density": "airy", "contrast": "medium"},
-            {"composition": "diagrammatic", "emphasis": "structure", "density": "medium", "contrast": "high"},
-            {"composition": "storyboard", "emphasis": "progression", "density": "medium", "contrast": "medium"},
+            {
+                "composition": "balanced",
+                "emphasis": "narrative",
+                "density": "medium",
+                "contrast": "high",
+            },
+            {
+                "composition": "visual_heavy",
+                "emphasis": "data",
+                "density": "compact",
+                "contrast": "high",
+            },
+            {
+                "composition": "text_heavy",
+                "emphasis": "explanation",
+                "density": "airy",
+                "contrast": "medium",
+            },
+            {
+                "composition": "diagrammatic",
+                "emphasis": "structure",
+                "density": "medium",
+                "contrast": "high",
+            },
+            {
+                "composition": "storyboard",
+                "emphasis": "progression",
+                "density": "medium",
+                "contrast": "medium",
+            },
         ]
         variants: list[dict[str, Any]] = []
         for worker_idx in range(1, worker_count + 1):
@@ -2610,7 +3206,9 @@ class RunOrchestrator:
             variants.append(base)
         return variants
 
-    def _fallback_research_brief(self, *, topic: str, template_style: str, target_slide_count: int) -> dict[str, Any]:
+    def _fallback_research_brief(
+        self, *, topic: str, template_style: str, target_slide_count: int
+    ) -> dict[str, Any]:
         focus: list[str] = []
         for idx in range(1, target_slide_count + 1):
             if idx == 1:
@@ -2618,7 +3216,9 @@ class RunOrchestrator:
             elif idx == target_slide_count:
                 focus.append(f"{topic}: synthesis, decisions, and next steps")
             else:
-                focus.append(f"{topic}: section {idx} with concrete evidence and visual takeaway")
+                focus.append(
+                    f"{topic}: section {idx} with concrete evidence and visual takeaway"
+                )
         return {
             "audience": "general audience",
             "purpose": f"explain {topic} clearly with actionable insights",
@@ -2634,7 +3234,9 @@ class RunOrchestrator:
             "effective_template_style": template_style,
         }
 
-    def _slide_spec_from_generated(self, *, generated: GeneratedSlide, node: OutlineNode) -> SlideSpec:
+    def _slide_spec_from_generated(
+        self, *, generated: GeneratedSlide, node: OutlineNode
+    ) -> SlideSpec:
         return SlideSpec(
             title=generated.title or node.title,
             subtitle="",
@@ -2646,7 +3248,9 @@ class RunOrchestrator:
             citations=list(generated.citations),
         )
 
-    def _generated_from_slide_spec(self, *, spec: SlideSpec, node: OutlineNode) -> GeneratedSlide:
+    def _generated_from_slide_spec(
+        self, *, spec: SlideSpec, node: OutlineNode
+    ) -> GeneratedSlide:
         return GeneratedSlide(
             title=spec.title or node.title,
             bullets=list(spec.bullets or node.bullets),
@@ -2670,9 +3274,13 @@ class RunOrchestrator:
         page_type = node.page_type
         title = json.dumps(generated.title, ensure_ascii=False)
         bullets_literal = json.dumps(generated.bullets, ensure_ascii=False)
-        selected_layout = generated.layout_hint or node.layout_hint or "content-two-column"
+        selected_layout = (
+            generated.layout_hint or node.layout_hint or "content-two-column"
+        )
         layout_hint = json.dumps(selected_layout, ensure_ascii=False)
-        visual_kind_literal = json.dumps((visual_kind or "shape").strip().lower(), ensure_ascii=False)
+        visual_kind_literal = json.dumps(
+            (visual_kind or "shape").strip().lower(), ensure_ascii=False
+        )
         visual_assets_literal = json.dumps(visual_assets or [], ensure_ascii=False)
         chart_plan_literal = json.dumps(
             {
@@ -2686,7 +3294,11 @@ class RunOrchestrator:
             },
             ensure_ascii=False,
         )
-        badge = self._build_page_badge_js(slide_no=slide_no, style=design.style) if page_type != SlidePageType.COVER else ""
+        badge = (
+            self._build_page_badge_js(slide_no=slide_no, style=design.style)
+            if page_type != SlidePageType.COVER
+            else ""
+        )
         content_block = self._slide_content_block(
             page_type=page_type,
             layout_hint=selected_layout,
@@ -2755,7 +3367,14 @@ class RunOrchestrator:
             ]
         )
 
-    def _slide_content_block(self, *, page_type: SlidePageType, layout_hint: str, style: StyleRecipe, visual_kind: str = "shape") -> str:
+    def _slide_content_block(
+        self,
+        *,
+        page_type: SlidePageType,
+        layout_hint: str,
+        style: StyleRecipe,
+        visual_kind: str = "shape",
+    ) -> str:
         if page_type == SlidePageType.COVER:
             return self._slide_block_cover(layout_hint)
         if page_type == SlidePageType.TOC:
@@ -2789,7 +3408,14 @@ class RunOrchestrator:
 
     def _theme_js_literal(self, theme: dict[str, str]) -> str:
         safe = {k: v.replace("#", "") for k, v in theme.items()}
-        return "{ " + ", ".join(f"{k}: '{safe[k]}'" for k in ("primary", "secondary", "accent", "light", "bg")) + " }"
+        return (
+            "{ "
+            + ", ".join(
+                f"{k}: '{safe[k]}'"
+                for k in ("primary", "secondary", "accent", "light", "bg")
+            )
+            + " }"
+        )
 
     def _slide_block_cover(self, layout_hint: str) -> str:
         if layout_hint == "cover-center":
@@ -2886,7 +3512,9 @@ class RunOrchestrator:
             ]
         )
 
-    def _slide_block_content(self, layout_hint: str, *, visual_kind: str = "shape") -> str:
+    def _slide_block_content(
+        self, layout_hint: str, *, visual_kind: str = "shape"
+    ) -> str:
         visual_header = [
             "  const visualKind = String(slideConfig.visualKind || 'shape').toLowerCase();",
             "  const visualAssets = Array.isArray(slideConfig.assets) ? slideConfig.assets.filter((item) => item && typeof item.path === 'string' && item.path.trim()) : [];",
@@ -3039,13 +3667,21 @@ class RunOrchestrator:
         issues: list[str] = []
         previous_report = run.qa_report if isinstance(run.qa_report, dict) else {}
         verification_cycles = int(previous_report.get("verification_cycles", 0))
-        preview_cache_in = previous_report.get("preview_cache", {}) if isinstance(previous_report.get("preview_cache", {}), dict) else {}
+        preview_cache_in = (
+            previous_report.get("preview_cache", {})
+            if isinstance(previous_report.get("preview_cache", {}), dict)
+            else {}
+        )
         preview_cache_out: dict[str, Any] = {}
 
         if mode == GenerationMode.SCRATCH:
             slides_dir = artifact_dir / "slides"
             slide_files = sorted(
-                [path for path in slides_dir.glob("slide-*.js") if re.fullmatch(r"slide-\d{2}\.js", path.name)]
+                [
+                    path
+                    for path in slides_dir.glob("slide-*.js")
+                    if re.fullmatch(r"slide-\d{2}\.js", path.name)
+                ]
             )
             if not slide_files:
                 issues.append("no slide js files generated")
@@ -3057,63 +3693,133 @@ class RunOrchestrator:
             for idx, path in enumerate(slide_files, start=1):
                 text = path.read_text(encoding="utf-8")
                 page_type_match = re.search(r"type:\s*['\"]([^'\"]+)['\"]", text)
-                page_type = page_type_match.group(1).strip().lower() if page_type_match else ""
+                page_type = (
+                    page_type_match.group(1).strip().lower() if page_type_match else ""
+                )
                 if not page_type:
-                    page_type_match = re.search(r"page_type:\s*['\"]([^'\"]+)['\"]", text)
-                    page_type = page_type_match.group(1).strip().lower() if page_type_match else ""
+                    page_type_match = re.search(
+                        r"page_type:\s*['\"]([^'\"]+)['\"]", text
+                    )
+                    page_type = (
+                        page_type_match.group(1).strip().lower()
+                        if page_type_match
+                        else ""
+                    )
                 static_issues: list[str] = []
                 if "module.exports = { createSlide, slideConfig };" not in text:
                     static_issues.append(f"{path.name}: missing export contract")
                 if "function createSlide(pres, theme)" not in text:
                     static_issues.append(f"{path.name}: createSlide signature invalid")
                 if "async function createSlide" in text:
-                    static_issues.append(f"{path.name}: createSlide must be synchronous")
+                    static_issues.append(
+                        f"{path.name}: createSlide must be synchronous"
+                    )
                 if re.search(r"['\"]#[0-9a-fA-F]{3,8}['\"]", text):
                     static_issues.append(f"{path.name}: hex color with # is forbidden")
                 if re.search(r"['\"][0-9a-fA-F]{8}['\"]", text):
                     static_issues.append(f"{path.name}: 8-char hex color is forbidden")
-                if idx > 1 and not self._has_valid_page_badge(js_code=text, slide_no=idx):
-                    static_issues.append(f"{path.name}: missing required page badge position")
-                theme_hits = sum(1 for key in ("theme.primary", "theme.secondary", "theme.accent", "theme.light", "theme.bg") if key in text)
-                if "theme.primary" not in text or "theme.bg" not in text or theme_hits < 4:
+                if idx > 1 and not self._has_valid_page_badge(
+                    js_code=text, slide_no=idx
+                ):
+                    static_issues.append(
+                        f"{path.name}: missing required page badge position"
+                    )
+                theme_hits = sum(
+                    1
+                    for key in (
+                        "theme.primary",
+                        "theme.secondary",
+                        "theme.accent",
+                        "theme.light",
+                        "theme.bg",
+                    )
+                    if key in text
+                )
+                if (
+                    "theme.primary" not in text
+                    or "theme.bg" not in text
+                    or theme_hits < 4
+                ):
                     static_issues.append(f"{path.name}: theme key usage incomplete")
                 if any(char in text for char in ("•", "✓", "▪", "◦")):
                     static_issues.append(f"{path.name}: unicode bullet symbol detected")
                 if re.search(r"addShape\(pres\.shapes\.LINE,[^\n]*y:\s*1\.[0-3]", text):
-                    static_issues.append(f"{path.name}: title accent line pattern detected")
-                if page_type == "content" and all(token not in text for token in ("addShape(", "addImage(", "addChart(")):
-                    static_issues.append(f"{path.name}: content slide missing non-text visual element")
+                    static_issues.append(
+                        f"{path.name}: title accent line pattern detected"
+                    )
+                if page_type == "content" and all(
+                    token not in text
+                    for token in ("addShape(", "addImage(", "addChart(")
+                ):
+                    static_issues.append(
+                        f"{path.name}: content slide missing non-text visual element"
+                    )
                 image_sig_issues = collect_addimage_signature_issues(
                     text,
-                    extract_method_call_args=lambda payload, method_expr: self._extract_method_call_args(payload, method_expr=method_expr),
+                    extract_method_call_args=lambda payload, method_expr: self._extract_method_call_args(
+                        payload, method_expr=method_expr
+                    ),
                     dedupe=self._dedupe_preserve_order,
                 )
                 for issue in image_sig_issues:
                     static_issues.append(f"{path.name}: {issue}")
-                planned_assets = extract_planned_asset_paths(js_code=text, slide_plan=None, dedupe=self._dedupe_preserve_order)
-                main_asset = extract_main_asset_path(js_code=text, slide_plan=None, dedupe=self._dedupe_preserve_order)
+                planned_assets = extract_planned_asset_paths(
+                    js_code=text, slide_plan=None, dedupe=self._dedupe_preserve_order
+                )
+                main_asset = extract_main_asset_path(
+                    js_code=text, slide_plan=None, dedupe=self._dedupe_preserve_order
+                )
                 if page_type == "content" and planned_assets:
                     if "addImage(" not in text:
-                        static_issues.append(f"{path.name}: visual assets planned but addImage() missing")
+                        static_issues.append(
+                            f"{path.name}: visual assets planned but addImage() missing"
+                        )
                     if main_asset and main_asset not in text:
-                        static_issues.append(f"{path.name}: visual assets planned but main image path not used")
+                        static_issues.append(
+                            f"{path.name}: visual assets planned but main image path not used"
+                        )
                     if has_image_placeholder_text(text):
-                        static_issues.append(f"{path.name}: image placeholder text remains while visual assets are planned")
-                if page_type == "content" and run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED:
+                        static_issues.append(
+                            f"{path.name}: image placeholder text remains while visual assets are planned"
+                        )
+                if (
+                    page_type == "content"
+                    and run.input.visual_policy == VisualPolicy.MEDIA_REQUIRED
+                ):
                     if "addImage(" not in text:
-                        static_issues.append(f"{path.name}: visual_policy media_required expects addImage()")
+                        static_issues.append(
+                            f"{path.name}: visual_policy media_required expects addImage()"
+                        )
                     if all(token not in text for token in ("addShape(", "addChart(")):
-                        static_issues.append(f"{path.name}: visual_policy media_required expects shape/chart complement")
-                if page_type == "content" and run.input.visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY and "addImage(" in text:
-                    static_issues.append(f"{path.name}: visual_policy basic_graphics_only forbids addImage()")
-                layout_match = re.search(r"(?:layoutHint|layout):\s*['\"]([^'\"]+)['\"]", text)
+                        static_issues.append(
+                            f"{path.name}: visual_policy media_required expects shape/chart complement"
+                        )
+                if (
+                    page_type == "content"
+                    and run.input.visual_policy == VisualPolicy.BASIC_GRAPHICS_ONLY
+                    and "addImage(" in text
+                ):
+                    static_issues.append(
+                        f"{path.name}: visual_policy basic_graphics_only forbids addImage()"
+                    )
+                layout_match = re.search(
+                    r"(?:layoutHint|layout):\s*['\"]([^'\"]+)['\"]", text
+                )
                 if layout_match:
                     observed_layouts.append(layout_match.group(1))
 
                 checksum = f"{zlib.crc32(text.encode('utf-8')):08x}"
-                cache_entry = preview_cache_in.get(path.name, {}) if isinstance(preview_cache_in.get(path.name, {}), dict) else {}
+                cache_entry = (
+                    preview_cache_in.get(path.name, {})
+                    if isinstance(preview_cache_in.get(path.name, {}), dict)
+                    else {}
+                )
                 unchanged = str(cache_entry.get("hash", "")) == checksum
-                cached_preview_issues = [str(item) for item in cache_entry.get("issues", [])] if isinstance(cache_entry.get("issues", []), list) else []
+                cached_preview_issues = (
+                    [str(item) for item in cache_entry.get("issues", [])]
+                    if isinstance(cache_entry.get("issues", []), list)
+                    else []
+                )
 
                 preview_issues: list[str] = []
                 preview_checked = False
@@ -3122,7 +3828,9 @@ class RunOrchestrator:
                 else:
                     should_preview = verification_cycles == 0 or not unchanged
                     if should_preview:
-                        preview_issues = await self._run_slide_preview_qa(run_id=run_id, slide_js=path, slide_no=idx)
+                        preview_issues = await self._run_slide_preview_qa(
+                            run_id=run_id, slide_js=path, slide_no=idx
+                        )
                         preview_checked = True
                         preview_runs += 1
                     else:
@@ -3137,12 +3845,24 @@ class RunOrchestrator:
                     "checked": preview_checked,
                 }
 
-            if verification_cycles > 0 and preview_runs == 0 and unchanged_preview_candidates:
-                sample_path, sample_no, sample_checksum = unchanged_preview_candidates[0]
-                sample_issues = await self._run_slide_preview_qa(run_id=run_id, slide_js=sample_path, slide_no=sample_no)
+            if (
+                verification_cycles > 0
+                and preview_runs == 0
+                and unchanged_preview_candidates
+            ):
+                sample_path, sample_no, sample_checksum = unchanged_preview_candidates[
+                    0
+                ]
+                sample_issues = await self._run_slide_preview_qa(
+                    run_id=run_id, slide_js=sample_path, slide_no=sample_no
+                )
                 preview_runs += 1
                 cached = preview_cache_out.get(sample_path.name, {})
-                prev_cached_issues = [str(item) for item in cached.get("issues", [])] if isinstance(cached.get("issues", []), list) else []
+                prev_cached_issues = (
+                    [str(item) for item in cached.get("issues", [])]
+                    if isinstance(cached.get("issues", []), list)
+                    else []
+                )
                 if sample_issues:
                     issues.extend(sample_issues)
                 preview_cache_out[sample_path.name] = {
@@ -3158,7 +3878,9 @@ class RunOrchestrator:
                     break
 
             if run.pptx_path:
-                markitdown_ok, extract_issue = await self._markitdown_check(Path(run.pptx_path))
+                markitdown_ok, extract_issue = await self._markitdown_check(
+                    Path(run.pptx_path)
+                )
                 if not markitdown_ok and extract_issue:
                     issues.append(extract_issue)
             else:
@@ -3175,21 +3897,32 @@ class RunOrchestrator:
                 if not slide_js.exists():
                     issues.append(f"slide-{artifact.slide_no:02d}: js file missing")
                     continue
-                issues.extend(await self._run_slide_preview_qa(run_id=run_id, slide_js=slide_js, slide_no=artifact.slide_no))
+                issues.extend(
+                    await self._run_slide_preview_qa(
+                        run_id=run_id, slide_js=slide_js, slide_no=artifact.slide_no
+                    )
+                )
 
             if not run.pptx_path or not Path(run.pptx_path).exists():
                 issues.append("template mode output pptx missing")
             else:
-                markitdown_ok, extract_issue = await self._markitdown_check(Path(run.pptx_path))
+                markitdown_ok, extract_issue = await self._markitdown_check(
+                    Path(run.pptx_path)
+                )
                 if not markitdown_ok and extract_issue:
                     issues.append(extract_issue)
 
-        deduped_issues = self._dedupe_preserve_order([str(item) for item in issues if str(item).strip()])
+        deduped_issues = self._dedupe_preserve_order(
+            [str(item) for item in issues if str(item).strip()]
+        )
         issues_by_slide, global_issues = self._split_qa_issues_by_slide(deduped_issues)
         report = {
             "passed": not deduped_issues,
             "issues": deduped_issues,
-            "issues_by_slide": {str(k): v for k, v in sorted(issues_by_slide.items(), key=lambda x: x[0])},
+            "issues_by_slide": {
+                str(k): v
+                for k, v in sorted(issues_by_slide.items(), key=lambda x: x[0])
+            },
             "global_issues": global_issues,
             "verification_cycles": verification_cycles,
             "preview_cache": preview_cache_out,
@@ -3197,6 +3930,7 @@ class RunOrchestrator:
         await self.store.update_run(run_id, lambda r: setattr(r, "qa_report", report))
         await self._publish(run_id, EventType.QA_COMPLETED, report)
         return not deduped_issues
+
     async def _markitdown_check(self, pptx_path: Path) -> tuple[bool, str | None]:
         result = await asyncio.to_thread(
             subprocess.run,
@@ -3211,7 +3945,9 @@ class RunOrchestrator:
             return False, "markitdown qa failed"
         text = (result.stdout or "").strip()
         lowered = text.lower()
-        if re.search(r"(xxxx|lorem|ipsum|placeholder|todo|this.*(page|slide).*layout)", lowered):
+        if re.search(
+            r"(xxxx|lorem|ipsum|placeholder|todo|this.*(page|slide).*layout)", lowered
+        ):
             return False, "markitdown detected placeholder text"
         if len(text) < 20:
             return False, "markitdown extracted too little content"
@@ -3231,13 +3967,17 @@ class RunOrchestrator:
             return "", "markitdown qa failed"
         text = (result.stdout or "").strip()
         lowered = text.lower()
-        if re.search(r"(xxxx|lorem|ipsum|placeholder|todo|this.*(page|slide).*layout)", lowered):
+        if re.search(
+            r"(xxxx|lorem|ipsum|placeholder|todo|this.*(page|slide).*layout)", lowered
+        ):
             return text, "markitdown detected placeholder text"
         if len(text) < 20:
             return text, "markitdown extracted too little content"
         return text, None
 
-    def _summarize_process_failure(self, *, stderr: str, stdout: str) -> tuple[str, str]:
+    def _summarize_process_failure(
+        self, *, stderr: str, stdout: str
+    ) -> tuple[str, str]:
         combined = (stderr or stdout or "").strip()
         if not combined:
             return "preview compile failed", ""
@@ -3250,14 +3990,22 @@ class RunOrchestrator:
         ]
         if not lines:
             return "preview compile failed", ""
-        filtered = [line for line in lines if not re.fullmatch(r"Node\.js v\d+(?:\.\d+){1,3}", line)]
+        filtered = [
+            line
+            for line in lines
+            if not re.fullmatch(r"Node\.js v\d+(?:\.\d+){1,3}", line)
+        ]
         focus = filtered or lines
         reason = focus[0][:240] if focus else "preview compile failed"
         details = " | ".join(focus[:5])[:1200]
         return reason, details
 
-    async def _run_slide_preview_qa(self, *, run_id: str, slide_js: Path, slide_no: int) -> list[str]:
-        issues, _, _ = await self._run_slide_preview_qa_with_text(run_id=run_id, slide_js=slide_js, slide_no=slide_no)
+    async def _run_slide_preview_qa(
+        self, *, run_id: str, slide_js: Path, slide_no: int
+    ) -> list[str]:
+        issues, _, _ = await self._run_slide_preview_qa_with_text(
+            run_id=run_id, slide_js=slide_js, slide_no=slide_no
+        )
         return issues
 
     async def _run_slide_preview_qa_with_text(
@@ -3274,13 +4022,19 @@ class RunOrchestrator:
         preview_file = slide_js.parent / f"slide-{slide_no:02d}-preview.pptx"
         preview_runner = slide_js.parent / f".preview-runner-{slide_no:02d}.js"
         preview_runner.write_text(
-            self._build_preview_runner_js(slide_js_name=slide_js.name, preview_name=preview_file.name),
+            self._build_preview_runner_js(
+                slide_js_name=slide_js.name, preview_name=preview_file.name
+            ),
             encoding="utf-8",
         )
         preview_cmd = ["node", preview_runner.name]
         acquired = False
         try:
-            acquired = await asyncio.to_thread(self._preview_qa_gate.acquire, True, max(2.0, self.settings.llm_timeout_sec))
+            acquired = await asyncio.to_thread(
+                self._preview_qa_gate.acquire,
+                True,
+                max(2.0, self.settings.llm_timeout_sec),
+            )
             if not acquired:
                 raise TimeoutError("preview compile gate timeout")
             result = await asyncio.to_thread(
@@ -3302,7 +4056,9 @@ class RunOrchestrator:
                 "error_class": type(exc).__name__,
                 "error_message": self._exception_reason(exc),
             }
-            issues.append(f"{slide_js.name}: preview compile failed: {self._exception_reason(exc)}")
+            issues.append(
+                f"{slide_js.name}: preview compile failed: {self._exception_reason(exc)}"
+            )
             await self._publish(
                 run_id,
                 EventType.SLIDE_PREVIEW_QA,
@@ -3319,7 +4075,9 @@ class RunOrchestrator:
                 self._preview_qa_gate.release()
             preview_runner.unlink(missing_ok=True)
         if result.returncode != 0:
-            reason, details = self._summarize_process_failure(stderr=result.stderr or "", stdout=result.stdout or "")
+            reason, details = self._summarize_process_failure(
+                stderr=result.stderr or "", stdout=result.stdout or ""
+            )
             issues.append(f"{slide_js.name}: preview compile failed: {reason}")
             if details:
                 issues.append(f"{slide_js.name}: preview compile details: {details}")
@@ -3341,7 +4099,9 @@ class RunOrchestrator:
                 },
             )
             return issues, preview_text, diagnostics
-        known_reason = self._known_compile_stderr_reason(stderr=result.stderr or "", stdout=result.stdout or "")
+        known_reason = self._known_compile_stderr_reason(
+            stderr=result.stderr or "", stdout=result.stdout or ""
+        )
         if known_reason:
             issues.append(f"{slide_js.name}: preview compile failed: {known_reason}")
             diagnostics = {
@@ -3401,7 +4161,11 @@ class RunOrchestrator:
             cleanup_note = "kept_by_debug"
         await self._append_artifact_cleanup_entry(
             run_id=run_id,
-            entry={"slide_no": slide_no, "file": str(preview_file), "action": cleanup_note},
+            entry={
+                "slide_no": slide_no,
+                "file": str(preview_file),
+                "action": cleanup_note,
+            },
         )
         await self._publish(
             run_id,
@@ -3440,10 +4204,16 @@ class RunOrchestrator:
             ]
         )
 
-    async def _mandatory_polish_cycle(self, run_id: str, *, mode: GenerationMode, design: DesignProfile) -> bool:
-        return await self.quality_engine.mandatory_polish_cycle(run_id, mode=mode, design=design)
+    async def _mandatory_polish_cycle(
+        self, run_id: str, *, mode: GenerationMode, design: DesignProfile
+    ) -> bool:
+        return await self.quality_engine.mandatory_polish_cycle(
+            run_id, mode=mode, design=design
+        )
 
-    async def _repair_loop(self, run_id: str, *, mode: GenerationMode, design: DesignProfile) -> bool:
+    async def _repair_loop(
+        self, run_id: str, *, mode: GenerationMode, design: DesignProfile
+    ) -> bool:
         return await self.quality_engine.repair_loop(run_id, mode=mode, design=design)
 
     async def _compile_scratch_slides(self, run_id: str) -> bool:
@@ -3457,7 +4227,9 @@ class RunOrchestrator:
             theme=self._resolve_design_profile(
                 topic=run.input.topic,
                 template_style=self._resolved_template_style(run),
-                requirements_report=run.research_report if isinstance(run.research_report, dict) else {},
+                requirements_report=(
+                    run.research_report if isinstance(run.research_report, dict) else {}
+                ),
             ).theme,
         )
         return bool(result["ok"])
@@ -3475,22 +4247,42 @@ class RunOrchestrator:
             forced_issues=forced_issues,
         )
 
-    async def _append_chart_truth_report(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self.reporting_engine.append_chart_truth_report(run_id=run_id, entry=entry)
+    async def _append_chart_truth_report(
+        self, *, run_id: str, entry: dict[str, Any]
+    ) -> None:
+        await self.reporting_engine.append_chart_truth_report(
+            run_id=run_id, entry=entry
+        )
 
-    async def _append_quality_entry(self, *, run_id: str, entry: dict[str, Any]) -> None:
+    async def _append_quality_entry(
+        self, *, run_id: str, entry: dict[str, Any]
+    ) -> None:
         await self.reporting_engine.append_quality_entry(run_id=run_id, entry=entry)
 
-    async def _append_quality_gate_entry(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self.reporting_engine.append_quality_gate_entry(run_id=run_id, entry=entry)
+    async def _append_quality_gate_entry(
+        self, *, run_id: str, entry: dict[str, Any]
+    ) -> None:
+        await self.reporting_engine.append_quality_gate_entry(
+            run_id=run_id, entry=entry
+        )
 
-    async def _append_candidate_selection_entry(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self.reporting_engine.append_candidate_selection_entry(run_id=run_id, entry=entry)
+    async def _append_candidate_selection_entry(
+        self, *, run_id: str, entry: dict[str, Any]
+    ) -> None:
+        await self.reporting_engine.append_candidate_selection_entry(
+            run_id=run_id, entry=entry
+        )
 
-    async def _append_artifact_cleanup_entry(self, *, run_id: str, entry: dict[str, Any]) -> None:
-        await self.reporting_engine.append_artifact_cleanup_entry(run_id=run_id, entry=entry)
+    async def _append_artifact_cleanup_entry(
+        self, *, run_id: str, entry: dict[str, Any]
+    ) -> None:
+        await self.reporting_engine.append_artifact_cleanup_entry(
+            run_id=run_id, entry=entry
+        )
 
-    async def _append_repair_history(self, *, run_id: str, entry: dict[str, Any]) -> None:
+    async def _append_repair_history(
+        self, *, run_id: str, entry: dict[str, Any]
+    ) -> None:
         await self.reporting_engine.append_repair_history(run_id=run_id, entry=entry)
 
     async def _fail_run(
@@ -3509,15 +4301,22 @@ class RunOrchestrator:
             error_details=error_details,
         )
 
-    def _normalize_citations(self, citations: list[str], rag_source_ids: list[str], slide_no: int) -> list[str]:
+    def _normalize_citations(
+        self, citations: list[str], rag_source_ids: list[str], slide_no: int
+    ) -> list[str]:
         normalized = [item for item in citations if item]
         if normalized:
             return list(dict.fromkeys(normalized))
         if not rag_source_ids:
             return []
         first = rag_source_ids[(slide_no - 1) % len(rag_source_ids)]
-        second = rag_source_ids[slide_no % len(rag_source_ids)] if len(rag_source_ids) > 1 else first
+        second = (
+            rag_source_ids[slide_no % len(rag_source_ids)]
+            if len(rag_source_ids) > 1
+            else first
+        )
         return list(dict.fromkeys([first, second]))
+
 
 def build_orchestrator(base_dir: Path) -> RunOrchestrator:
     settings = load_settings()
@@ -3554,13 +4353,3 @@ def build_orchestrator(base_dir: Path) -> RunOrchestrator:
         llm_client=llm_client,
         settings=settings,
     )
-
-
-
-
-
-
-
-
-
-

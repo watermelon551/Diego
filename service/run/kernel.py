@@ -76,6 +76,7 @@ class RunKernel:
             slides=run.slides,
             citation_map=run.citation_map,
             stage_timings=run.stage_timings,
+            render_version=run.render_version,
             error_code=run.error_code,
             failed_stage=run.failed_stage,
             retryable=run.retryable,
@@ -97,7 +98,9 @@ class RunKernel:
             events=run.events,
         )
 
-    async def confirm_outline(self, run_id: str, req: ConfirmOutlineRequest) -> RunSummaryResponse | None:
+    async def confirm_outline(
+        self, run_id: str, req: ConfirmOutlineRequest
+    ) -> RunSummaryResponse | None:
         run = await self.orch.store.get_run(run_id)
         if run is None:
             return None
@@ -122,9 +125,17 @@ class RunKernel:
             current_version = r.outline.version if r.outline is not None else None
             if req.outline is not None:
                 r.outline = req.outline
-            r.status = RunStatus.SLIDES_GENERATING if req.approved else RunStatus.AWAITING_OUTLINE_CONFIRM
+            r.status = (
+                RunStatus.SLIDES_GENERATING
+                if req.approved
+                else RunStatus.AWAITING_OUTLINE_CONFIRM
+            )
             new_version = r.outline.version if r.outline is not None else None
-            action = "confirmed" if req.approved else ("updated" if req.outline is not None else "rejected")
+            action = (
+                "confirmed"
+                if req.approved
+                else ("updated" if req.outline is not None else "rejected")
+            )
             r.outline_history.append(
                 OutlineHistoryEntry(
                     action=action,
@@ -152,13 +163,19 @@ class RunKernel:
             self.orch._spawn(self.execute_generation_pipeline(run_id))
         updated = await self.orch.store.get_run(run_id)
         assert updated is not None
-        return RunSummaryResponse(run_id=updated.run_id, trace_id=updated.trace_id, status=updated.status)
+        return RunSummaryResponse(
+            run_id=updated.run_id, trace_id=updated.trace_id, status=updated.status
+        )
 
-    async def publish(self, run_id: str, event_type: EventType, payload: dict[str, Any]) -> None:
+    async def publish(
+        self, run_id: str, event_type: EventType, payload: dict[str, Any]
+    ) -> None:
         run = await self.orch.store.get_run(run_id)
         if run is None:
             return
-        event = RunEvent(seq=len(run.events) + 1, event=event_type, ts=now_iso(), payload=payload)
+        event = RunEvent(
+            seq=len(run.events) + 1, event=event_type, ts=now_iso(), payload=payload
+        )
         await self.orch.store.append_event(run_id, event)
 
     async def fail_run(
@@ -177,7 +194,11 @@ class RunKernel:
             r.error_details = dict(error_details or {})
 
         await self.orch.store.update_run(run_id, apply_fail)
-        payload: dict[str, Any] = {"error_code": error_code, "failed_stage": stage, "retryable": retryable}
+        payload: dict[str, Any] = {
+            "error_code": error_code,
+            "failed_stage": stage,
+            "retryable": retryable,
+        }
         if error_details:
             payload["error_details"] = error_details
         self.orch._clear_run_llm_budget(run_id)
@@ -185,10 +206,16 @@ class RunKernel:
         await self.publish(
             run_id,
             EventType.RUN_FINALIZED,
-            {"final_status": RunStatus.FAILED.value, "from_stage": stage, "reason": error_code},
+            {
+                "final_status": RunStatus.FAILED.value,
+                "from_stage": stage,
+                "reason": error_code,
+            },
         )
 
-    async def finalize_run_success(self, run_id: str, *, from_stage: str, reason: str) -> None:
+    async def finalize_run_success(
+        self, run_id: str, *, from_stage: str, reason: str
+    ) -> None:
         def apply_success(r: RunRecord) -> None:
             r.status = RunStatus.SUCCEEDED
             r.error_code = None
@@ -201,7 +228,11 @@ class RunKernel:
         await self.publish(
             run_id,
             EventType.RUN_FINALIZED,
-            {"final_status": RunStatus.SUCCEEDED.value, "from_stage": from_stage, "reason": reason},
+            {
+                "final_status": RunStatus.SUCCEEDED.value,
+                "from_stage": from_stage,
+                "reason": reason,
+            },
         )
 
     async def start_outline(self, run_id: str) -> None:
@@ -213,7 +244,9 @@ class RunKernel:
     async def execute_generation_pipeline(self, run_id: str) -> None:
         ctx = await RunContext.load(store=self.orch.store, run_id=run_id)
         if ctx is None or ctx.run.outline is None:
-            await self.fail_run(run_id, "SLIDES_GENERATING", "OUTLINE_MISSING", retryable=False)
+            await self.fail_run(
+                run_id, "SLIDES_GENERATING", "OUTLINE_MISSING", retryable=False
+            )
             return
         try:
             if ctx.run.input.generation_mode == GenerationMode.TEMPLATE:
@@ -229,4 +262,6 @@ class RunKernel:
                 error_details=exc.details,
             )
         except Exception:
-            await self.fail_run(run_id, "SLIDES_GENERATING", "GENERATION_PIPELINE_ERROR", retryable=True)
+            await self.fail_run(
+                run_id, "SLIDES_GENERATING", "GENERATION_PIPELINE_ERROR", retryable=True
+            )

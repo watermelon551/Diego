@@ -11,6 +11,7 @@ from ..design.style_catalog import (
     normalize_style_choice,
 )
 
+
 class RunStatus(str, Enum):
     OUTLINE_DRAFTING = "OUTLINE_DRAFTING"
     AWAITING_OUTLINE_CONFIRM = "AWAITING_OUTLINE_CONFIRM"
@@ -196,6 +197,7 @@ class ConfirmOutlineRequest(BaseModel):
 class RegenerateSlideRequest(BaseModel):
     instruction: str = Field(min_length=1)
     preserve_style: bool = True
+    expected_render_version: Optional[int] = Field(default=None, ge=1)
 
 
 class EditableSlideNodeBBox(BaseModel):
@@ -236,7 +238,9 @@ class SaveSlideSceneOperation(BaseModel):
 
 class SaveSlideSceneRequest(BaseModel):
     scene_version: str = Field(min_length=1)
-    operations: list[SaveSlideSceneOperation] = Field(default_factory=list, min_length=1)
+    operations: list[SaveSlideSceneOperation] = Field(
+        default_factory=list, min_length=1
+    )
 
 
 class SaveSlideSceneResponse(BaseModel):
@@ -244,6 +248,7 @@ class SaveSlideSceneResponse(BaseModel):
     slide_id: str = Field(min_length=1)
     slide_index: int = Field(ge=0)
     slide_no: int = Field(ge=1)
+    render_version: int = Field(default=0, ge=0)
     status: str = Field(default="ready")
     scene: EditableSlideScene
     preview: dict[str, Any] = Field(default_factory=dict)
@@ -269,6 +274,7 @@ class RunRecord(BaseModel):
     citation_map: dict[int, list[str]] = Field(default_factory=dict)
     events: list[RunEvent] = Field(default_factory=list)
     stage_timings: StageTimings = Field(default_factory=StageTimings)
+    render_version: int = 0
     error_code: Optional[str] = None
     failed_stage: Optional[str] = None
     retryable: bool = False
@@ -307,6 +313,7 @@ class RunDetailResponse(BaseModel):
     slides: list[SlideArtifact]
     citation_map: dict[int, list[str]]
     stage_timings: StageTimings
+    render_version: int = 0
     error_code: Optional[str]
     failed_stage: Optional[str]
     retryable: bool

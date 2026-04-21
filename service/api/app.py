@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from ..models import (
@@ -51,7 +52,9 @@ async def _sse_generator(ctx: AppContext, run_id: str):
             yield ": keep-alive\n\n"
 
 
-def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | None = None) -> FastAPI:
+def create_app(
+    base_dir: Path | None = None, orchestrator: RunOrchestrator | None = None
+) -> FastAPI:
     app = FastAPI(title="Diego", version="0.1.0")
     resolved_base = base_dir or (Path.cwd() / ".runtime")
     resolved_base.mkdir(parents=True, exist_ok=True)
@@ -61,9 +64,10 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
     @app.on_event("startup")
     async def _startup_runtime_recovery() -> None:
         await ctx.orchestrator.store.initialize()
-        if (
-            getattr(ctx.orchestrator.settings, "run_store", "memory") == "postgres"
-            and bool(getattr(ctx.orchestrator.settings, "recovery_scan_on_boot", True))
+        if getattr(
+            ctx.orchestrator.settings, "run_store", "memory"
+        ) == "postgres" and bool(
+            getattr(ctx.orchestrator.settings, "recovery_scan_on_boot", True)
         ):
             await ctx.orchestrator.recover_interrupted_runs()
 
@@ -82,11 +86,15 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
     @app.post("/v1/ppt/templates")
     async def upload_template(file: UploadFile = File(...)):
         if not file.filename.lower().endswith(".pptx"):
-            raise HTTPException(status_code=400, detail="only .pptx template is supported")
+            raise HTTPException(
+                status_code=400, detail="only .pptx template is supported"
+            )
         data = await file.read()
         if not data:
             raise HTTPException(status_code=400, detail="empty template file")
-        return await ctx.orchestrator.upload_template(filename=file.filename, content=data)
+        return await ctx.orchestrator.upload_template(
+            filename=file.filename, content=data
+        )
 
     @app.get("/v1/ppt/templates/{template_id}")
     async def get_template(template_id: str):
@@ -130,12 +138,35 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
             raise HTTPException(status_code=404, detail="run not found")
         return scene
 
+    @app.get("/v1/ppt/runs/{run_id}/slides/{slide_no}/asset")
+    async def get_slide_asset(run_id: str, slide_no: int, path: str = Query(...)):
+        if slide_no < 1:
+            raise HTTPException(status_code=400, detail="slide_no must be >= 1")
+        try:
+            resolved_path = await ctx.orchestrator.get_slide_asset_path(
+                run_id, slide_no, path
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if resolved_path is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        media_type = mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream"
+        return FileResponse(
+            path=str(resolved_path),
+            media_type=media_type,
+            filename=resolved_path.name,
+        )
+
     @app.post("/v1/ppt/runs/{run_id}/slides/{slide_no}/scene/save")
     async def save_slide_scene(run_id: str, slide_no: int, req: SaveSlideSceneRequest):
         if slide_no < 1:
             raise HTTPException(status_code=400, detail="slide_no must be >= 1")
         try:
-            result = await ctx.orchestrator.save_slide_scene(run_id=run_id, slide_no=slide_no, req=req)
+            result = await ctx.orchestrator.save_slide_scene(
+                run_id=run_id, slide_no=slide_no, req=req
+            )
         except SlideSceneConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (SlideSceneUnsupportedError, SlideSceneNodeNotFoundError) as exc:
@@ -158,6 +189,7 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
                 slide_no=slide_no,
                 instruction=req.instruction,
                 preserve_style=req.preserve_style,
+                expected_render_version=req.expected_render_version,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -196,6 +228,8 @@ def create_app(base_dir: Path | None = None, orchestrator: RunOrchestrator | Non
         run = await ctx.orchestrator.get_run_detail(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
-        return StreamingResponse(_sse_generator(ctx, run_id), media_type="text/event-stream")
+        return StreamingResponse(
+            _sse_generator(ctx, run_id), media_type="text/event-stream"
+        )
 
     return app

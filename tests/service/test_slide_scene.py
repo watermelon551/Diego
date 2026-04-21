@@ -64,3 +64,60 @@ def test_apply_scene_operations_updates_scene_version_and_values() -> None:
     assert updated.scene.nodes[0].text == "Updated Title"
     assert updated.scene.nodes[1].src == "https://example.com/new.png"
     assert updated.scene.nodes[2].text == "One\nTwo\nThree"
+
+
+def test_build_slide_scene_extracts_local_string_and_array_variables() -> None:
+    js_code = "\n".join(
+        [
+            "function createSlide(pres) {",
+            "  const slide = pres.addSlide();",
+            "  const bodyText = `第一行\\n第二行`;",
+            "  const bulletLines = [\"要点一\", \"要点二\"];",
+            "  slide.addText(bodyText, { x: 0.8, y: 1.2, w: 8.0, h: 1.4, fontSize: 20 });",
+            "  slide.addText(bulletLines, { x: 1.0, y: 3.1, w: 7.4, h: 2.1, fontSize: 16 });",
+            "  return slide;",
+            "}",
+        ]
+    )
+
+    parsed = build_slide_scene(js_code=js_code, run_id="run-2", slide_no=2)
+
+    assert parsed.scene.readonly is False
+    assert [node.node_id for node in parsed.scene.nodes] == [
+        "text:literal:1",
+        "text:literal:2",
+    ]
+    assert parsed.scene.nodes[0].text == "第一行\n第二行"
+    assert parsed.scene.nodes[1].text == "要点一\n要点二"
+
+
+def test_apply_scene_operations_updates_local_template_literal_binding() -> None:
+    js_code = "\n".join(
+        [
+            "function createSlide(pres) {",
+            "  const slide = pres.addSlide();",
+            "  const bodyText = `第一行\\n第二行`;",
+            "  slide.addText(bodyText, { x: 0.8, y: 1.2, w: 8.0, h: 1.4, fontSize: 20 });",
+            "  return slide;",
+            "}",
+        ]
+    )
+    parsed = build_slide_scene(js_code=js_code, run_id="run-3", slide_no=1)
+
+    updated_js, updated = apply_scene_operations(
+        js_code=js_code,
+        parsed_scene=parsed,
+        scene_version=parsed.scene.scene_version,
+        operations=[
+            {
+                "op": "replace_text",
+                "node_id": "text:literal:1",
+                "value": "更新后的正文",
+            }
+        ],
+        run_id="run-3",
+        slide_no=1,
+    )
+
+    assert '"更新后的正文"' in updated_js
+    assert updated.scene.nodes[0].text == "更新后的正文"

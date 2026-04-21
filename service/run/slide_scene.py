@@ -48,8 +48,12 @@ def build_slide_scene(*, js_code: str, run_id: str, slide_no: int) -> _ParsedSce
     slide_index = max(0, slide_no - 1)
     slide_id = f"{run_id}-slide-{slide_index}"
     config = _parse_slide_config(js_code)
-    variable_sources = _parse_variable_sources(js_code)
-    text_nodes = _parse_text_nodes(js_code=js_code, config=config, variable_sources=variable_sources)
+    variable_bindings = _parse_variable_bindings(js_code, config)
+    text_nodes = _parse_text_nodes(
+        js_code=js_code,
+        config=config,
+        variable_bindings=variable_bindings,
+    )
     image_nodes = _parse_image_nodes(js_code=js_code)
 
     bindings: dict[str, _Binding] = {}
@@ -148,19 +152,46 @@ def _serialize_binding_value(*, binding_kind: str, value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _parse_variable_sources(js_code: str) -> dict[str, str]:
-    sources: dict[str, str] = {}
-    for match in re.finditer(
-        r"(?m)^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.+?);?\s*$",
-        js_code,
-    ):
+def _parse_variable_bindings(
+    js_code: str,
+    config: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    bindings: dict[str, dict[str, Any]] = {}
+    for name, expr, span in _iter_variable_declarations(js_code):
+        binding = _resolve_variable_binding(
+            expr=expr,
+            span=span,
+            config=config,
+            variable_bindings=bindings,
+        )
+        if binding is not None:
+            bindings[name] = binding
+    return bindings
+
+
+def _iter_variable_declarations(
+    js_code: str,
+) -> list[tuple[str, str, tuple[int, int]]]:
+    declarations: list[tuple[str, str, tuple[int, int]]] = []
+    pattern = re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=")
+    offset = 0
+    while True:
+        match = pattern.search(js_code, offset)
+        if match is None:
+            break
         name = str(match.group(1))
-        expr = str(match.group(2))
-        prop_match = re.search(r"slideConfig\.([A-Za-z_$][\w$]*)", expr)
-        if prop_match is None:
-            continue
-        sources[name] = str(prop_match.group(1))
-    return sources
+        expr_start = match.end()
+        expr_end = _find_statement_end(js_code, expr_start)
+        if expr_end < 0:
+            break
+        raw_expr = js_code[expr_start:expr_end]
+        stripped = raw_expr.strip()
+        if stripped:
+            absolute_start = expr_start + raw_expr.index(stripped)
+            absolute_end = absolute_start + len(stripped)
+            declarations.append((name, stripped, (absolute_start, absolute_end)))
+        offset = expr_end + 1
+    return declarations
 
 
 def _parse_slide_config(js_code: str) -> dict[str, dict[str, Any]]:
@@ -205,10 +236,11 @@ def _parse_text_nodes(
     *,
     js_code: str,
     config: dict[str, dict[str, Any]],
-    variable_sources: dict[str, str],
+    variable_bindings: dict[str, dict[str, Any]],
 ) -> list[tuple[str, _Binding]]:
     nodes: list[tuple[str, _Binding]] = []
     offset = 0
+    text_node_index = 0
     literal_index = 0
     body_index = 0
     while True:
@@ -228,7 +260,7 @@ def _parse_text_nodes(
             expr=expr,
             expr_start=paren_start + 1,
             config=config,
-            variable_sources=variable_sources,
+            variable_bindings=variable_bindings,
         )
         if binding_info is not None and binding_info["value"].strip():
             bbox, style = _parse_style_and_bbox(options)
@@ -245,11 +277,11 @@ def _parse_text_nodes(
             else:
                 literal_index += 1
                 label = f"Text Box {literal_index}"
-            node_id = (
-                f"text:config:{prop_name}"
-                if prop_name
-                else f"text:literal:{literal_index}"
-            )
+            if prop_name:
+                node_id = f"text:config:{prop_name}"
+            else:
+                text_node_index += 1
+                node_id = f"text:literal:{text_node_index}"
             nodes.append(
                 (
                     node_id,
@@ -275,7 +307,7 @@ def _resolve_text_binding(
     expr: str,
     expr_start: int,
     config: dict[str, dict[str, Any]],
-    variable_sources: dict[str, str],
+    variable_bindings: dict[str, dict[str, Any]],
 ) -> dict[str, Any] | None:
     stripped = expr.strip()
     if not stripped:
@@ -294,15 +326,84 @@ def _resolve_text_binding(
             "prop_name": "",
         }
 
-    prop_name = ""
-    prop_match = re.search(r"slideConfig\.([A-Za-z_$][\w$]*)", stripped)
-    if prop_match is not None:
-        prop_name = str(prop_match.group(1))
-    elif stripped in variable_sources:
-        prop_name = variable_sources[stripped]
-    if not prop_name or prop_name not in config:
+    return _resolve_variable_binding(
+        expr=stripped,
+        span=(absolute_start, absolute_end),
+        config=config,
+        variable_bindings=variable_bindings,
+    )
+
+
+def _resolve_variable_binding(
+    *,
+    expr: str,
+    span: tuple[int, int],
+    config: dict[str, dict[str, Any]],
+    variable_bindings: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    stripped = expr.strip()
+    if not stripped:
         return None
 
+    direct_binding = _binding_from_literal_or_reference(
+        stripped,
+        span=span,
+        config=config,
+        variable_bindings=variable_bindings,
+    )
+    if direct_binding is not None:
+        return direct_binding
+
+    map_source = _resolve_map_source_binding(
+        stripped,
+        config=config,
+        variable_bindings=variable_bindings,
+    )
+    if map_source is not None:
+        return map_source
+    return None
+
+
+def _binding_from_literal_or_reference(
+    source: str,
+    *,
+    span: tuple[int, int],
+    config: dict[str, dict[str, Any]],
+    variable_bindings: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    decoded = _decode_js_string(source)
+    if decoded is not None:
+        return {
+            "binding_kind": "text_string",
+            "value": decoded,
+            "span": span,
+            "prop_name": "",
+        }
+
+    parsed_value = _parse_js_value(source)
+    if isinstance(parsed_value, list) and all(isinstance(item, str) for item in parsed_value):
+        return {
+            "binding_kind": "text_array",
+            "value": "\n".join(item for item in parsed_value if item.strip()),
+            "span": span,
+            "prop_name": "",
+        }
+
+    prop_match = re.fullmatch(r"slideConfig\.([A-Za-z_$][\w$]*)", source)
+    if prop_match is not None:
+        return _binding_from_config_entry(config, str(prop_match.group(1)))
+
+    if source in variable_bindings:
+        return dict(variable_bindings[source])
+    return None
+
+
+def _binding_from_config_entry(
+    config: dict[str, dict[str, Any]],
+    prop_name: str,
+) -> dict[str, Any] | None:
+    if prop_name not in config:
+        return None
     config_entry = config[prop_name]
     raw_value = config_entry["value"]
     if isinstance(raw_value, str):
@@ -320,6 +421,30 @@ def _resolve_text_binding(
             "prop_name": prop_name,
         }
     return None
+
+
+def _resolve_map_source_binding(
+    source: str,
+    *,
+    config: dict[str, dict[str, Any]],
+    variable_bindings: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    if ".map" not in source:
+        return None
+
+    prop_match = re.search(r"slideConfig\.([A-Za-z_$][\w$]*)", source)
+    if prop_match is not None:
+        binding = _binding_from_config_entry(config, str(prop_match.group(1)))
+        if binding is not None and binding.get("binding_kind") == "text_array":
+            return binding
+
+    ident_match = re.search(r"([A-Za-z_$][\w$]*)\s*\.map\s*\(", source)
+    if ident_match is None:
+        return None
+    binding = variable_bindings.get(str(ident_match.group(1)))
+    if binding is None or binding.get("binding_kind") != "text_array":
+        return None
+    return dict(binding)
 
 
 def _parse_image_nodes(*, js_code: str) -> list[tuple[str, _Binding]]:
@@ -465,6 +590,17 @@ def _decode_js_string(source: str) -> str | None:
     stripped = source.strip()
     if not _is_quoted_string(stripped):
         return None
+    if stripped.startswith("`") and stripped.endswith("`"):
+        if "${" in stripped:
+            return None
+        body = stripped[1:-1]
+        return (
+            body.replace("\\`", "`")
+            .replace("\\n", "\n")
+            .replace("\\r", "\r")
+            .replace("\\t", "\t")
+            .replace("\\\\", "\\")
+        )
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
@@ -478,7 +614,11 @@ def _decode_js_string(source: str) -> str | None:
 
 def _is_quoted_string(source: str) -> bool:
     stripped = source.strip()
-    return len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}
+    return len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {
+        "'",
+        '"',
+        "`",
+    }
 
 
 def _find_matching(source: str, start_index: int, open_char: str, close_char: str) -> int:
@@ -547,6 +687,48 @@ def _find_top_level_char(source: str, target: str) -> int:
             brace = max(0, brace - 1)
             continue
         if char == target and paren == 0 and bracket == 0 and brace == 0:
+            return index
+    return -1
+
+
+def _find_statement_end(source: str, start_index: int) -> int:
+    quote: str | None = None
+    escaped = False
+    paren = bracket = brace = 0
+    for index in range(start_index, len(source)):
+        char = source[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char == "(":
+            paren += 1
+            continue
+        if char == ")":
+            paren = max(0, paren - 1)
+            continue
+        if char == "[":
+            bracket += 1
+            continue
+        if char == "]":
+            bracket = max(0, bracket - 1)
+            continue
+        if char == "{":
+            brace += 1
+            continue
+        if char == "}":
+            brace = max(0, brace - 1)
+            continue
+        if char == ";" and paren == 0 and bracket == 0 and brace == 0:
             return index
     return -1
 

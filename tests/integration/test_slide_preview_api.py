@@ -43,7 +43,9 @@ class _FakeScenePreviewClient:
                     },
                 }
             )
-        return _FakeScenePreviewResponse(payload={"state": "success", "job_id": "compile-job-1"})
+        return _FakeScenePreviewResponse(
+            payload={"state": "success", "job_id": "compile-job-1"}
+        )
 
     async def get(self, _url: str) -> _FakeScenePreviewResponse:
         assert "/compile/jobs/" in _url
@@ -54,8 +56,14 @@ def test_slide_preview_endpoint_returns_html_when_slide_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("service.run.slide_preview.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
-    monkeypatch.setattr("service.run.engines.compile_engine.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
+    monkeypatch.setattr(
+        "service.run.slide_preview.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    monkeypatch.setattr(
+        "service.run.engines.compile_engine.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
     client = make_client(
         tmp_path,
         pagevra_preview_enabled=True,
@@ -87,12 +95,19 @@ def test_slide_preview_endpoint_returns_html_when_slide_ready(
     assert payload["preview_format"] == "svg"
     assert payload["svg_data_url"] == "data:image/svg+xml;base64,scene-preview"
 
+
 def test_slide_preview_endpoint_returns_conflict_when_slide_not_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("service.run.slide_preview.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
-    monkeypatch.setattr("service.run.engines.compile_engine.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
+    monkeypatch.setattr(
+        "service.run.slide_preview.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    monkeypatch.setattr(
+        "service.run.engines.compile_engine.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
     client = make_client(
         tmp_path,
         pagevra_preview_enabled=True,
@@ -120,8 +135,14 @@ def test_regenerate_slide_endpoint_publishes_final_preview_event(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("service.run.slide_preview.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
-    monkeypatch.setattr("service.run.engines.compile_engine.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
+    monkeypatch.setattr(
+        "service.run.slide_preview.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    monkeypatch.setattr(
+        "service.run.engines.compile_engine.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
     client = make_client(
         tmp_path,
         pagevra_preview_enabled=True,
@@ -145,7 +166,11 @@ def test_regenerate_slide_endpoint_publishes_final_preview_event(
     before = client.get(f"/v1/ppt/runs/{run_id}").json()
     resp = client.post(
         f"/v1/ppt/runs/{run_id}/slides/1/regenerate",
-        json={"instruction": "精简标题", "preserve_style": True},
+        json={
+            "instruction": "精简标题",
+            "preserve_style": True,
+            "expected_render_version": before["render_version"],
+        },
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "SLIDES_GENERATING"
@@ -168,14 +193,68 @@ def test_regenerate_slide_endpoint_publishes_final_preview_event(
     assert payload.get("preview_width") == 960
     assert payload.get("preview_height") == 540
     assert payload.get("is_final") is True
+    assert after["render_version"] == before["render_version"] + 1
+
+
+def test_regenerate_slide_endpoint_rejects_stale_render_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "service.run.slide_preview.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    monkeypatch.setattr(
+        "service.run.engines.compile_engine.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    client = make_client(
+        tmp_path,
+        pagevra_preview_enabled=True,
+        pagevra_base_url="http://pagevra.test",
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Regenerate Conflict",
+            "project_id": "p-regenerate-conflict",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    wait_status(client, run_id, {"SUCCEEDED"})
+
+    detail = client.get(f"/v1/ppt/runs/{run_id}").json()
+    stale_version = detail["render_version"] + 1
+    resp = client.post(
+        f"/v1/ppt/runs/{run_id}/slides/1/regenerate",
+        json={
+            "instruction": "精简标题",
+            "preserve_style": True,
+            "expected_render_version": stale_version,
+        },
+    )
+
+    assert resp.status_code == 409
+    assert "render version conflict" in resp.json()["detail"]
 
 
 def test_slide_scene_endpoint_returns_nodes_and_save_updates_preview(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("service.run.slide_preview.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
-    monkeypatch.setattr("service.run.engines.compile_engine.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
+    monkeypatch.setattr(
+        "service.run.slide_preview.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    monkeypatch.setattr(
+        "service.run.engines.compile_engine.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
     client = make_client(
         tmp_path,
         pagevra_preview_enabled=True,
@@ -202,25 +281,34 @@ def test_slide_scene_endpoint_returns_nodes_and_save_updates_preview(
     assert scene["slide_id"] == f"{run_id}-slide-0"
     assert any(node["node_id"] == "text:config:title" for node in scene["nodes"])
 
+    before_save = client.get(f"/v1/ppt/runs/{run_id}").json()
     save_resp = client.post(
         f"/v1/ppt/runs/{run_id}/slides/1/scene/save",
         json={
             "scene_version": scene["scene_version"],
             "operations": [
-                {"op": "replace_text", "node_id": "text:config:title", "value": "Scene Saved Title"}
+                {
+                    "op": "replace_text",
+                    "node_id": "text:config:title",
+                    "value": "Scene Saved Title",
+                }
             ],
         },
     )
     assert save_resp.status_code == 200
     payload = save_resp.json()
     assert payload["scene"]["nodes"][0]["text"] == "Scene Saved Title"
-    assert payload["preview"]["svg_data_url"] == "data:image/svg+xml;base64,scene-preview"
+    assert payload["render_version"] == before_save["render_version"] + 1
+    assert (
+        payload["preview"]["svg_data_url"] == "data:image/svg+xml;base64,scene-preview"
+    )
 
     run_detail = client.get(f"/v1/ppt/runs/{run_id}").json()
     slide_one = next(item for item in run_detail["slides"] if item["slide_no"] == 1)
     assert "Scene Saved Title" in slide_one["js_code"]
     assert any(
-        event["event"] == "compile.completed" and event["payload"].get("reason") == "scene_save"
+        event["event"] == "compile.completed"
+        and event["payload"].get("reason") == "scene_save"
         for event in run_detail["events"]
     )
 
@@ -229,8 +317,14 @@ def test_slide_scene_save_returns_conflict_for_stale_scene_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("service.run.slide_preview.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
-    monkeypatch.setattr("service.run.engines.compile_engine.httpx.AsyncClient", lambda *args, **kwargs: _FakeScenePreviewClient())
+    monkeypatch.setattr(
+        "service.run.slide_preview.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    monkeypatch.setattr(
+        "service.run.engines.compile_engine.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
     client = make_client(
         tmp_path,
         pagevra_preview_enabled=True,
@@ -257,7 +351,11 @@ def test_slide_scene_save_returns_conflict_for_stale_scene_version(
         json={
             "scene_version": scene["scene_version"],
             "operations": [
-                {"op": "replace_text", "node_id": "text:config:title", "value": "First Save"}
+                {
+                    "op": "replace_text",
+                    "node_id": "text:config:title",
+                    "value": "First Save",
+                }
             ],
         },
     )
@@ -268,7 +366,11 @@ def test_slide_scene_save_returns_conflict_for_stale_scene_version(
         json={
             "scene_version": scene["scene_version"],
             "operations": [
-                {"op": "replace_text", "node_id": "text:config:title", "value": "Second Save"}
+                {
+                    "op": "replace_text",
+                    "node_id": "text:config:title",
+                    "value": "Second Save",
+                }
             ],
         },
     )
