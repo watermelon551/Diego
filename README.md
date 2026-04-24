@@ -1,30 +1,39 @@
 # Diego
 
-`Diego` 是一个独立的 PPT 生成微服务，提供统一的“主题到课件”生成能力。当前版本已支持 `scratch`（自由生成）与 `template`（模板编辑）两条主链路，并具备状态机、SSE 事件流、质量门禁、失败收敛和可观测输出。
+`Diego` 是一个独立的 PPT 生成微服务，提供统一的“主题到生成结果”能力。当前版本已支持 `scratch`（自由生成）与 `template`（模板编辑）两条主链路，并具备状态机、SSE 事件流、质量门禁、失败收敛和可观测输出。
 
 艺术家迭戈（Diego Velazquez），他被普遍认为是西班牙黄金时代最重要的画家之一，也是西方艺术史上的巨匠，他擅长把口头或场景的“叙述”转化为极具真实感和心理深度的画面。
 
 ## 0. 版本里程碑
 
-- 2026-04-12：自由模式（`scratch`）V1 完成，已打通从大纲到逐页生成、编译、QA/修复与产物返回的完整链路。
+- 2026-04-12：自由模式（`scratch`）V1 完成，已打通从大纲到逐页生成、compile bundle、可选编译与 QA/修复的主链路。
 
 ## 1. 当前功能
 
 ### 1.1 主流程闭环
 
-`需求分析 -> 大纲生成(流式) -> 大纲确认 -> 逐页生成/模板编辑 -> 编译 -> QA/修复 -> 产物返回`
+`需求分析 -> 大纲生成(流式) -> 大纲确认 -> 逐页生成/模板编辑 -> generation-owned result -> 可选编译/导出 -> artifact return`
 
 ### 1.2 功能矩阵
 
 | 能力 | 状态 | 说明 |
 | --- | --- | --- |
 | 大纲生成与确认闸门 | 已实现 | 支持流式 token 输出、版本化大纲、确认前不可进入生成 |
-| Scratch 生成 | 已实现 | 逐页生成 `slide-xx.js`，编译输出 `presentation.pptx` |
-| Template 编辑 | 已实现 | 上传 `.pptx` 模板并输出 `edited.pptx` |
+| Scratch 生成 | 已实现 | 逐页生成 `slide-xx.js`、引用、报告与 compile bundle |
+| Template 编辑 | 已实现 | 上传 `.pptx` 模板并生成编辑结果与中间工件 |
 | 素材检索与注入 | 已实现 | 支持 `mock/none/auto/unsplash/pexels`，并有并发闸门与去重策略 |
 | 视觉策略控制 | 已实现 | `auto / media_required / basic_graphics_only` |
 | 质量门禁与修复 | 已实现 | 预览 QA、图表真实性检查、修复轮次与失败诊断 |
+| 外部编译集成 | 已实现 | 支持显式 `external compile provider seam`，当前 provider 示例包括 `local` 与 `pagevra` |
+| 外部预览集成 | 已实现 | Slide preview 可显式接入 `pagevra`，默认关闭、按需启用 |
 | 可观测性 | 已实现 | `run_id/trace_id/stage_timings/error_code/events` |
+
+边界说明：
+
+- `Diego 负责生成`：大纲、逐页 JS、引用、研究/质量报告、compile bundle。
+- `外部 compile provider 负责渲染/编译/导出`：当被显式配置时，消费 Diego 的 compile bundle 并返回导出产物。
+- `Pagevra` 是当前支持的 provider 之一，不是 Diego 的 ontology center。
+- 两者可以组合，但 `Pagevra` 不是 Diego 的 repo-level destiny；默认配置下 Diego 不依赖它才能成功完成 generation。
 
 ### 1.3 模块结构（重构后）
 
@@ -80,6 +89,8 @@ Copy-Item .env.example .env
 - `STRATUMIND_BASE_URL`: 例如 `http://stratumind:8110`
 - `STRATUMIND_TIMEOUT_SECONDS`
 - `DIEGO_RAG_TOP_K`
+- `COMPILE_PROVIDER`: `none | local | pagevra`，默认 `none`
+- `PAGEVRA_PREVIEW_ENABLED`: `0 | 1`，默认 `0`，仅在需要外部 SVG preview 时启用
 - `ASSET_PROVIDER`: `mock | none | auto | unsplash | pexels`
 - `UNSPLASH_ACCESS_KEY` / `PEXELS_API_KEY`
 - `QA_FINALIZE_TIMEOUT_SEC`
@@ -130,6 +141,7 @@ docker compose down
 | `POST` | `/v1/ppt/runs/prompt` | 用 prompt 快速创建 run |
 | `GET` | `/v1/ppt/runs/{run_id}` | 查询 run 详情（含报告与事件） |
 | `GET` | `/v1/ppt/runs/{run_id}/events` | SSE 订阅事件 |
+| `GET` | `/v1/ppt/runs/{run_id}/artifacts/compile-bundle` | 返回 scratch compile bundle |
 | `POST` | `/v1/ppt/runs/{run_id}/outline/confirm` | 确认或修改大纲 |
 | `POST` | `/v1/ppt/templates` | 上传模板 `.pptx` |
 | `GET` | `/v1/ppt/templates/{template_id}` | 查询模板元数据 |
@@ -198,7 +210,10 @@ docker compose down
 
 - 基础：`run_id`、`trace_id`、`status`
 - 内容：`outline`、`outline_history`、`slides`、`citation_map`
-- 产物：`compile_js_path`、`pptx_path`
+- generation-owned result：`generation_result`
+- generation-owned compile handoff：`compile_bundle`
+- external compile/export result：`compile_result`
+- 兼容字段：`compile_js_path`、`pptx_path`、`compile_provider`
 - 可观测：`stage_timings`、`events`
 - 失败：`error_code`、`failed_stage`、`retryable`、`error_details`
 - 报告：`qa_report`、`quality_gate_report`、`research_report`、`template_mapping_report`、`chart_truth_report`、`template_layout_report` 等
@@ -319,6 +334,7 @@ data: {"seq":27,"event":"slide.generated","ts":"2026-04-12T10:00:00Z","payload":
 - `template_slides/output/presentation.pptx`（模板 JS 编译校验产物）
 
 接口返回以 `pptx_path`、`compile_js_path`、`slides[].js_path` 为准。
+其中 `pptx_path`、`compile_provider`、`compile_fallback_used` 为兼容字段；新的边界语义以 `generation_result`、`compile_bundle` 和 `compile_result` 为准。
 
 ## 7. 调试与测试
 
@@ -328,7 +344,7 @@ data: {"seq":27,"event":"slide.generated","ts":"2026-04-12T10:00:00Z","payload":
 .\.venv\Scripts\python.exe .\scripts\run_cli.py
 ```
 
-可直接完成：输入 prompt、查看/编辑大纲、确认执行、查看产物路径与关键事件。
+可直接完成：输入 prompt、查看/编辑大纲、确认执行、查看 `generation_result` / `compile_result`、产物路径与关键事件。
 
 ### 7.2 自动化测试
 

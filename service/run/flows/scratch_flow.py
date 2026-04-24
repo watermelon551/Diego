@@ -167,11 +167,16 @@ class ScratchFlowService:
         await orch.store.update_run(
             run_id, lambda r: setattr(r, "status", RunStatus.COMPILING)
         )
+        requested_provider = str(getattr(orch.settings, "compile_provider", "none") or "none")
+        await orch.store.update_run(
+            run_id,
+            lambda r: setattr(r, "compile_requested_provider", requested_provider),
+        )
         await orch._publish(
             run_id,
             EventType.COMPILE_STARTED,
             {
-                "requested_provider": orch.settings.compile_provider,
+                "requested_provider": requested_provider,
             },
         )
 
@@ -185,6 +190,75 @@ class ScratchFlowService:
             slide_count=len(sorted_slides),
             theme=design.theme,
         )
+        if compile_result.deferred:
+            def apply_deferred_compile(r: RunRecord) -> None:
+                r.compile_js_path = str(compile_result["compile_js_path"])
+                r.compile_requested_provider = str(
+                    compile_result.get("requested_provider") or requested_provider
+                )
+                r.compile_provider = None
+                r.compile_status = "bundle_ready"
+                r.compile_bundle_ready = bool(compile_result.bundle_ready)
+                r.compile_fallback_used = False
+                r.compile_error_code = None
+                r.compile_error_details = {}
+                r.stage_timings.compile_ms = int(
+                    (time.perf_counter() - compile_start) * 1000
+                )
+                r.render_version += 1
+                previous = (
+                    r.qa_report
+                    if isinstance(getattr(r, "qa_report", None), dict)
+                    else {}
+                )
+                r.qa_report = {
+                    **previous,
+                    "passed": True,
+                    "degraded": True,
+                    "degraded_reason": "EXTERNAL_COMPILE_DEFERRED",
+                    "mode": GenerationMode.SCRATCH.value,
+                }
+
+            await orch.store.update_run(run_id, apply_deferred_compile)
+            await orch._publish(
+                run_id,
+                EventType.COMPILE_COMPLETED,
+                {
+                    "file": "",
+                    "provider": "none",
+                    "requested_provider": compile_result.get(
+                        "requested_provider", requested_provider
+                    ),
+                    "bundle_ready": bool(compile_result.bundle_ready),
+                    "deferred": True,
+                    "reason": compile_result.reason,
+                },
+            )
+            await orch._publish(
+                run_id,
+                EventType.QA_COMPLETED,
+                {
+                    "passed": True,
+                    "degraded": True,
+                    "degraded_reason": "EXTERNAL_COMPILE_DEFERRED",
+                    "mode": GenerationMode.SCRATCH.value,
+                },
+            )
+            await orch._publish(
+                run_id,
+                EventType.SLIDE_PREVIEW_QA,
+                {
+                    "mode": GenerationMode.SCRATCH.value,
+                    "status": "skipped",
+                    "reason": "external_compile_deferred",
+                },
+            )
+            await orch._finalize_run_success(
+                run_id,
+                from_stage="COMPILING",
+                reason="generation completed; external compile deferred",
+            )
+            return
         if not compile_result["ok"]:
             await orch._fail_run(
                 run_id,
@@ -196,7 +270,7 @@ class ScratchFlowService:
                     "reason": compile_result["reason"],
                     "provider": compile_result.get("provider"),
                     "requested_provider": compile_result.get(
-                        "requested_provider", orch.settings.compile_provider
+                        "requested_provider", requested_provider
                     ),
                     "fallback_used": bool(compile_result.get("fallback_used")),
                     "fallback_from": compile_result.get("fallback_from"),
@@ -209,8 +283,15 @@ class ScratchFlowService:
         def apply_compile(r: RunRecord) -> None:
             r.compile_js_path = str(compile_result["compile_js_path"])
             r.pptx_path = str(pptx_path)
+            r.compile_requested_provider = str(
+                compile_result.get("requested_provider") or requested_provider
+            )
             r.compile_provider = str(compile_result.get("provider") or "")
+            r.compile_status = "succeeded"
+            r.compile_bundle_ready = True
             r.compile_fallback_used = bool(compile_result.get("fallback_used"))
+            r.compile_error_code = None
+            r.compile_error_details = {}
             r.stage_timings.compile_ms = int(
                 (time.perf_counter() - compile_start) * 1000
             )
@@ -224,7 +305,7 @@ class ScratchFlowService:
                 "file": str(pptx_path),
                 "provider": compile_result.get("provider", "local"),
                 "requested_provider": compile_result.get(
-                    "requested_provider", orch.settings.compile_provider
+                    "requested_provider", requested_provider
                 ),
                 "fallback_used": bool(compile_result.get("fallback_used")),
                 "fallback_from": compile_result.get("fallback_from"),

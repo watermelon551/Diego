@@ -7,10 +7,13 @@ from typing import Any
 
 import httpx
 
+from ..results import ScratchCompileResult
 from ..types import RunStageError
 
 
 class CompileEngine:
+    result_type = ScratchCompileResult
+
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
 
@@ -21,22 +24,82 @@ class CompileEngine:
         slides_dir: Path,
         slide_count: int,
         theme: dict[str, Any],
-    ) -> dict[str, Any]:
-        compile_js = slides_dir / "compile.js"
-        compile_js.write_text(
-            self.runtime._build_compile_script(total=slide_count, theme=theme),
-            encoding="utf-8",
+    ) -> ScratchCompileResult:
+        requested_provider = str(
+            getattr(self.runtime.settings, "compile_provider", "none") or "none"
+        ).strip().lower()
+        compile_js = self._ensure_compile_script(
+            slides_dir=slides_dir,
+            slide_count=slide_count,
+            theme=theme,
         )
-        return await self._compile_scratch_via_pagevra(run_id=run_id, slides_dir=slides_dir, theme=theme)
+        if requested_provider == "none":
+            return ScratchCompileResult(
+                ok=True,
+                compile_js_path=compile_js,
+                pptx_path=None,
+                return_code=None,
+                reason="external_compile_deferred",
+                provider="none",
+                deferred=True,
+                bundle_ready=True,
+                requested_provider="none",
+            )
+        if requested_provider == "local":
+            local_result = await self._compile_scratch_local(slides_dir=slides_dir)
+            return ScratchCompileResult(
+                **{**local_result.__dict__, "requested_provider": "local"}
+            )
+        if requested_provider == "pagevra":
+            pagevra_result = await self._compile_scratch_via_pagevra(
+                run_id=run_id,
+                slides_dir=slides_dir,
+                theme=theme,
+            )
+            return ScratchCompileResult(
+                **{
+                    **pagevra_result.__dict__,
+                    "requested_provider": pagevra_result.requested_provider or "pagevra",
+                }
+            )
+
+        raise ValueError(f"unsupported compile provider: {requested_provider}")
 
     async def build_compile_bundle(self, run_id: str) -> dict[str, Any]:
         run = await self.runtime.store.get_run(run_id)
         if run is None:
             raise ValueError(f"run not found: {run_id}")
+        generation_mode = getattr(getattr(run, "input", None), "generation_mode", None)
+        if str(getattr(generation_mode, "value", generation_mode)) != "scratch":
+            raise ValueError(f"compile bundle is only available for scratch runs: {run_id}")
         slides_dir = Path(run.artifact_dir) / "slides"
+        slide_count = len(getattr(run, "slides", []) or [])
+        theme: dict[str, Any] = {}
+        resolver = getattr(self.runtime, "_resolve_run_design", None)
+        if callable(resolver):
+            theme = dict(getattr(resolver(run), "theme", {}) or {})
+        self._ensure_compile_script(
+            slides_dir=slides_dir,
+            slide_count=slide_count,
+            theme=theme,
+        )
         return await self._build_scratch_compile_bundle(run=run, slides_dir=slides_dir)
 
-    async def _compile_scratch_local(self, *, slides_dir: Path) -> dict[str, Any]:
+    def _ensure_compile_script(
+        self,
+        *,
+        slides_dir: Path,
+        slide_count: int,
+        theme: dict[str, Any],
+    ) -> Path:
+        compile_js = slides_dir / "compile.js"
+        compile_js.write_text(
+            self.runtime._build_compile_script(total=slide_count, theme=theme),
+            encoding="utf-8",
+        )
+        return compile_js
+
+    async def _compile_scratch_local(self, *, slides_dir: Path) -> ScratchCompileResult:
         result = await asyncio.to_thread(
             self.runtime.subprocess.run,
             ["node", "compile.js"],
@@ -51,16 +114,17 @@ class CompileEngine:
             stderr=result.stderr or "",
             stdout=result.stdout or "",
         )
-        return {
-            "ok": result.returncode == 0 and not compile_reason,
-            "compile_js_path": slides_dir / "compile.js",
-            "pptx_path": slides_dir / "output" / "presentation.pptx",
-            "return_code": result.returncode,
-            "reason": compile_reason or "compile.js returned non-zero",
-            "provider": "local",
-            "fallback_used": False,
-            "fallback_from": None,
-        }
+        return ScratchCompileResult(
+            ok=result.returncode == 0 and not compile_reason,
+            compile_js_path=slides_dir / "compile.js",
+            pptx_path=slides_dir / "output" / "presentation.pptx",
+            return_code=result.returncode,
+            reason=compile_reason or "compile.js returned non-zero",
+            provider="local",
+            bundle_ready=True,
+            fallback_used=False,
+            fallback_from=None,
+        )
 
     async def _compile_scratch_via_pagevra(
         self,
@@ -69,18 +133,19 @@ class CompileEngine:
         slides_dir: Path,
         theme: dict[str, Any] | None = None,
         swallow_failure: bool = False,
-    ) -> dict[str, Any]:
+    ) -> ScratchCompileResult:
         base_url = str(getattr(self.runtime.settings, "pagevra_base_url", "") or "").strip().rstrip("/")
         if not base_url:
             if swallow_failure:
-                return {
-                    "ok": False,
-                    "compile_js_path": slides_dir / "compile.js",
-                    "pptx_path": slides_dir / "output" / "presentation.pptx",
-                    "return_code": None,
-                    "reason": "pagevra_base_url_missing",
-                    "provider": "pagevra",
-                }
+                return ScratchCompileResult(
+                    ok=False,
+                    compile_js_path=slides_dir / "compile.js",
+                    pptx_path=slides_dir / "output" / "presentation.pptx",
+                    return_code=None,
+                    reason="pagevra_base_url_missing",
+                    provider="pagevra",
+                    bundle_ready=True,
+                )
             raise RunStageError(
                 stage="COMPILING",
                 error_code="PAGEVRA_BASE_URL_MISSING",
@@ -104,14 +169,15 @@ class CompileEngine:
                 if response.status_code >= 400 or payload.get("state") != "success":
                     reason = str(payload.get("state_reason") or payload.get("error") or "pagevra_compile_failed")
                     if swallow_failure:
-                        return {
-                            "ok": False,
-                            "compile_js_path": slides_dir / "compile.js",
-                            "pptx_path": slides_dir / "output" / "presentation.pptx",
-                            "return_code": response.status_code,
-                            "reason": reason,
-                            "provider": "pagevra",
-                        }
+                        return ScratchCompileResult(
+                            ok=False,
+                            compile_js_path=slides_dir / "compile.js",
+                            pptx_path=slides_dir / "output" / "presentation.pptx",
+                            return_code=response.status_code,
+                            reason=reason,
+                            provider="pagevra",
+                            bundle_ready=True,
+                        )
                     raise RunStageError(
                         stage="COMPILING",
                         error_code="PAGEVRA_COMPILE_FAILED",
@@ -146,28 +212,30 @@ class CompileEngine:
                 pptx_path = slides_dir / "output" / "presentation.pptx"
                 pptx_path.parent.mkdir(parents=True, exist_ok=True)
                 pptx_path.write_bytes(artifact.content)
-                return {
-                    "ok": True,
-                    "compile_js_path": slides_dir / "compile.js",
-                    "pptx_path": pptx_path,
-                    "return_code": 0,
-                    "reason": "",
-                    "provider": "pagevra",
-                    "job_id": job_id,
-                    "fallback_used": False,
-                    "fallback_from": None,
-                    "requested_provider": "pagevra",
-                }
+                return ScratchCompileResult(
+                    ok=True,
+                    compile_js_path=slides_dir / "compile.js",
+                    pptx_path=pptx_path,
+                    return_code=0,
+                    reason="",
+                    provider="pagevra",
+                    job_id=job_id,
+                    bundle_ready=True,
+                    fallback_used=False,
+                    fallback_from=None,
+                    requested_provider="pagevra",
+                )
         except Exception as exc:
             if swallow_failure:
-                return {
-                    "ok": False,
-                    "compile_js_path": slides_dir / "compile.js",
-                    "pptx_path": slides_dir / "output" / "presentation.pptx",
-                    "return_code": None,
-                    "reason": str(exc),
-                    "provider": "pagevra",
-                }
+                return ScratchCompileResult(
+                    ok=False,
+                    compile_js_path=slides_dir / "compile.js",
+                    pptx_path=slides_dir / "output" / "presentation.pptx",
+                    return_code=None,
+                    reason=str(exc),
+                    provider="pagevra",
+                    bundle_ready=True,
+                )
             if isinstance(exc, RunStageError):
                 raise
             if isinstance(exc, httpx.HTTPError):

@@ -166,6 +166,39 @@ class SlideArtifact(BaseModel):
     citations: list[str] = Field(default_factory=list)
 
 
+class GenerationResult(BaseModel):
+    mode: GenerationMode
+    artifact_dir: Optional[str] = None
+    outline_ready: bool = False
+    slide_count: int = 0
+    slide_artifacts_ready: bool = False
+    citation_map_ready: bool = False
+    compile_bundle_ready: bool = False
+    compile_bundle_entrypoint: Optional[str] = None
+
+
+class CompileBundleResult(BaseModel):
+    status: str = "not_available"
+    provider: str = "diego"
+    available: bool = False
+    entrypoint: Optional[str] = None
+    build_endpoint: Optional[str] = None
+    mode: Optional[str] = None
+
+
+class CompileResult(BaseModel):
+    status: str = "not_requested"
+    requested_provider: Optional[str] = None
+    provider: Optional[str] = None
+    bundle_ready: bool = False
+    artifact_path: Optional[str] = None
+    artifact_ready: bool = False
+    fallback_used: bool = False
+    fallback_from: Optional[str] = None
+    error_code: Optional[str] = None
+    error_details: dict[str, Any] = Field(default_factory=dict)
+
+
 class StageTimings(BaseModel):
     outline_ms: int = 0
     slide_ms: int = 0
@@ -282,8 +315,13 @@ class RunRecord(BaseModel):
     artifact_dir: str
     compile_js_path: Optional[str] = None
     pptx_path: Optional[str] = None
+    compile_requested_provider: Optional[str] = None
     compile_provider: Optional[str] = None
+    compile_status: str = "not_requested"
+    compile_bundle_ready: bool = False
     compile_fallback_used: bool = False
+    compile_error_code: Optional[str] = None
+    compile_error_details: dict[str, Any] = Field(default_factory=dict)
     qa_report: dict[str, Any] = Field(default_factory=dict)
     template_mapping_report: dict[str, Any] = Field(default_factory=dict)
     chart_truth_report: dict[str, Any] = Field(default_factory=dict)
@@ -318,8 +356,12 @@ class RunDetailResponse(BaseModel):
     failed_stage: Optional[str]
     retryable: bool
     error_details: dict[str, Any]
+    generation_result: GenerationResult
+    compile_bundle: CompileBundleResult
+    compile_result: CompileResult
     compile_js_path: Optional[str]
     pptx_path: Optional[str]
+    compile_requested_provider: Optional[str]
     compile_provider: Optional[str]
     compile_fallback_used: bool
     qa_report: dict[str, Any]

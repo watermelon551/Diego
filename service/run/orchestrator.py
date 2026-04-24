@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import httpx
 import json
 import os
@@ -224,6 +225,9 @@ class RunOrchestrator:
         self._asset_context_lock = threading.Lock()
         self._asset_search_context_stack: list[dict[str, Any]] = []
         self._run_asset_keys: dict[str, set[str]] = {}
+        self._background_loop: asyncio.AbstractEventLoop | None = None
+        self._background_loop_thread: threading.Thread | None = None
+        self._background_loop_lock = threading.Lock()
         self._js_api_contract = self._load_js_api_contract()
         self._support = RuntimeSupport(self)
         self.asset_resolver = AssetResolver(self._support)
@@ -247,6 +251,9 @@ class RunOrchestrator:
             scratch_stage=ScratchGenerationStage(self._scratch_flow),
             template_stage=TemplateGenerationStage(self._template_flow),
         )
+        from ..application.facade import DiegoApplication
+
+        self.application = DiegoApplication(self)
 
     def __getattr__(self, name: str) -> Any:
         if name in self._legacy_aliases:
@@ -343,8 +350,44 @@ class RunOrchestrator:
             threading.Thread(target=runner, daemon=True).start()
             return
 
+        if threading.current_thread() is not threading.main_thread():
+            future = asyncio.run_coroutine_threadsafe(
+                coro,
+                self._ensure_background_loop(),
+            )
+            future.add_done_callback(self._on_background_future_done)
+            return
+
         task = loop.create_task(coro)
         task.add_done_callback(self._on_background_task_done)
+
+    def _ensure_background_loop(self) -> asyncio.AbstractEventLoop:
+        with self._background_loop_lock:
+            loop = self._background_loop
+            thread = self._background_loop_thread
+            if loop is not None and thread is not None and thread.is_alive():
+                return loop
+
+            ready = threading.Event()
+            holder: dict[str, asyncio.AbstractEventLoop] = {}
+
+            def runner() -> None:
+                background_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(background_loop)
+                holder["loop"] = background_loop
+                ready.set()
+                background_loop.run_forever()
+
+            thread = threading.Thread(
+                target=runner,
+                name="diego-background-loop",
+                daemon=True,
+            )
+            thread.start()
+            ready.wait()
+            self._background_loop = holder["loop"]
+            self._background_loop_thread = thread
+            return self._background_loop
 
     @staticmethod
     def _on_background_task_done(task: asyncio.Task[Any]) -> None:
@@ -355,137 +398,51 @@ class RunOrchestrator:
         except Exception:
             traceback.print_exc()
 
+    @staticmethod
+    def _on_background_future_done(future: Any) -> None:
+        try:
+            future.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            traceback.print_exc()
+
     async def recover_interrupted_runs(self) -> dict[str, int]:
-        interrupted_statuses = {
-            RunStatus.OUTLINE_DRAFTING,
-            RunStatus.SLIDES_GENERATING,
-            RunStatus.COMPILING,
-        }
-        runs = await self.store.list_runs()
-        recovered = 0
-        for run in runs:
-            if run.status not in interrupted_statuses:
-                continue
-            recovered += 1
-            await self._kernel.fail_run(
-                run.run_id,
-                run.status.value,
-                "RUN_INTERRUPTED_BY_RESTART",
-                retryable=True,
-                error_details={
-                    "reason": "service_restarted",
-                    "previous_status": run.status.value,
-                },
-            )
-        return {"scanned": len(runs), "recovered": recovered}
+        return await self.application.recover_interrupted_runs()
 
     async def upload_template(
         self, *, filename: str, content: bytes
     ) -> TemplateUploadResponse:
-        template_id = str(uuid4())
-        target_dir = self.templates_base / template_id
-        target_dir.mkdir(parents=True, exist_ok=True)
-        sanitized_name = Path(filename).name or "template.pptx"
-        template_path = target_dir / sanitized_name
-        template_path.write_bytes(content)
-        record = TemplateRecord(
-            template_id=template_id,
-            filename=sanitized_name,
-            path=str(template_path),
-            created_at=now_iso(),
-        )
-        await self.store.add_template(record)
-        return TemplateUploadResponse(template_id=template_id, filename=sanitized_name)
+        return await self.application.upload_template(filename=filename, content=content)
 
     async def get_template_detail(
         self, template_id: str
     ) -> TemplateDetailResponse | None:
-        record = await self.store.get_template(template_id)
-        if record is None:
-            return None
-        return TemplateDetailResponse(
-            template_id=record.template_id,
-            filename=record.filename,
-            path=record.path,
-            created_at=record.created_at,
-        )
+        return await self.application.get_template_detail(template_id)
 
     async def create_run(self, req: CreateRunRequest) -> RunSummaryResponse:
-        return await self._kernel.create_run(req)
+        return await self.application.create_run(req)
 
     async def get_run_detail(self, run_id: str) -> RunDetailResponse | None:
-        return await self._kernel.get_run_detail(run_id)
+        return await self.application.get_run_detail(run_id)
 
     async def build_compile_bundle(self, run_id: str) -> dict[str, Any]:
-        return await self.compile_engine.build_compile_bundle(run_id)
+        return await self.application.build_compile_bundle(run_id)
 
     async def get_slide_preview(
         self, run_id: str, slide_no: int
     ) -> dict[str, Any] | None:
-        if slide_no < 1:
-            raise ValueError("slide_no must be >= 1")
-        run = await self.store.get_run(run_id)
-        if run is None:
-            return None
-
-        slide, slide_js_path = self._require_slide_js_artifact(
-            run=run, slide_no=slide_no, not_ready_message="slide preview not ready"
-        )
-
-        preview = await self.render_slide_preview_or_fallback(
-            run_id=run_id,
-            slide_no=slide_no,
-            slide_js_path=slide_js_path,
-            theme=self._resolve_run_design(run).theme,
-        )
-        return self._build_slide_preview_payload(
-            run_id=run_id, slide_no=slide_no, preview=preview
-        )
+        return await self.application.get_slide_preview(run_id, slide_no)
 
     async def get_slide_scene(
         self, run_id: str, slide_no: int
     ) -> EditableSlideScene | None:
-        if slide_no < 1:
-            raise ValueError("slide_no must be >= 1")
-        run = await self.store.get_run(run_id)
-        if run is None:
-            return None
-        _, slide_js_path = self._require_slide_js_artifact(
-            run=run, slide_no=slide_no, not_ready_message="slide scene not ready"
-        )
-        js_code = slide_js_path.read_text(encoding="utf-8")
-        parsed = build_slide_scene(js_code=js_code, run_id=run_id, slide_no=slide_no)
-        return parsed.scene
+        return await self.application.get_slide_scene(run_id, slide_no)
 
     async def get_slide_asset_path(
         self, run_id: str, slide_no: int, asset_path: str
     ) -> Path | None:
-        if slide_no < 1:
-            raise ValueError("slide_no must be >= 1")
-        requested_path = str(asset_path or "").strip()
-        if not requested_path:
-            raise ValueError("asset path is required")
-        if requested_path.startswith(("http://", "https://", "data:", "blob:")):
-            raise ValueError("asset path must reference a local slide asset")
-        run = await self.store.get_run(run_id)
-        if run is None:
-            return None
-        _, slide_js_path = self._require_slide_js_artifact(
-            run=run, slide_no=slide_no, not_ready_message="slide asset not ready"
-        )
-        candidate = Path(requested_path)
-        if not candidate.is_absolute():
-            candidate = (slide_js_path.parent / candidate).resolve()
-        else:
-            candidate = candidate.resolve()
-        artifact_root = Path(str(run.artifact_dir or "").strip()).resolve()
-        try:
-            candidate.relative_to(artifact_root)
-        except ValueError as exc:
-            raise ValueError("asset path escapes run artifact root") from exc
-        if not candidate.exists() or not candidate.is_file():
-            raise FileNotFoundError("slide asset file missing")
-        return candidate
+        return await self.application.get_slide_asset_path(run_id, slide_no, asset_path)
 
     async def save_slide_scene(
         self,
@@ -494,122 +451,10 @@ class RunOrchestrator:
         slide_no: int,
         req: SaveSlideSceneRequest,
     ) -> SaveSlideSceneResponse | None:
-        if slide_no < 1:
-            raise ValueError("slide_no must be >= 1")
-        run = await self.store.get_run(run_id)
-        if run is None:
-            return None
-        if run.status != RunStatus.SUCCEEDED:
-            raise ValueError("run must be in SUCCEEDED state")
-        slide, slide_js_path = self._require_slide_js_artifact(
-            run=run, slide_no=slide_no, not_ready_message="slide scene not ready"
-        )
-        js_code = slide_js_path.read_text(encoding="utf-8")
-        parsed_scene = build_slide_scene(
-            js_code=js_code, run_id=run_id, slide_no=slide_no
-        )
-        next_js_code, next_scene = apply_scene_operations(
-            js_code=js_code,
-            parsed_scene=parsed_scene,
-            scene_version=req.scene_version,
-            operations=[item.model_dump() for item in req.operations],
+        return await self.application.save_slide_scene(
             run_id=run_id,
             slide_no=slide_no,
-        )
-        if next_scene.scene.readonly:
-            raise SlideSceneUnsupportedError(
-                next_scene.scene.readonly_reason or "slide is read-only"
-            )
-
-        slide_js_path.write_text(next_js_code, encoding="utf-8")
-        design = self._resolve_run_design(run)
-        compile_start = time.perf_counter()
-        try:
-            preview = await self.render_slide_preview_or_fallback(
-                run_id=run_id,
-                slide_no=slide_no,
-                slide_js_path=slide_js_path,
-                theme=design.theme,
-            )
-            compile_result = await self._recompile_run_after_scene_save(run=run)
-        except Exception:
-            slide_js_path.write_text(js_code, encoding="utf-8")
-            raise
-
-        updated_artifact = SlideArtifact(
-            slide_no=slide.slide_no,
-            js_path=str(slide_js_path),
-            js_code=next_js_code,
-            status=str(getattr(slide, "status", "ok") or "ok"),
-            citations=list(getattr(slide, "citations", []) or []),
-        )
-        current_outline_node = (
-            run.outline.nodes[slide_no - 1]
-            if run.outline is not None and slide_no <= len(run.outline.nodes)
-            else None
-        )
-        updated_outline_node = (
-            self._scene_to_outline_node(
-                existing=current_outline_node, scene=next_scene.scene
-            )
-            if current_outline_node is not None
-            else None
-        )
-
-        def apply_save(r: RunRecord) -> None:
-            r.status = RunStatus.SUCCEEDED
-            r.stage_timings.compile_ms = int(
-                (time.perf_counter() - compile_start) * 1000
-            )
-            r.render_version += 1
-            if (
-                updated_outline_node is not None
-                and r.outline is not None
-                and slide_no <= len(r.outline.nodes)
-            ):
-                r.outline.nodes[slide_no - 1] = updated_outline_node
-            for index, existing in enumerate(r.slides):
-                if int(getattr(existing, "slide_no", 0) or 0) == slide_no:
-                    r.slides[index] = updated_artifact
-                    break
-            r.compile_js_path = str(
-                compile_result.get("compile_js_path") or r.compile_js_path or ""
-            )
-            r.pptx_path = str(compile_result.get("pptx_path") or r.pptx_path or "")
-            provider = compile_result.get("provider")
-            if provider is not None:
-                r.compile_provider = str(provider)
-            if "fallback_used" in compile_result:
-                r.compile_fallback_used = bool(compile_result.get("fallback_used"))
-
-        updated_run = await self.store.update_run(run_id, apply_save)
-        await self._publish_slide_generated_preview(
-            run_id=run_id,
-            slide_no=slide_no,
-            status=updated_artifact.status,
-            preview=preview,
-        )
-        await self._publish(
-            run_id,
-            EventType.COMPILE_COMPLETED,
-            {
-                "file": str(compile_result.get("pptx_path") or ""),
-                "provider": compile_result.get("provider", ""),
-                "fallback_used": bool(compile_result.get("fallback_used")),
-                "reason": "scene_save",
-            },
-        )
-        return SaveSlideSceneResponse(
-            run_id=run_id,
-            slide_id=next_scene.scene.slide_id,
-            slide_index=next_scene.scene.slide_index,
-            slide_no=slide_no,
-            render_version=int(getattr(updated_run, "render_version", 0) or 0),
-            status="ready",
-            scene=next_scene.scene,
-            preview=self._build_slide_preview_payload(
-                run_id=run_id, slide_no=slide_no, preview=preview
-            ),
+            req=req,
         )
 
     async def render_slide_preview_or_fallback(
@@ -621,8 +466,10 @@ class RunOrchestrator:
         theme: dict[str, Any],
     ) -> dict[str, Any]:
         if not bool(getattr(self.settings, "pagevra_preview_enabled", True)):
-            raise RuntimeError(
-                "PAGEVRA_PREVIEW_ENABLED must be true for PPT SVG preview compile"
+            return self._build_placeholder_preview(
+                slide_no=slide_no,
+                theme=theme,
+                reason="pagevra_preview_disabled",
             )
         pagevra_base_url = (
             str(getattr(self.settings, "pagevra_base_url", "") or "")
@@ -630,19 +477,28 @@ class RunOrchestrator:
             .rstrip("/")
         )
         if not pagevra_base_url:
-            raise RuntimeError(
-                "PAGEVRA_BASE_URL is required when PAGEVRA_PREVIEW_ENABLED=true"
+            return self._build_placeholder_preview(
+                slide_no=slide_no,
+                theme=theme,
+                reason="pagevra_base_url_missing",
             )
-        return await render_slide_via_pagevra(
-            slide_js_path=slide_js_path,
-            theme=theme,
-            slide_no=slide_no,
-            pagevra_base_url=pagevra_base_url,
-            timeout_sec=float(
-                getattr(self.settings, "pagevra_preview_timeout_sec", 30.0) or 30.0
-            ),
-            provider_run_id=run_id,
-        )
+        try:
+            return await render_slide_via_pagevra(
+                slide_js_path=slide_js_path,
+                theme=theme,
+                slide_no=slide_no,
+                pagevra_base_url=pagevra_base_url,
+                timeout_sec=float(
+                    getattr(self.settings, "pagevra_preview_timeout_sec", 30.0) or 30.0
+                ),
+                provider_run_id=run_id,
+            )
+        except Exception as exc:
+            return self._build_placeholder_preview(
+                slide_no=slide_no,
+                theme=theme,
+                reason=self._exception_reason(exc),
+            )
 
     def _require_slide_js_artifact(
         self,
@@ -681,6 +537,43 @@ class RunOrchestrator:
             "slide_id": f"{run_id}-slide-{page_index}",
             "status": "ready",
             **preview,
+        }
+
+    def _build_placeholder_preview(
+        self,
+        *,
+        slide_no: int,
+        theme: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        bg = str(theme.get("bg", "FFFFFF") or "FFFFFF").lstrip("#")
+        fg = str(theme.get("primary", "111111") or "111111").lstrip("#")
+        accent = str(theme.get("accent", "0A84FF") or "0A84FF").lstrip("#")
+        svg = (
+            "<svg xmlns='http://www.w3.org/2000/svg' width='1280' height='720' viewBox='0 0 1280 720'>"
+            f"<rect width='1280' height='720' fill='#{bg}'/>"
+            f"<rect x='80' y='84' width='1120' height='8' rx='4' fill='#{accent}'/>"
+            f"<text x='96' y='180' font-size='48' font-family='Arial' fill='#{fg}'>Slide {slide_no}</text>"
+            f"<text x='96' y='236' font-size='24' font-family='Arial' fill='#{fg}'>Preview fallback active</text>"
+            f"<text x='96' y='286' font-size='18' font-family='Arial' fill='#{fg}'>Reason: {reason[:80]}</text>"
+            "</svg>"
+        )
+        svg_data_url = "data:image/svg+xml;base64," + base64.b64encode(
+            svg.encode("utf-8")
+        ).decode("ascii")
+        return {
+            "preview": {
+                "format": "svg",
+                "svg_data_url": svg_data_url,
+                "width": 1280,
+                "height": 720,
+            },
+            "preview_format": "svg",
+            "svg_data_url": svg_data_url,
+            "width": 1280,
+            "height": 720,
+            "fallback": True,
+            "reason": reason,
         }
 
     def _scene_to_outline_node(
@@ -742,45 +635,12 @@ class RunOrchestrator:
         preserve_style: bool,
         expected_render_version: int | None = None,
     ) -> RunSummaryResponse | None:
-        if slide_no < 1:
-            raise ValueError("slide_no must be >= 1")
-        run = await self.store.get_run(run_id)
-        if run is None:
-            return None
-        if run.status != RunStatus.SUCCEEDED:
-            raise ValueError("run must be in SUCCEEDED state")
-        if (
-            expected_render_version is not None
-            and run.render_version != expected_render_version
-        ):
-            raise ValueError(
-                "render version conflict: "
-                f"expected {expected_render_version}, current {run.render_version}"
-            )
-        if run.outline is None:
-            raise ValueError("run outline missing")
-        if slide_no > len(run.outline.nodes):
-            raise ValueError("slide_no out of range")
-        if not any(
-            int(getattr(item, "slide_no", 0) or 0) == slide_no for item in run.slides
-        ):
-            raise ValueError("slide artifact missing")
-
-        await self.store.update_run(
-            run_id, lambda r: setattr(r, "status", RunStatus.SLIDES_GENERATING)
-        )
-        self._spawn(
-            self._regenerate_single_slide_task(
-                run_id=run_id,
-                slide_no=slide_no,
-                instruction=instruction.strip(),
-                preserve_style=preserve_style,
-            )
-        )
-        return RunSummaryResponse(
-            run_id=run.run_id,
-            trace_id=run.trace_id,
-            status=RunStatus.SLIDES_GENERATING,
+        return await self.application.regenerate_single_slide(
+            run_id=run_id,
+            slide_no=slide_no,
+            instruction=instruction,
+            preserve_style=preserve_style,
+            expected_render_version=expected_render_version,
         )
 
     async def _regenerate_single_slide_task(
@@ -1045,9 +905,21 @@ class RunOrchestrator:
 
         def apply_compile(r: RunRecord) -> None:
             r.compile_js_path = str(compile_result["compile_js_path"])
-            r.pptx_path = str(compile_result["pptx_path"])
-            r.compile_provider = str(compile_result.get("provider") or "")
+            if compile_result.get("pptx_path") is not None:
+                r.pptx_path = str(compile_result["pptx_path"])
+            r.compile_requested_provider = str(
+                compile_result.get("requested_provider")
+                or getattr(self.settings, "compile_provider", "none")
+            )
+            provider = compile_result.get("provider")
+            r.compile_provider = str(provider or "") if provider not in {None, "none"} else None
+            r.compile_status = (
+                "bundle_ready" if bool(compile_result.get("deferred")) else "succeeded"
+            )
+            r.compile_bundle_ready = True
             r.compile_fallback_used = bool(compile_result.get("fallback_used"))
+            r.compile_error_code = None
+            r.compile_error_details = {}
             r.stage_timings.compile_ms = int(
                 (time.perf_counter() - compile_start) * 1000
             )
@@ -1059,13 +931,15 @@ class RunOrchestrator:
             run_id,
             EventType.COMPILE_COMPLETED,
             {
-                "file": str(compile_result["pptx_path"]),
+                "file": str(compile_result.get("pptx_path") or ""),
                 "provider": compile_result.get("provider", "local"),
                 "requested_provider": compile_result.get(
                     "requested_provider", self.settings.compile_provider
                 ),
                 "fallback_used": bool(compile_result.get("fallback_used")),
                 "fallback_from": compile_result.get("fallback_from"),
+                "bundle_ready": True,
+                "deferred": bool(compile_result.get("deferred")),
                 "reason": "single_slide_regenerate",
             },
         )
@@ -1198,7 +1072,7 @@ class RunOrchestrator:
     async def confirm_outline(
         self, run_id: str, req: ConfirmOutlineRequest
     ) -> RunSummaryResponse | None:
-        return await self._kernel.confirm_outline(run_id, req)
+        return await self.application.confirm_outline(run_id, req)
 
     async def _publish(
         self, run_id: str, event_type: EventType, payload: dict[str, Any]

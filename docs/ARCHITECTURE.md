@@ -2,10 +2,18 @@
 
 ## 1. 架构目标
 
-`ppt-agent-service` 作为独立微服务，面向任何上游系统提供统一的 PPT 生成能力。
+`ppt-agent-service` 作为独立微服务，面向任何上游系统提供统一的生成能力。
 
 核心闭环：
-`RAG检索 -> 大纲流式 -> 大纲确认 -> 逐页 JS 生成 -> 编译 -> PPTX 产物返回`
+`RAG检索 -> 大纲流式 -> 大纲确认 -> 逐页 JS 生成 -> generation truth -> external compile provider -> render/export artifact`
+
+边界定义：
+- Diego owns `generation truth`
+- Diego owns `generation result` and `compile bundle truth`
+- Diego does not own `render truth`
+- compile/export 通过 `external compile provider` seam 接入
+- slide preview 通过可选 `external preview provider` seam 接入
+- `pagevra` 是当前 supported provider 之一，不是默认骨架
 
 ## 1.1 服务内部分层（2026-04 重构后）
 
@@ -82,13 +90,21 @@
 - `slide.js.partial`
 - `compile.started`
 
-## 6. 失败与重试策略
+## 6. 编译边界
+
+- `build_compile_bundle` 是 Diego 对外的一等 contract。
+- 默认 `compile_provider=none`，表示 Diego 完成 generation 后只暴露 compile bundle，不主动编译。
+- `compile_provider=local` 或 `compile_provider=pagevra` 时，编译作为显式 adapter 行为执行。
+- 默认 `pagevra_preview_enabled=0`，表示 Diego 不把外部 preview 当默认主路径。
+- 不允许通过 fallback 把 provider 边界错误伪装成 Diego 自身成功。
+
+## 7. 失败与重试策略
 
 - 单页失败：按页重试，不立即中断整个 run。
 - 编译失败：直接进入 `FAILED`，保留中间产物元数据用于排障。
 - 所有失败必须可通过 `run_id` 回溯。
 
-## 7. 可观测性要求
+## 8. 可观测性要求
 
 每次 run 必须写入：
 - `run_id`
@@ -96,7 +112,7 @@
 - `stage_timings`（outline/slide/compile）
 - `error_code`（失败场景）
 
-## 8. 当前阶段边界
+## 9. 当前阶段边界
 
 - 本文档仅定义新服务实现基线。
 - 当前阶段不修改任何外部系统代码。

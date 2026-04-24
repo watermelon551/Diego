@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from ..application import DiegoApplication
 from ..models import (
     ConfirmOutlineRequest,
     CreateRunRequest,
@@ -26,14 +28,17 @@ from ..run import (
 
 
 class AppContext:
-    def __init__(self, orchestrator: RunOrchestrator) -> None:
+    def __init__(
+        self, orchestrator: RunOrchestrator, application: DiegoApplication
+    ) -> None:
         self.orchestrator = orchestrator
+        self.application = application
 
 
 async def _sse_generator(ctx: AppContext, run_id: str):
     cursor = 0
     while True:
-        run = await ctx.orchestrator.store.get_run(run_id)
+        run = await ctx.application.get_run_record(run_id)
         if run is None:
             break
 
@@ -47,7 +52,7 @@ async def _sse_generator(ctx: AppContext, run_id: str):
             break
 
         try:
-            await ctx.orchestrator.store.wait_for_event(run_id, cursor, timeout=5.0)
+            await ctx.application.wait_for_event(run_id, cursor, timeout=5.0)
         except (TimeoutError, asyncio.TimeoutError):
             yield ": keep-alive\n\n"
 
@@ -55,21 +60,23 @@ async def _sse_generator(ctx: AppContext, run_id: str):
 def create_app(
     base_dir: Path | None = None, orchestrator: RunOrchestrator | None = None
 ) -> FastAPI:
-    app = FastAPI(title="Diego", version="0.1.0")
     resolved_base = base_dir or (Path.cwd() / ".runtime")
     resolved_base.mkdir(parents=True, exist_ok=True)
     orch = orchestrator or build_orchestrator(resolved_base)
-    ctx = AppContext(orchestrator=orch)
+    ctx = AppContext(orchestrator=orch, application=orch.application)
 
-    @app.on_event("startup")
-    async def _startup_runtime_recovery() -> None:
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
         await ctx.orchestrator.store.initialize()
         if getattr(
             ctx.orchestrator.settings, "run_store", "memory"
         ) == "postgres" and bool(
             getattr(ctx.orchestrator.settings, "recovery_scan_on_boot", True)
         ):
-            await ctx.orchestrator.recover_interrupted_runs()
+            await ctx.application.recover_interrupted_runs()
+        yield
+
+    app = FastAPI(title="Diego", version="0.1.0", lifespan=lifespan)
 
     @app.get("/healthz")
     async def healthz():
@@ -77,11 +84,11 @@ def create_app(
 
     @app.post("/v1/ppt/runs")
     async def create_run(req: CreateRunRequest):
-        return await ctx.orchestrator.create_run(req)
+        return await ctx.application.create_run(req)
 
     @app.post("/v1/ppt/runs/prompt")
     async def create_run_from_prompt(req: PromptRunRequest):
-        return await ctx.orchestrator.create_run(req.to_create_run_request())
+        return await ctx.application.create_run(req.to_create_run_request())
 
     @app.post("/v1/ppt/templates")
     async def upload_template(file: UploadFile = File(...)):
@@ -92,20 +99,20 @@ def create_app(
         data = await file.read()
         if not data:
             raise HTTPException(status_code=400, detail="empty template file")
-        return await ctx.orchestrator.upload_template(
+        return await ctx.application.upload_template(
             filename=file.filename, content=data
         )
 
     @app.get("/v1/ppt/templates/{template_id}")
     async def get_template(template_id: str):
-        detail = await ctx.orchestrator.get_template_detail(template_id)
+        detail = await ctx.application.get_template_detail(template_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="template not found")
         return detail
 
     @app.get("/v1/ppt/runs/{run_id}")
     async def get_run(run_id: str):
-        run = await ctx.orchestrator.get_run_detail(run_id)
+        run = await ctx.application.get_run_detail(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         return run
@@ -115,7 +122,7 @@ def create_app(
         if slide_no < 1:
             raise HTTPException(status_code=400, detail="slide_no must be >= 1")
         try:
-            preview = await ctx.orchestrator.get_slide_preview(run_id, slide_no)
+            preview = await ctx.application.get_slide_preview(run_id, slide_no)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except FileNotFoundError as exc:
@@ -129,7 +136,7 @@ def create_app(
         if slide_no < 1:
             raise HTTPException(status_code=400, detail="slide_no must be >= 1")
         try:
-            scene = await ctx.orchestrator.get_slide_scene(run_id, slide_no)
+            scene = await ctx.application.get_slide_scene(run_id, slide_no)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except FileNotFoundError as exc:
@@ -143,7 +150,7 @@ def create_app(
         if slide_no < 1:
             raise HTTPException(status_code=400, detail="slide_no must be >= 1")
         try:
-            resolved_path = await ctx.orchestrator.get_slide_asset_path(
+            resolved_path = await ctx.application.get_slide_asset_path(
                 run_id, slide_no, path
             )
         except ValueError as exc:
@@ -164,7 +171,7 @@ def create_app(
         if slide_no < 1:
             raise HTTPException(status_code=400, detail="slide_no must be >= 1")
         try:
-            result = await ctx.orchestrator.save_slide_scene(
+            result = await ctx.application.save_slide_scene(
                 run_id=run_id, slide_no=slide_no, req=req
             )
         except SlideSceneConflictError as exc:
@@ -184,7 +191,7 @@ def create_app(
         if slide_no < 1:
             raise HTTPException(status_code=400, detail="slide_no must be >= 1")
         try:
-            result = await ctx.orchestrator.regenerate_single_slide(
+            result = await ctx.application.regenerate_single_slide(
                 run_id=run_id,
                 slide_no=slide_no,
                 instruction=req.instruction,
@@ -213,10 +220,18 @@ def create_app(
             filename=f"{run_id}.pptx",
         )
 
+    @app.get("/v1/ppt/runs/{run_id}/artifacts/compile-bundle")
+    async def get_compile_bundle(run_id: str):
+        try:
+            bundle = await ctx.application.build_compile_bundle(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return bundle
+
     @app.post("/v1/ppt/runs/{run_id}/outline/confirm")
     async def confirm_outline(run_id: str, req: ConfirmOutlineRequest):
         try:
-            run = await ctx.orchestrator.confirm_outline(run_id, req)
+            run = await ctx.application.confirm_outline(run_id, req)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if run is None:
@@ -225,7 +240,7 @@ def create_app(
 
     @app.get("/v1/ppt/runs/{run_id}/events")
     async def events(run_id: str):
-        run = await ctx.orchestrator.get_run_detail(run_id)
+        run = await ctx.application.get_run_detail(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         return StreamingResponse(

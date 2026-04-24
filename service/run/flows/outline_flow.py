@@ -66,10 +66,11 @@ class OutlineFlowService:
                     "reason": exc.message,
                     "details": exc.details or {},
                 }
-            if selected_sources and not rag_context_snippets:
+            rag_enabled = bool(rag_retrieval.get("enabled", True))
+            if selected_sources and not rag_context_snippets and rag_enabled:
                 error_code = (
                     "OUTLINE_RAG_UNAVAILABLE"
-                    if not bool(rag_retrieval.get("enabled", True))
+                    if not rag_enabled
                     else "OUTLINE_RAG_NO_MATCH_FOR_SELECTED_SOURCES"
                 )
                 await orch._fail_run(
@@ -392,4 +393,3 @@ class OutlineFlowService:
                     "traceback": traceback.format_exc(limit=4),
                 },
             )
-

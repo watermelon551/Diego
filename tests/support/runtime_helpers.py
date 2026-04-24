@@ -99,7 +99,7 @@ def make_settings(**overrides) -> Settings:
         outline_timeout_retries=3,
         outline_timeout_backoff_sec=0.0,
         outline_structured_output=True,
-        compile_provider="local",
+        compile_provider="none",
         pagevra_base_url="",
         pagevra_preview_enabled=False,
         pagevra_preview_timeout_sec=10.0,

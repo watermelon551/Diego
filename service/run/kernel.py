@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from ..design.skill_profile import enforce_layout_variety
 from ..models import (
-    ConfirmOutlineRequest,
     EventType,
     GenerationMode,
-    OutlineHistoryEntry,
-    RunDetailResponse,
     RunEvent,
     RunRecord,
     RunStatus,
@@ -51,121 +46,11 @@ class RunKernel:
         self.orch._spawn(self.start_outline(run_id))
         return RunSummaryResponse(run_id=run_id, trace_id=trace_id, status=run.status)
 
-    async def get_run_detail(self, run_id: str) -> RunDetailResponse | None:
-        run = await self.orch.store.get_run(run_id)
-        if run is None:
-            return None
-        pptx_path = str(run.pptx_path or "").strip()
-        pptx_ready = bool(
-            pptx_path and Path(pptx_path).exists() and Path(pptx_path).is_file()
-        )
-        artifacts: dict[str, Any] = {}
-        if pptx_path:
-            artifacts["pptx"] = {
-                "path": pptx_path,
-                "downloadable": pptx_ready,
-            }
-        return RunDetailResponse(
-            run_id=run.run_id,
-            trace_id=run.trace_id,
-            status=run.status,
-            pptx_ready=pptx_ready,
-            artifacts=artifacts,
-            outline=run.outline,
-            outline_history=run.outline_history,
-            slides=run.slides,
-            citation_map=run.citation_map,
-            stage_timings=run.stage_timings,
-            render_version=run.render_version,
-            error_code=run.error_code,
-            failed_stage=run.failed_stage,
-            retryable=run.retryable,
-            error_details=run.error_details,
-            compile_js_path=run.compile_js_path,
-            pptx_path=run.pptx_path,
-            compile_provider=run.compile_provider,
-            compile_fallback_used=run.compile_fallback_used,
-            qa_report=run.qa_report,
-            template_mapping_report=run.template_mapping_report,
-            chart_truth_report=run.chart_truth_report,
-            repair_history=run.repair_history,
-            quality_report=run.quality_report,
-            quality_gate_report=run.quality_gate_report,
-            research_report=run.research_report,
-            candidate_selection_report=run.candidate_selection_report,
-            template_layout_report=run.template_layout_report,
-            artifact_cleanup_report=run.artifact_cleanup_report,
-            events=run.events,
-        )
+    async def get_run_detail(self, run_id: str) -> Any:
+        return await self.orch.application.get_run_detail(run_id)
 
-    async def confirm_outline(
-        self, run_id: str, req: ConfirmOutlineRequest
-    ) -> RunSummaryResponse | None:
-        run = await self.orch.store.get_run(run_id)
-        if run is None:
-            return None
-        if run.status != RunStatus.AWAITING_OUTLINE_CONFIRM:
-            raise ValueError("run is not awaiting outline confirmation")
-        if run.outline is None:
-            raise ValueError("run outline is missing")
-        if req.outline is not None:
-            if req.base_version != run.outline.version:
-                raise ValueError(
-                    f"base_version mismatch: expected {run.outline.version}, got {req.base_version}"
-                )
-            enforce_layout_variety(
-                nodes=req.outline.nodes,
-                seed=f"{run.input.topic}|{self.orch._resolved_template_style(run)}|{run_id}|confirm",
-                style_dna_id=self.orch._resolved_style_dna_id(run),
-            )
-            if req.outline.version <= run.outline.version:
-                req.outline.version = run.outline.version + 1
-
-        def apply_confirm(r: RunRecord) -> None:
-            current_version = r.outline.version if r.outline is not None else None
-            if req.outline is not None:
-                r.outline = req.outline
-            r.status = (
-                RunStatus.SLIDES_GENERATING
-                if req.approved
-                else RunStatus.AWAITING_OUTLINE_CONFIRM
-            )
-            new_version = r.outline.version if r.outline is not None else None
-            action = (
-                "confirmed"
-                if req.approved
-                else ("updated" if req.outline is not None else "rejected")
-            )
-            r.outline_history.append(
-                OutlineHistoryEntry(
-                    action=action,
-                    approved=req.approved,
-                    base_version=current_version,
-                    new_version=new_version,
-                    change_reason=req.change_reason,
-                    at=now_iso(),
-                )
-            )
-
-        await self.orch.store.update_run(run_id, apply_confirm)
-        if req.outline is not None:
-            await self.publish(
-                run_id,
-                EventType.OUTLINE_UPDATED,
-                {
-                    "approved": req.approved,
-                    "base_version": req.base_version,
-                    "new_version": req.outline.version,
-                    "change_reason": req.change_reason,
-                },
-            )
-        if req.approved:
-            self.orch._spawn(self.execute_generation_pipeline(run_id))
-        updated = await self.orch.store.get_run(run_id)
-        assert updated is not None
-        return RunSummaryResponse(
-            run_id=updated.run_id, trace_id=updated.trace_id, status=updated.status
-        )
+    async def confirm_outline(self, run_id: str, req: Any) -> RunSummaryResponse | None:
+        return await self.orch.application.confirm_outline(run_id, req)
 
     async def publish(
         self, run_id: str, event_type: EventType, payload: dict[str, Any]
@@ -192,6 +77,10 @@ class RunKernel:
             r.failed_stage = stage
             r.retryable = retryable
             r.error_details = dict(error_details or {})
+            if stage == "COMPILING":
+                r.compile_status = "failed"
+                r.compile_error_code = error_code
+                r.compile_error_details = dict(error_details or {})
 
         await self.orch.store.update_run(run_id, apply_fail)
         payload: dict[str, Any] = {
@@ -222,6 +111,9 @@ class RunKernel:
             r.failed_stage = None
             r.retryable = False
             r.error_details = {}
+            if r.compile_status != "failed":
+                r.compile_error_code = None
+                r.compile_error_details = {}
 
         await self.orch.store.update_run(run_id, apply_success)
         self.orch._clear_run_llm_budget(run_id)

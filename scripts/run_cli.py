@@ -319,8 +319,12 @@ async def main() -> None:
             continue
 
         print("\n运行成功。")
-        print(f"pptx_path: {final_detail.pptx_path}")
+        print("generation_result:")
+        print(json.dumps(final_detail.generation_result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        print("compile_result:")
+        print(json.dumps(final_detail.compile_result.model_dump(mode="json"), ensure_ascii=False, indent=2))
         print(f"compile_js_path: {final_detail.compile_js_path}")
+        print(f"pptx_path: {final_detail.pptx_path}")
         if final_detail.slides:
             print("slide js:")
             for item in final_detail.slides:

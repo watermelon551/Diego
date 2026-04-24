@@ -18,7 +18,7 @@
 
 ## 2. 北极星目标（1 句话）
 
-在不依赖特定上游系统实现细节的前提下，稳定产出可追溯、可迭代、可观测的高质量 PPT 课件。
+在不依赖特定上游系统实现细节的前提下，稳定产出可追溯、可迭代、可观测的高质量 generation result、compile bundle 与可选 compiled artifact。
 
 可验证条款：
 - 服务可以独立接收输入并完成端到端 PPT 生成。
@@ -26,7 +26,7 @@
 
 ## 3. 核心业务目标（用户价值）
 
-- 降低课件制作的人力成本：从主题到可下载 PPT 的自动化链路可复用。
+- 降低课件制作的人力成本：从主题到 generation result 的自动化链路可复用。
 - 提升内容可信度：每页内容可以回溯到检索来源 `chunk_id`。
 - 提升交互体验：大纲与逐页生成过程对上游可流式可见。
 - 提升可控性：在生成前提供大纲确认/修改关口。
@@ -77,13 +77,16 @@
 - 每页至少产生一次 `slide.generated` 或最终失败事件。
 - 页码连续，且总页数与大纲目标一致或有差异说明。
 
-### 4.5 编译与产物返回
+### 4.5 编译与外部导出契约
 
-- 生成并执行 `compile.js`，输出最终 `pptx`。
+- 生成 `compile.js` 与 compile bundle，供外部编译服务消费。
+- Diego 可选接入显式 compile provider，但默认不依赖特定 provider 才能完成主路径。
+- generation result、compile bundle、compiled artifact 必须在契约上可区分，不能混成单一模糊结果。
 - 返回 `citation_map`，建立“页 -> 来源 chunk”映射。
 
 可验证条款：
-- `pptx` 可正常打开。
+- scratch 模式下 compile bundle 可被稳定构建。
+- 当显式启用 compile provider 时，导出产物可正常打开。
 - `citation_map` 包含至少一个有效 `chunk_id`（当检索命中时）。
 
 ### 4.6 事件流目标
@@ -159,10 +162,10 @@
 ### M1：服务最小可运行闭环
 
 - 提供可运行 API 与最小状态机。
-- 支持大纲生成、确认、逐页生成、编译的主流程。
+- 支持大纲生成、确认、逐页生成、compile bundle 暴露与可选编译集成。
 
 验收：
-- 至少 1 个端到端样例成功产出 `pptx`。
+- 至少 1 个端到端样例成功产出 generation result 与 compile bundle。
 
 ### M2：质量与可观测增强
 
@@ -177,8 +180,9 @@
 满足以下全部条件才视为达到本目标：
 
 - 输入支持：支持 `topic/project_id/rag_source_ids/template_style/target_slide_count`。
-- 产出支持：提供 `OutlineDocument`、逐页 `slide-xx.js`、`pptx`、`citation_map`。
-- 流程闭环：完成 `RAG检索 -> 大纲流式 -> 大纲确认 -> 逐页JS生成 -> 编译 -> 产物返回`。
+- 产出支持：提供 `OutlineDocument`、逐页 `slide-xx.js`、`compile bundle`、`citation_map`。
+- 流程闭环：完成 `RAG检索 -> 大纲流式 -> 大纲确认 -> 逐页JS生成 -> generation result 暴露`。
+- 当显式启用 compile provider 时，额外验证 compile/export artifact。
 - 事件流：至少覆盖 `outline.token`、`outline.completed`、`slide.generated`、`compile.completed`、`run.failed`。
 - 失败处理：单页失败可重试；运行级错误可定位；状态机不可越序。
 - 可观测：每次 run 必有 `run_id/trace_id/阶段耗时/错误码`。

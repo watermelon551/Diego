@@ -144,6 +144,7 @@ def test_core_files_should_respect_size_guards() -> None:
         "service/run/orchestrator.py": "transition facade while legacy helper methods are still migrating",
         "service/slides/js_quality_mixin.py": "legacy quality logic migration in progress",
         "service/templates/template_ops_mixin.py": "legacy template logic migration in progress",
+        "service/run/slide_scene.py": "editable slide scene parsing and transform migration is still consolidated here",
         "service/design/style_catalog.py": "catalog data and normalization rules intentionally centralized",
         "service/llm/client.py": "provider client and parsing compatibility surface intentionally centralized",
     }
@@ -152,12 +153,15 @@ def test_core_files_should_respect_size_guards() -> None:
         "service/run/services/compile_service.py",
         "service/run/services/quality_repair_service.py",
         "service/run/slide_preview.py",
+        "service/run/flows/scratch_flow.py",
         "service/templates/asset_search_mixin.py",
         "service/design/skill_profile.py",
         "service/models/contracts.py",
         "service/llm/mock.py",
         "service/llm/types.py",
         "service/config.py",
+        "service/infra/store.py",
+        "service/application/slides.py",
     }
     violations: list[str] = []
     for path in _iter_py_files(ROOT / "service"):
@@ -168,3 +172,36 @@ def test_core_files_should_respect_size_guards() -> None:
         elif lines > 300 and rel not in exempt_over_500 and rel not in exempt_over_300:
             violations.append(f"{rel} is {lines} lines and has no >300 exemption")
     assert not violations, "Core file size guard violations found:\n" + "\n".join(violations)
+
+
+def test_docs_should_describe_generation_and_external_compile_boundary() -> None:
+    checks = {
+        ROOT / "README.md": [
+            "Diego 负责生成",
+            "外部 compile provider 负责渲染/编译/导出",
+            "Pagevra` 是当前支持的 provider 之一",
+        ],
+        ROOT / "docs" / "PROJECT_GOALS.md": [
+            "compile bundle",
+            "不依赖特定上游系统实现细节",
+        ],
+        ROOT / "docs" / "ARCHITECTURE.md": [
+            "generation truth",
+            "external compile provider",
+        ],
+    }
+    missing: list[str] = []
+    for path, patterns in checks.items():
+        text = path.read_text(encoding="utf-8")
+        for pattern in patterns:
+            if pattern not in text:
+                missing.append(f"{path.relative_to(ROOT).as_posix()} missing {pattern!r}")
+    assert not missing, "Docs boundary contract drift found:\n" + "\n".join(missing)
+
+
+def test_compile_provider_default_should_not_point_to_external_service() -> None:
+    text = (ROOT / "service" / "config.py").read_text(encoding="utf-8")
+    assert 'compile_provider: str = "none"' in text
+    assert 'os.getenv("COMPILE_PROVIDER", "none")' in text
+    assert 'pagevra_preview_enabled: bool = False' in text
+    assert 'pagevra_preview_enabled=_env_bool("PAGEVRA_PREVIEW_ENABLED", False)' in text

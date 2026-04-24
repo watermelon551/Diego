@@ -49,9 +49,9 @@ class Settings:
     timeout_streak_degrade_threshold: int = 3
     timeout_streak_recover_window_sec: float = 120.0
     qa_finalize_timeout_sec: float = 300.0
-    compile_provider: str = "auto"
+    compile_provider: str = "none"
     pagevra_base_url: str = ""
-    pagevra_preview_enabled: bool = True
+    pagevra_preview_enabled: bool = False
     pagevra_preview_timeout_sec: float = 30.0
     pagevra_compile_timeout_sec: float = 180.0
     stratumind_base_url: str = ""
@@ -112,8 +112,8 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         raise ValueError("UNSPLASH_ACCESS_KEY or PEXELS_API_KEY is required when ASSET_PROVIDER=auto")
     if generation_engine not in {"agentic_v2", "legacy"}:
         raise ValueError(f"invalid GENERATION_ENGINE={generation_engine!r}")
-    compile_provider = os.getenv("COMPILE_PROVIDER", "auto").strip().lower()
-    if compile_provider not in {"local", "pagevra", "auto"}:
+    compile_provider = os.getenv("COMPILE_PROVIDER", "none").strip().lower()
+    if compile_provider not in {"none", "local", "pagevra"}:
         raise ValueError(f"invalid COMPILE_PROVIDER={compile_provider!r}")
     pagevra_compile_timeout_sec = _env_float("PAGEVRA_COMPILE_TIMEOUT_SEC", 180.0)
     if pagevra_compile_timeout_sec <= 0:
@@ -192,7 +192,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         qa_finalize_timeout_sec=qa_finalize_timeout_sec,
         compile_provider=compile_provider,
         pagevra_base_url=os.getenv("PAGEVRA_BASE_URL", "").strip().rstrip("/"),
-        pagevra_preview_enabled=_env_bool("PAGEVRA_PREVIEW_ENABLED", True),
+        pagevra_preview_enabled=_env_bool("PAGEVRA_PREVIEW_ENABLED", False),
         pagevra_preview_timeout_sec=pagevra_preview_timeout_sec,
         pagevra_compile_timeout_sec=pagevra_compile_timeout_sec,
         stratumind_base_url=os.getenv("STRATUMIND_BASE_URL", "").strip().rstrip("/"),

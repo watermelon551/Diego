@@ -156,6 +156,12 @@ class TemplateFlowService:
         def apply_compile(r: RunRecord) -> None:
             r.compile_js_path = str(template_compile_js)
             r.pptx_path = str(edited)
+            r.compile_requested_provider = "template_js"
+            r.compile_provider = "template_js"
+            r.compile_status = "succeeded"
+            r.compile_bundle_ready = False
+            r.compile_error_code = None
+            r.compile_error_details = {}
             r.stage_timings.compile_ms = int(
                 (time.perf_counter() - compile_start) * 1000
             )
