@@ -1,0 +1,174 @@
+{
+  "longform_draft": {
+    "schema_version": "content_blocks_v1",
+    "content_kind": "longform_draft",
+    "generation_goal": "explain how wetlands improve water quality",
+    "source_scope": {
+      "mode": "selected_sources",
+      "selected_source_ids": ["source-wetlands-1"]
+    },
+    "sections": [
+      {
+        "section_id": "section-1",
+        "heading": "Wetland Filtration Basics",
+        "blocks": [
+          {
+            "kind": "paragraph",
+            "text": "Wetlands slow water flow and give suspended material more time to settle."
+          },
+          {
+            "kind": "bullet_list",
+            "items": [
+              "Slower flow supports sediment capture",
+              "Plant roots increase contact with nutrients"
+            ]
+          }
+        ],
+        "source_refs": ["chunk-wetlands-11"],
+        "revision_target": "section-1"
+      }
+    ],
+    "warnings": []
+  },
+  "structure_expansion": {
+    "schema_version": "structure_expansion_v1",
+    "content_kind": "structure_expansion",
+    "generation_goal": "decompose watershed restoration priorities",
+    "anchor_context": {
+      "anchor_label": "restoration priorities"
+    },
+    "units": [
+      {
+        "unit_id": "unit-1",
+        "title": "Water Quality Recovery",
+        "summary": "Expand the restoration goal into runoff reduction and nutrient filtering work.",
+        "key_points": [
+          "Limit polluted inflow",
+          "Improve filtration conditions"
+        ],
+        "source_refs": ["chunk-restoration-11"],
+        "anchor_ref": "restoration priorities",
+        "revision_target": "unit-1"
+      }
+    ],
+    "anchors": ["restoration priorities"],
+    "source_refs": ["chunk-restoration-11"],
+    "revision_targets": ["unit-1"],
+    "warnings": []
+  },
+  "item_generation": {
+    "schema_version": "item_generation_v1",
+    "content_kind": "item_generation",
+    "generation_goal": "generate reflective checks about the carbon cycle",
+    "items": [
+      {
+        "item_id": "item-1",
+        "stem": "Which transfer moves carbon from the atmosphere into living matter?",
+        "choices": [
+          "Photosynthesis",
+          "Combustion",
+          "Erosion"
+        ],
+        "expected_response": "Photosynthesis",
+        "expected_response_hints": [
+          "Focus on atmospheric carbon entering biomass"
+        ],
+        "explanation": "The response should identify the transfer that stores atmospheric carbon in organisms.",
+        "difficulty": "medium",
+        "intent": "check understanding",
+        "source_refs": ["chunk-carbon-21"]
+      }
+    ],
+    "source_refs": ["chunk-carbon-21"],
+    "revision_targets": ["item-1"],
+    "warnings": []
+  },
+  "sequence_or_script_plan": {
+    "schema_version": "sequence_or_script_plan_v1_candidate",
+    "content_kind": "sequence_or_script_plan",
+    "generation_goal": "trace how heat and moisture move through the water cycle",
+    "states": [
+      {
+        "state_id": "state-1",
+        "label": "Surface Water",
+        "summary": "Water gathers in oceans, lakes, and soil before phase change begins."
+      },
+      {
+        "state_id": "state-2",
+        "label": "Atmospheric Vapor",
+        "summary": "Water vapor carries heat upward after evaporation."
+      }
+    ],
+    "transitions": [
+      {
+        "transition_id": "transition-1",
+        "from": "state-1",
+        "to": "state-2",
+        "label": "Evaporation",
+        "summary": "Solar energy drives liquid water into vapor form."
+      }
+    ],
+    "checkpoints": [
+      {
+        "checkpoint_id": "checkpoint-1",
+        "label": "Phase Change Confirmed"
+      }
+    ],
+    "trace": {
+      "trace_kind": "process_trace",
+      "steps": [
+        "Surface water absorbs energy",
+        "Water evaporates into the atmosphere"
+      ]
+    },
+    "source_refs": ["chunk-water-cycle-31"],
+    "revision_targets": ["state-1", "transition-1"],
+    "warnings": [
+      "candidate_only_not_public_contract"
+    ]
+  },
+  "algorithm_trace_sample": {
+    "schema_version": "sequence_or_script_plan_v1_candidate",
+    "content_kind": "sequence_or_script_plan",
+    "generation_goal": "trace how bubble sort swaps values into order",
+    "states": [
+      {
+        "state_id": "state-a",
+        "label": "Unsorted Window",
+        "summary": "The current comparison window still contains out-of-order values."
+      },
+      {
+        "state_id": "state-b",
+        "label": "Partially Ordered Prefix",
+        "summary": "One swap improves local order but the pass is not complete."
+      }
+    ],
+    "transitions": [
+      {
+        "transition_id": "transition-a",
+        "from": "state-a",
+        "to": "state-b",
+        "label": "Swap Performed",
+        "summary": "Two adjacent values are exchanged after comparison."
+      }
+    ],
+    "checkpoints": [
+      {
+        "checkpoint_id": "checkpoint-a",
+        "label": "Comparison Evaluated"
+      }
+    ],
+    "trace": {
+      "trace_kind": "algorithm_trace",
+      "steps": [
+        "Compare adjacent values",
+        "Swap when the left value is larger"
+      ]
+    },
+    "source_refs": ["chunk-sorting-41"],
+    "revision_targets": ["state-a", "transition-a"],
+    "warnings": [
+      "candidate_only_not_public_contract"
+    ]
+  }
+}

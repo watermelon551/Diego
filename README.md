@@ -34,6 +34,8 @@
 - `外部 compile provider 负责渲染/编译/导出`：当被显式配置时，消费 Diego 的 compile bundle 并返回导出产物。
 - `Pagevra` 是当前支持的 provider 之一，不是 Diego 的 ontology center。
 - 两者可以组合，但 `Pagevra` 不是 Diego 的 repo-level destiny；默认配置下 Diego 不依赖它才能成功完成 generation。
+- `Diego` 也可以提供 host-agnostic 的 long-form drafting primitive：source-aware plan、section-aware revision、structured draft output。
+- 对 long-form 而言，Diego 只拥有 drafting truth；其 canonical output 是轻量通用内容对象 `content_blocks_v1`，不拥有 markdown render、preview、docx/export 或任何宿主落地责任。
 
 ### 1.3 模块结构（重构后）
 
@@ -139,10 +141,16 @@ docker compose down
 | `GET` | `/healthz` | 容器健康检查 |
 | `POST` | `/v1/ppt/runs` | 用结构化请求创建 run |
 | `POST` | `/v1/ppt/runs/prompt` | 用 prompt 快速创建 run |
+| `POST` | `/v1/content/runs` | 用结构化请求创建 long-form run |
+| `POST` | `/v1/content/runs/prompt` | 用 prompt 快速创建 long-form run |
 | `GET` | `/v1/ppt/runs/{run_id}` | 查询 run 详情（含报告与事件） |
 | `GET` | `/v1/ppt/runs/{run_id}/events` | SSE 订阅事件 |
+| `GET` | `/v1/content/runs/{run_id}` | 查询 long-form run 详情 |
+| `GET` | `/v1/content/runs/{run_id}/events` | 订阅 long-form 事件 |
 | `GET` | `/v1/ppt/runs/{run_id}/artifacts/compile-bundle` | 返回 scratch compile bundle |
 | `POST` | `/v1/ppt/runs/{run_id}/outline/confirm` | 确认或修改大纲 |
+| `POST` | `/v1/content/runs/{run_id}/plan/confirm` | 确认或修改 long-form plan |
+| `POST` | `/v1/content/runs/{run_id}/sections/{section_id}/revise` | 局部修订指定 section |
 | `POST` | `/v1/ppt/templates` | 上传模板 `.pptx` |
 | `GET` | `/v1/ppt/templates/{template_id}` | 查询模板元数据 |
 
@@ -213,10 +221,17 @@ docker compose down
 - generation-owned result：`generation_result`
 - generation-owned compile handoff：`compile_bundle`
 - external compile/export result：`compile_result`
-- 兼容字段：`compile_js_path`、`pptx_path`、`compile_provider`
+- 兼容字段（legacy mirror）：`compile_js_path`、`pptx_path`、`compile_provider`
 - 可观测：`stage_timings`、`events`
 - 失败：`error_code`、`failed_stage`、`retryable`、`error_details`
 - 报告：`qa_report`、`quality_gate_report`、`research_report`、`template_mapping_report`、`chart_truth_report`、`template_layout_report` 等
+
+语义说明：
+
+- `generation_result` 是 Diego 自有的 generation truth。
+- `compile_bundle` 是 Diego 产出的 downstream handoff artifact，用于显式 compile seam。
+- `compile_result` 只描述显式 compile provider outcome；未请求 provider 时不应吞回 Diego 自有 generation truth。
+- `template` 模式下由 Diego 直接产出的 `.pptx` 仍通过 `artifacts.pptx` / `pptx_path` 暴露，但不应被解释成 external provider result。
 
 #### 模板接口返回
 
@@ -333,8 +348,8 @@ data: {"seq":27,"event":"slide.generated","ts":"2026-04-12T10:00:00Z","payload":
 - `template_slides/compile.js`
 - `template_slides/output/presentation.pptx`（模板 JS 编译校验产物）
 
-接口返回以 `pptx_path`、`compile_js_path`、`slides[].js_path` 为准。
-其中 `pptx_path`、`compile_provider`、`compile_fallback_used` 为兼容字段；新的边界语义以 `generation_result`、`compile_bundle` 和 `compile_result` 为准。
+接口返回以 `generation_result`、`compile_bundle`、`compile_result` 为主。
+其中 `pptx_path`、`compile_js_path`、`compile_provider`、`compile_fallback_used` 仅作为兼容镜像保留；文件可见性优先看 `artifacts`，provider outcome 优先看 `compile_result`。
 
 ## 7. 调试与测试
 

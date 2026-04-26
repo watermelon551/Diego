@@ -14,6 +14,7 @@
 - compile/export 通过 `external compile provider` seam 接入
 - slide preview 通过可选 `external preview provider` seam 接入
 - `pagevra` 是当前 supported provider 之一，不是默认骨架
+- 对 long-form 而言，Diego owns `drafting truth`，其 canonical output 是 `content_blocks_v1`，但 does not own markdown render, preview, docx, or export truth
 
 ## 1.1 服务内部分层（2026-04 重构后）
 
@@ -28,6 +29,7 @@
 - `design`: 样式策略与主题映射
 - `infra`: 内存存储与事件等待机制
 - `models`: API/状态对象契约
+- `content`: host-agnostic long-form planning, drafting, and section revision
 
 兼容层策略：
 - `service.orchestrator`、`service.llm_client` 等旧路径仍保留为 shim。
@@ -95,6 +97,8 @@
 - `build_compile_bundle` 是 Diego 对外的一等 contract。
 - 默认 `compile_provider=none`，表示 Diego 完成 generation 后只暴露 compile bundle，不主动编译。
 - `compile_provider=local` 或 `compile_provider=pagevra` 时，编译作为显式 adapter 行为执行。
+- `template` 模式下 Diego 自己产出的 `.pptx` 属于 generation-owned output，不应伪装成 provider seam outcome。
+- `compile_js_path`、`pptx_path`、`compile_provider` 等兼容字段只作为 legacy mirror 暴露，不应反客为主。
 - 默认 `pagevra_preview_enabled=0`，表示 Diego 不把外部 preview 当默认主路径。
 - 不允许通过 fallback 把 provider 边界错误伪装成 Diego 自身成功。
 
@@ -116,3 +120,4 @@
 
 - 本文档仅定义新服务实现基线。
 - 当前阶段不修改任何外部系统代码。
+- 新增 long-form primitive 时，不得引入宿主卡片 ontology，也不得把 compile/export/preview 责任长进 Diego。

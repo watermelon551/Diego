@@ -11,12 +11,20 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from ..application import DiegoApplication
 from ..models import (
+    ConfirmLongFormPlanRequest,
     ConfirmOutlineRequest,
     CreateRunRequest,
+    ItemGenerationPromptRunRequest,
+    ItemGenerationRunRequest,
+    LongFormPromptRunRequest,
+    LongFormRunRequest,
     SaveSlideSceneRequest,
     PromptRunRequest,
+    ReviseLongFormSectionRequest,
     RegenerateSlideRequest,
     RunStatus,
+    StructureExpansionPromptRunRequest,
+    StructureExpansionRunRequest,
 )
 from ..run import (
     RunOrchestrator,
@@ -86,9 +94,23 @@ def create_app(
     async def create_run(req: CreateRunRequest):
         return await ctx.application.create_run(req)
 
+    @app.post("/v1/content/runs")
+    async def create_content_run(
+        req: LongFormRunRequest | StructureExpansionRunRequest | ItemGenerationRunRequest,
+    ):
+        return await ctx.application.create_content_run(req)
+
     @app.post("/v1/ppt/runs/prompt")
     async def create_run_from_prompt(req: PromptRunRequest):
         return await ctx.application.create_run(req.to_create_run_request())
+
+    @app.post("/v1/content/runs/prompt")
+    async def create_content_run_from_prompt(
+        req: LongFormPromptRunRequest
+        | StructureExpansionPromptRunRequest
+        | ItemGenerationPromptRunRequest,
+    ):
+        return await ctx.application.create_content_run(req.to_create_run_request())
 
     @app.post("/v1/ppt/templates")
     async def upload_template(file: UploadFile = File(...)):
@@ -113,6 +135,13 @@ def create_app(
     @app.get("/v1/ppt/runs/{run_id}")
     async def get_run(run_id: str):
         run = await ctx.application.get_run_detail(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return run
+
+    @app.get("/v1/content/runs/{run_id}")
+    async def get_content_run(run_id: str):
+        run = await ctx.application.get_content_run_detail(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         return run
@@ -238,9 +267,42 @@ def create_app(
             raise HTTPException(status_code=404, detail="run not found")
         return run
 
+    @app.post("/v1/content/runs/{run_id}/plan/confirm")
+    async def confirm_content_plan(run_id: str, req: ConfirmLongFormPlanRequest):
+        try:
+            run = await ctx.application.confirm_content_plan(run_id, req)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return run
+
+    @app.post("/v1/content/runs/{run_id}/sections/{section_id}/revise")
+    async def revise_content_section(
+        run_id: str, section_id: str, req: ReviseLongFormSectionRequest
+    ):
+        try:
+            result = await ctx.application.revise_content_section(
+                run_id, section_id, req
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return result
+
     @app.get("/v1/ppt/runs/{run_id}/events")
     async def events(run_id: str):
         run = await ctx.application.get_run_detail(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return StreamingResponse(
+            _sse_generator(ctx, run_id), media_type="text/event-stream"
+        )
+
+    @app.get("/v1/content/runs/{run_id}/events")
+    async def content_events(run_id: str):
+        run = await ctx.application.get_content_run_detail(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         return StreamingResponse(

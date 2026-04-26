@@ -30,6 +30,7 @@
 - 提升内容可信度：每页内容可以回溯到检索来源 `chunk_id`。
 - 提升交互体验：大纲与逐页生成过程对上游可流式可见。
 - 提升可控性：在生成前提供大纲确认/修改关口。
+- 对长文生成保持 host-agnostic：支持 source-aware long-form drafting 与 section-aware revision，但不拥有宿主卡片、导出或预览责任。
 
 可验证条款：
 - 用户可以在大纲确认后再进入逐页生成。
@@ -82,6 +83,7 @@
 - 生成 `compile.js` 与 compile bundle，供外部编译服务消费。
 - Diego 可选接入显式 compile provider，但默认不依赖特定 provider 才能完成主路径。
 - generation result、compile bundle、compiled artifact 必须在契约上可区分，不能混成单一模糊结果。
+- 兼容字段可以保留，但不得盖过 `generation_result / compile_bundle / compile_result` 的主叙事。
 - 返回 `citation_map`，建立“页 -> 来源 chunk”映射。
 
 可验证条款：
@@ -100,6 +102,16 @@
 
 可验证条款：
 - 全流程运行中可收到上述最小事件集合（成功或失败路径）。
+
+### 4.7 通用长文生成 primitive
+
+- 支持 source-aware long-form planning 与 structured draft generation。
+- 支持 section-aware revision，且局部修订不应破坏其它 section 的 truth。
+- canonical output 应保持为通用内容对象 `content_blocks_v1`，而不是绑定某个宿主 markdown/docx/export 流程。
+
+可验证条款：
+- `content` run 可在确认 plan 后生成 `plan + draft + section revision`。
+- long-form 契约不包含 `preview/docx/export/compile provider` 成功语义。
 
 ## 5. 非功能目标（稳定性、性能、可观测性、安全）
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -13,6 +13,9 @@ from ..design.style_catalog import (
 
 
 class RunStatus(str, Enum):
+    PLANNING = "PLANNING"
+    AWAITING_PLAN_CONFIRM = "AWAITING_PLAN_CONFIRM"
+    DRAFTING = "DRAFTING"
     OUTLINE_DRAFTING = "OUTLINE_DRAFTING"
     AWAITING_OUTLINE_CONFIRM = "AWAITING_OUTLINE_CONFIRM"
     SLIDES_GENERATING = "SLIDES_GENERATING"
@@ -31,6 +34,12 @@ class EventType(str, Enum):
     OUTLINE_TOKEN = "outline.token"
     OUTLINE_COMPLETED = "outline.completed"
     OUTLINE_UPDATED = "outline.updated"
+    PLAN_TOKEN = "plan.token"
+    PLAN_UPDATED = "plan.updated"
+    SECTION_GENERATED = "section.generated"
+    SECTION_REVISED = "section.revised"
+    STRUCTURE_EXPANSION_COMPLETED = "structure.expansion.completed"
+    ITEM_GENERATION_COMPLETED = "item.generation.completed"
     SLIDE_GENERATED = "slide.generated"
     COMPILE_COMPLETED = "compile.completed"
     RUN_FAILED = "run.failed"
@@ -91,6 +100,7 @@ class SlidePageType(str, Enum):
 
 
 class CreateRunRequest(BaseModel):
+    capability: Literal["ppt"] = "ppt"
     topic: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
     rag_source_ids: list[str] = Field(default_factory=list)
@@ -112,6 +122,7 @@ class CreateRunRequest(BaseModel):
 
 
 class PromptRunRequest(BaseModel):
+    capability: Literal["ppt"] = "ppt"
     prompt: str = Field(min_length=1)
     project_id: str = Field(default="default-project", min_length=1)
     rag_source_ids: list[str] = Field(default_factory=list)
@@ -156,6 +167,230 @@ class OutlineDocument(BaseModel):
     version: int
     nodes: list[OutlineNode]
     summary: str
+
+
+class LongFormRunRequest(BaseModel):
+    capability: Literal["content"] = "content"
+    content_kind: Literal["longform_draft"] = "longform_draft"
+    topic: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    rag_source_ids: list[str] = Field(default_factory=list)
+    audience: str = Field(default="general audience")
+    purpose: str = Field(default="explain the topic clearly")
+    tone: str = Field(default="professional")
+    target_section_count: int = Field(default=5, ge=1, le=24)
+
+
+class LongFormPromptRunRequest(BaseModel):
+    capability: Literal["content"] = "content"
+    content_kind: Literal["longform_draft"] = "longform_draft"
+    prompt: str = Field(min_length=1)
+    project_id: str = Field(default="default-project", min_length=1)
+    rag_source_ids: list[str] = Field(default_factory=list)
+    audience: str = Field(default="general audience")
+    purpose: str = Field(default="explain the topic clearly")
+    tone: str = Field(default="professional")
+    target_section_count: int = Field(default=5, ge=1, le=24)
+
+    def to_create_run_request(self) -> "LongFormRunRequest":
+        return LongFormRunRequest(
+            content_kind=self.content_kind,
+            topic=self.prompt,
+            project_id=self.project_id,
+            rag_source_ids=self.rag_source_ids,
+            audience=self.audience,
+            purpose=self.purpose,
+            tone=self.tone,
+            target_section_count=self.target_section_count,
+        )
+
+
+class ContentSourceScope(BaseModel):
+    mode: Literal["project_all", "selected_sources"] = "project_all"
+    selected_source_ids: list[str] = Field(default_factory=list)
+    scope_note: str = ""
+
+
+class StructureExpansionAnchorContext(BaseModel):
+    anchor_label: str = ""
+    anchor_summary: str = ""
+    related_labels: list[str] = Field(default_factory=list)
+
+
+class StructureExpansionRunRequest(BaseModel):
+    capability: Literal["content"] = "content"
+    content_kind: Literal["structure_expansion"] = "structure_expansion"
+    generation_goal: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    rag_source_ids: list[str] = Field(default_factory=list)
+    source_scope: ContentSourceScope = Field(default_factory=ContentSourceScope)
+    evidence_refs: list[str] = Field(default_factory=list)
+    anchor_context: StructureExpansionAnchorContext = Field(
+        default_factory=StructureExpansionAnchorContext
+    )
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    requested_output_shape: str = Field(default="units")
+
+
+class StructureExpansionPromptRunRequest(BaseModel):
+    capability: Literal["content"] = "content"
+    content_kind: Literal["structure_expansion"] = "structure_expansion"
+    prompt: str = Field(min_length=1)
+    project_id: str = Field(default="default-project", min_length=1)
+    rag_source_ids: list[str] = Field(default_factory=list)
+    source_scope: ContentSourceScope = Field(default_factory=ContentSourceScope)
+    evidence_refs: list[str] = Field(default_factory=list)
+    anchor_context: StructureExpansionAnchorContext = Field(
+        default_factory=StructureExpansionAnchorContext
+    )
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    requested_output_shape: str = Field(default="units")
+
+    def to_create_run_request(self) -> "StructureExpansionRunRequest":
+        return StructureExpansionRunRequest(
+            generation_goal=self.prompt,
+            project_id=self.project_id,
+            rag_source_ids=self.rag_source_ids,
+            source_scope=self.source_scope,
+            evidence_refs=self.evidence_refs,
+            anchor_context=self.anchor_context,
+            constraints=self.constraints,
+            requested_output_shape=self.requested_output_shape,
+        )
+
+
+class ItemGenerationRunRequest(BaseModel):
+    capability: Literal["content"] = "content"
+    content_kind: Literal["item_generation"] = "item_generation"
+    generation_goal: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    rag_source_ids: list[str] = Field(default_factory=list)
+    source_scope: ContentSourceScope = Field(default_factory=ContentSourceScope)
+    evidence_refs: list[str] = Field(default_factory=list)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    requested_output_shape: str = Field(default="items")
+
+
+class ItemGenerationPromptRunRequest(BaseModel):
+    capability: Literal["content"] = "content"
+    content_kind: Literal["item_generation"] = "item_generation"
+    prompt: str = Field(min_length=1)
+    project_id: str = Field(default="default-project", min_length=1)
+    rag_source_ids: list[str] = Field(default_factory=list)
+    source_scope: ContentSourceScope = Field(default_factory=ContentSourceScope)
+    evidence_refs: list[str] = Field(default_factory=list)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    requested_output_shape: str = Field(default="items")
+
+    def to_create_run_request(self) -> "ItemGenerationRunRequest":
+        return ItemGenerationRunRequest(
+            generation_goal=self.prompt,
+            project_id=self.project_id,
+            rag_source_ids=self.rag_source_ids,
+            source_scope=self.source_scope,
+            evidence_refs=self.evidence_refs,
+            constraints=self.constraints,
+            requested_output_shape=self.requested_output_shape,
+        )
+
+
+class LongFormPlanSection(BaseModel):
+    section_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    summary: str = ""
+    key_points: list[str] = Field(default_factory=list)
+    intent: str = ""
+    source_refs: list[str] = Field(default_factory=list)
+
+
+class LongFormPlan(BaseModel):
+    version: int = Field(ge=1)
+    title: str = Field(min_length=1)
+    summary: str = ""
+    sections: list[LongFormPlanSection] = Field(default_factory=list, min_length=1)
+
+
+class ContentBlock(BaseModel):
+    kind: Literal["heading", "paragraph", "bullet_list", "quote"]
+    text: str = ""
+    items: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> "ContentBlock":
+        if self.kind == "bullet_list":
+            if not self.items:
+                raise ValueError("bullet_list block requires items")
+            self.text = ""
+        else:
+            if not str(self.text or "").strip():
+                raise ValueError(f"{self.kind} block requires text")
+            self.items = []
+        return self
+
+
+class LongFormDraftSection(BaseModel):
+    section_id: str = Field(min_length=1)
+    heading: str = Field(min_length=1)
+    blocks: list[ContentBlock] = Field(default_factory=list, min_length=1)
+    citations: list[str] = Field(default_factory=list)
+    revision: int = Field(default=1, ge=1)
+
+
+class LongFormDraftStats(BaseModel):
+    section_count: int = 0
+    block_count: int = 0
+    citation_count: int = 0
+
+
+class LongFormDraft(BaseModel):
+    content_schema: Literal["content_blocks_v1"] = "content_blocks_v1"
+    version: int = Field(default=1, ge=1)
+    title: str = Field(min_length=1)
+    summary: str = ""
+    sections: list[LongFormDraftSection] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+    stats: LongFormDraftStats = Field(default_factory=LongFormDraftStats)
+
+
+class StructureExpansionUnit(BaseModel):
+    unit_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    summary: str = ""
+    key_points: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    anchor_ref: str = ""
+    revision_target: str = ""
+
+
+class StructureExpansionResult(BaseModel):
+    schema_version: Literal["structure_expansion_v1"] = "structure_expansion_v1"
+    content_kind: Literal["structure_expansion"] = "structure_expansion"
+    units: list[StructureExpansionUnit] = Field(default_factory=list, min_length=1)
+    anchors: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    revision_targets: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class GeneratedItem(BaseModel):
+    item_id: str = Field(min_length=1)
+    stem: str = Field(min_length=1)
+    choices: list[str] = Field(default_factory=list)
+    expected_response: str = ""
+    expected_response_hints: list[str] = Field(default_factory=list)
+    explanation: str = ""
+    source_refs: list[str] = Field(default_factory=list)
+    difficulty: str = ""
+    intent: str = ""
+
+
+class ItemGenerationResult(BaseModel):
+    schema_version: Literal["item_generation_v1"] = "item_generation_v1"
+    content_kind: Literal["item_generation"] = "item_generation"
+    items: list[GeneratedItem] = Field(default_factory=list, min_length=1)
+    source_refs: list[str] = Field(default_factory=list)
+    revision_targets: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SlideArtifact(BaseModel):
@@ -205,6 +440,12 @@ class StageTimings(BaseModel):
     compile_ms: int = 0
 
 
+class LongFormStageTimings(BaseModel):
+    plan_ms: int = 0
+    draft_ms: int = 0
+    revision_ms: int = 0
+
+
 class RunEvent(BaseModel):
     seq: int
     event: EventType
@@ -225,6 +466,36 @@ class ConfirmOutlineRequest(BaseModel):
         if self.outline is None and self.change_reason:
             raise ValueError("change_reason requires outline")
         return self
+
+
+class LongFormPlanHistoryEntry(BaseModel):
+    action: str
+    approved: bool
+    base_version: Optional[int] = None
+    new_version: Optional[int] = None
+    change_reason: Optional[str] = None
+    at: str
+
+
+class ConfirmLongFormPlanRequest(BaseModel):
+    approved: bool = True
+    plan: Optional[LongFormPlan] = None
+    base_version: Optional[int] = None
+    change_reason: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_patch(self) -> "ConfirmLongFormPlanRequest":
+        if self.plan is not None and self.base_version is None:
+            raise ValueError("base_version is required when plan is provided")
+        if self.plan is None and self.change_reason:
+            raise ValueError("change_reason requires plan")
+        return self
+
+
+class ReviseLongFormSectionRequest(BaseModel):
+    instruction: str = Field(min_length=1)
+    base_revision: int = Field(ge=1)
+    preserve_structure: bool = True
 
 
 class RegenerateSlideRequest(BaseModel):
@@ -300,13 +571,19 @@ class RunRecord(BaseModel):
     run_id: str
     trace_id: str
     status: RunStatus
-    input: CreateRunRequest
+    input: CreateRunRequest | LongFormRunRequest | StructureExpansionRunRequest | ItemGenerationRunRequest
     outline: Optional[OutlineDocument] = None
     outline_history: list[OutlineHistoryEntry] = Field(default_factory=list)
+    longform_plan: Optional[LongFormPlan] = None
+    longform_plan_history: list[LongFormPlanHistoryEntry] = Field(default_factory=list)
+    longform_draft: Optional[LongFormDraft] = None
+    structure_expansion_result: Optional[StructureExpansionResult] = None
+    item_generation_result: Optional[ItemGenerationResult] = None
     slides: list[SlideArtifact] = Field(default_factory=list)
     citation_map: dict[int, list[str]] = Field(default_factory=dict)
     events: list[RunEvent] = Field(default_factory=list)
     stage_timings: StageTimings = Field(default_factory=StageTimings)
+    longform_stage_timings: LongFormStageTimings = Field(default_factory=LongFormStageTimings)
     render_version: int = 0
     error_code: Optional[str] = None
     failed_stage: Optional[str] = None
@@ -340,6 +617,33 @@ class RunSummaryResponse(BaseModel):
     status: RunStatus
 
 
+class LongFormRunDetailResponse(BaseModel):
+    run_id: str
+    trace_id: str
+    status: RunStatus
+    content_kind: str = "longform_draft"
+    plan: Optional[LongFormPlan]
+    plan_history: list[LongFormPlanHistoryEntry]
+    draft: Optional[LongFormDraft]
+    structure_expansion: Optional[StructureExpansionResult] = None
+    item_generation: Optional[ItemGenerationResult] = None
+    stage_timings: LongFormStageTimings
+    error_code: Optional[str]
+    failed_stage: Optional[str]
+    retryable: bool
+    error_details: dict[str, Any]
+    research_report: dict[str, Any]
+    events: list[RunEvent]
+
+
+class LongFormSectionRevisionResponse(BaseModel):
+    run_id: str
+    trace_id: str
+    status: RunStatus
+    draft_version: int = Field(ge=1)
+    section: LongFormDraftSection
+
+
 class RunDetailResponse(BaseModel):
     run_id: str
     trace_id: str
@@ -359,11 +663,31 @@ class RunDetailResponse(BaseModel):
     generation_result: GenerationResult
     compile_bundle: CompileBundleResult
     compile_result: CompileResult
-    compile_js_path: Optional[str]
-    pptx_path: Optional[str]
-    compile_requested_provider: Optional[str]
-    compile_provider: Optional[str]
-    compile_fallback_used: bool
+    compile_js_path: Optional[str] = Field(
+        default=None,
+        deprecated=True,
+        description="Legacy mirror for compatibility. Prefer generation_result/compile_bundle/compile_result.",
+    )
+    pptx_path: Optional[str] = Field(
+        default=None,
+        deprecated=True,
+        description="Legacy mirror for compatibility. Prefer artifacts.pptx for Diego-owned files and compile_result for explicit provider outcomes.",
+    )
+    compile_requested_provider: Optional[str] = Field(
+        default=None,
+        deprecated=True,
+        description="Legacy mirror for compatibility. Prefer compile_result.requested_provider.",
+    )
+    compile_provider: Optional[str] = Field(
+        default=None,
+        deprecated=True,
+        description="Legacy mirror for compatibility. Prefer compile_result.provider.",
+    )
+    compile_fallback_used: bool = Field(
+        default=False,
+        deprecated=True,
+        description="Legacy mirror for compatibility. Prefer compile_result.fallback_used.",
+    )
     qa_report: dict[str, Any]
     template_mapping_report: dict[str, Any]
     chart_truth_report: dict[str, Any]

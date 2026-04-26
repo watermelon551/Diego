@@ -86,6 +86,15 @@ def test_template_upload_and_template_generation(tmp_path: Path) -> None:
     assert final["slides"]
     assert all(item.get("js_path") and Path(item["js_path"]).exists() for item in final["slides"])
     assert final["qa_report"]["passed"] is True
+    assert final["artifacts"]["pptx"]["downloadable"] is True
+    assert final["compile_result"]["status"] == "not_requested"
+    assert final["compile_result"]["requested_provider"] is None
+    assert final["compile_result"]["provider"] is None
+    assert final["compile_result"]["artifact_path"] is None
+    assert final["compile_provider"] is None
+    compile_event = next(item for item in final["events"] if item["event"] == "compile.completed")
+    assert compile_event["payload"]["requested_provider"] == "none"
+    assert compile_event["payload"]["provider"] is None
 
 def test_template_structural_rebuild_for_target_count(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -378,4 +387,3 @@ def test_template_layout_conflict_should_fail_fast_with_layout_report(tmp_path: 
     slide_report = final["template_layout_report"]["slides"][0]
     assert slide_report["issues_after_count"] > 0
     assert slide_report["passed"] is False
-

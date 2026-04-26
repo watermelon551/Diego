@@ -3,7 +3,21 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..models import OutlineDocument, OutlineNode, SlidePageType, VisualPolicy
+from ..models import (
+    ContentBlock,
+    GeneratedItem,
+    ItemGenerationResult,
+    LongFormDraftSection,
+    LongFormPlan,
+    LongFormPlanSection,
+    OutlineDocument,
+    OutlineNode,
+    StructureExpansionAnchorContext,
+    StructureExpansionResult,
+    StructureExpansionUnit,
+    SlidePageType,
+    VisualPolicy,
+)
 from ..design.skill_profile import enforce_layout_variety
 from ..design.style_catalog import resolve_style_dna_choice
 from .types import GeneratedSlide, SlideSpec, TokenCallback
@@ -59,6 +73,34 @@ class MockLLMClient:
             "visual_strategy": "balanced text and visual anchors",
             "density": "medium",
             "rationale": "stable default design intent for deterministic tests",
+        }
+
+    async def generate_longform_research_brief(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+        audience: str,
+        purpose: str,
+        tone: str,
+        target_section_count: int,
+    ) -> dict[str, Any]:
+        return {
+            "audience": audience,
+            "purpose": purpose,
+            "tone": tone,
+            "narrative_arc": "context -> key ideas -> evidence -> synthesis",
+            "section_focus": [
+                f"Section {idx}: focus on {topic} theme {idx}"
+                for idx in range(1, target_section_count + 1)
+            ],
+            "source_themes": [
+                str(item.get("excerpt") or item.get("text", "")).strip()[:120]
+                for item in rag_context_snippets[: min(3, len(rag_context_snippets))]
+                if str(item.get("excerpt") or item.get("text", "")).strip()
+            ],
         }
     async def generate_outline(
         self,
@@ -122,6 +164,242 @@ class MockLLMClient:
         outline: OutlineDocument,
     ) -> OutlineDocument:
         return outline
+
+    async def generate_longform_plan(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+        audience: str,
+        purpose: str,
+        tone: str,
+        target_section_count: int,
+        on_token: TokenCallback,
+    ) -> LongFormPlan:
+        for token in ["planning", "content", topic]:
+            await on_token(token + " ")
+        source_refs = [
+            str(item.get("chunk_id") or item.get("source_id") or f"src-{idx}")
+            for idx, item in enumerate(rag_context_snippets[:2], start=1)
+        ]
+        sections = [
+            LongFormPlanSection(
+                section_id=f"section-{idx}",
+                title=f"{topic} - Section {idx}",
+                summary=f"Explain the {idx}th aspect of {topic}.",
+                key_points=[f"{topic} point {idx}.1", f"{topic} point {idx}.2"],
+                intent=f"clarify theme {idx} for {audience}",
+                source_refs=list(source_refs),
+            )
+            for idx in range(1, target_section_count + 1)
+        ]
+        return LongFormPlan(
+            version=1,
+            title=topic,
+            summary=f"Structured draft plan for {topic}",
+            sections=sections,
+        )
+
+    async def repair_longform_plan(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+        audience: str,
+        purpose: str,
+        tone: str,
+        target_section_count: int,
+        previous_response: str,
+        error_category: str,
+        error_details: list[str],
+    ) -> LongFormPlan:
+        async def noop(_: str) -> None:
+            return
+
+        return await self.generate_longform_plan(
+            topic=topic,
+            project_id=project_id,
+            rag_source_ids=rag_source_ids,
+            rag_context_snippets=rag_context_snippets,
+            audience=audience,
+            purpose=purpose,
+            tone=tone,
+            target_section_count=target_section_count,
+            on_token=noop,
+        )
+
+    async def critique_longform_plan(
+        self,
+        *,
+        topic: str,
+        audience: str,
+        purpose: str,
+        tone: str,
+        target_section_count: int,
+        plan: LongFormPlan,
+    ) -> LongFormPlan:
+        return plan
+
+    async def generate_section_draft(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        audience: str,
+        purpose: str,
+        tone: str,
+        plan: LongFormPlan,
+        section_id: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> LongFormDraftSection:
+        section = next(item for item in plan.sections if item.section_id == section_id)
+        citations = list(section.source_refs or rag_source_ids[:2])
+        return LongFormDraftSection(
+            section_id=section.section_id,
+            heading=section.title,
+            blocks=[
+                ContentBlock(kind="heading", text=section.title),
+                ContentBlock(
+                    kind="paragraph",
+                    text=f"This section explains {section.summary or section.title} for {audience}.",
+                ),
+                ContentBlock(kind="bullet_list", items=list(section.key_points or [section.title])),
+            ],
+            citations=citations,
+            revision=1,
+        )
+
+    async def revise_section_draft(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        audience: str,
+        purpose: str,
+        tone: str,
+        plan: LongFormPlan,
+        current_section: LongFormDraftSection,
+        instruction: str,
+        preserve_structure: bool,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> LongFormDraftSection:
+        blocks = list(current_section.blocks)
+        if preserve_structure:
+            rewritten: list[ContentBlock] = []
+            for block in blocks:
+                if block.kind == "paragraph":
+                    rewritten.append(
+                        ContentBlock(
+                            kind="paragraph",
+                            text=f"{block.text} Revision focus: {instruction.strip()}",
+                        )
+                    )
+                else:
+                    rewritten.append(block)
+            blocks = rewritten
+        else:
+            blocks = [
+                ContentBlock(kind="heading", text=current_section.heading),
+                ContentBlock(
+                    kind="paragraph",
+                    text=f"{current_section.heading} rewritten with instruction: {instruction.strip()}",
+                ),
+            ]
+        return LongFormDraftSection(
+            section_id=current_section.section_id,
+            heading=current_section.heading,
+            blocks=blocks,
+            citations=list(current_section.citations or rag_source_ids[:2]),
+            revision=current_section.revision + 1,
+        )
+
+    async def generate_structure_expansion(
+        self,
+        *,
+        generation_goal: str,
+        project_id: str,
+        source_scope: dict[str, Any],
+        evidence_refs: list[str],
+        anchor_context: StructureExpansionAnchorContext,
+        constraints: dict[str, Any],
+        requested_output_shape: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> StructureExpansionResult:
+        base_refs = [
+            str(item.get("chunk_id") or item.get("source_id") or f"src-{idx}")
+            for idx, item in enumerate(rag_context_snippets[:2], start=1)
+        ] or list(evidence_refs or rag_source_ids[:2])
+        anchor = anchor_context.anchor_label.strip() or "selected unit"
+        units = [
+            StructureExpansionUnit(
+                unit_id=f"unit-{idx}",
+                title=f"{anchor.title()} expansion {idx}",
+                summary=f"Expand {anchor or generation_goal} toward {generation_goal}.",
+                key_points=[
+                    f"{generation_goal} sub-point {idx}.1",
+                    f"{generation_goal} sub-point {idx}.2",
+                ],
+                source_refs=list(base_refs),
+                anchor_ref=anchor,
+                revision_target=f"unit-{idx}",
+            )
+            for idx in range(1, 3)
+        ]
+        return StructureExpansionResult(
+            units=units,
+            anchors=[anchor] if anchor else [],
+            source_refs=list(base_refs),
+            revision_targets=[item.unit_id for item in units],
+            warnings=[] if base_refs else ["no_grounding_refs"],
+        )
+
+    async def generate_item_generation(
+        self,
+        *,
+        generation_goal: str,
+        project_id: str,
+        source_scope: dict[str, Any],
+        evidence_refs: list[str],
+        constraints: dict[str, Any],
+        requested_output_shape: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> ItemGenerationResult:
+        base_refs = [
+            str(item.get("chunk_id") or item.get("source_id") or f"src-{idx}")
+            for idx, item in enumerate(rag_context_snippets[:2], start=1)
+        ] or list(evidence_refs or rag_source_ids[:2])
+        items = [
+            GeneratedItem(
+                item_id=f"item-{idx}",
+                stem=f"What is the key idea {idx} in {generation_goal}?",
+                choices=[
+                    f"{generation_goal} answer {idx}.A",
+                    f"{generation_goal} answer {idx}.B",
+                    f"{generation_goal} answer {idx}.C",
+                ],
+                expected_response=f"{generation_goal} answer {idx}.A",
+                expected_response_hints=[f"focus on {generation_goal} concept {idx}"],
+                explanation=f"The expected answer should reflect the grounded idea {idx}.",
+                source_refs=list(base_refs),
+                difficulty="medium",
+                intent="check understanding",
+            )
+            for idx in range(1, 3)
+        ]
+        return ItemGenerationResult(
+            items=items,
+            source_refs=list(base_refs),
+            revision_targets=[item.item_id for item in items],
+            warnings=[] if base_refs else ["no_grounding_refs"],
+        )
 
     async def generate_slide(
         self,
@@ -316,4 +594,3 @@ class MockLLMClient:
         if index % 4 == 0:
             return SlidePageType.SECTION
         return SlidePageType.CONTENT
-

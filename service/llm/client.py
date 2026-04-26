@@ -6,11 +6,33 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from ..models import OutlineDocument, OutlineNode, SlidePageType, VisualPolicy
+from ..models import (
+    ContentBlock,
+    GeneratedItem,
+    ItemGenerationResult,
+    LongFormDraftSection,
+    LongFormPlan,
+    LongFormPlanSection,
+    OutlineDocument,
+    OutlineNode,
+    StructureExpansionAnchorContext,
+    StructureExpansionResult,
+    StructureExpansionUnit,
+    SlidePageType,
+    VisualPolicy,
+)
 from ..design.skill_profile import allowed_layouts_for, enforce_layout_variety
 from ..design.style_catalog import resolve_style_dna_choice
 from .parsing import _extract_code_block, _extract_js_module, _extract_json_object, _normalize_page_type, _sanitize_llm_text
-from .types import GeneratedSlide, LLMEmptyResponseError, LLMTimeoutError, OutlineFormatError, SlideSpec, TokenCallback
+from .types import (
+    GeneratedSlide,
+    LLMEmptyResponseError,
+    LLMTimeoutError,
+    LongFormFormatError,
+    OutlineFormatError,
+    SlideSpec,
+    TokenCallback,
+)
 
 class OpenAICompatibleLLMClient:
     def __init__(
@@ -125,6 +147,73 @@ class OpenAICompatibleLLMClient:
             "visual_strategy": str(payload.get("visual_strategy", "")).strip(),
             "density": str(payload.get("density", "")).strip(),
             "rationale": str(payload.get("rationale", "")).strip(),
+        }
+
+    async def generate_longform_research_brief(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+        audience: str,
+        purpose: str,
+        tone: str,
+        target_section_count: int,
+    ) -> dict[str, Any]:
+        system_prompt = (
+            "You are a long-form drafting research planner. "
+            "Return JSON only with keys: audience, purpose, tone, narrative_arc, section_focus(list[str]), source_themes(list[str]). "
+            "Ground section_focus and source_themes in rag_context_snippets when present."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"project_id={project_id}\n"
+            f"audience={audience}\n"
+            f"purpose={purpose}\n"
+            f"tone={tone}\n"
+            f"target_section_count={target_section_count}\n"
+            f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
+            "Provide concise planning guidance for a structured long-form draft."
+        )
+        text = await self._chat_text(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=self.outline_temperature,
+        )
+        payload = await self._extract_json_object_with_repair(
+            text=text,
+            expected_keys=[
+                "audience",
+                "purpose",
+                "tone",
+                "narrative_arc",
+                "section_focus",
+                "source_themes",
+            ],
+            temperature=self.outline_temperature,
+        )
+        section_focus = payload.get("section_focus", [])
+        source_themes = payload.get("source_themes", [])
+        if not isinstance(section_focus, list):
+            section_focus = []
+        if not isinstance(source_themes, list):
+            source_themes = []
+        return {
+            "audience": str(payload.get("audience", "")).strip() or audience,
+            "purpose": str(payload.get("purpose", "")).strip() or purpose,
+            "tone": str(payload.get("tone", "")).strip() or tone,
+            "narrative_arc": str(payload.get("narrative_arc", "")).strip()
+            or "context -> key ideas -> evidence -> synthesis",
+            "section_focus": [
+                str(item).strip() for item in section_focus if str(item).strip()
+            ][:target_section_count],
+            "source_themes": [
+                str(item).strip() for item in source_themes if str(item).strip()
+            ][:8],
         }
 
     async def generate_outline(
@@ -256,6 +345,255 @@ class OpenAICompatibleLLMClient:
             target_slide_count=target_slide_count,
             template_style=template_style,
         )
+
+    async def generate_longform_plan(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+        audience: str,
+        purpose: str,
+        tone: str,
+        target_section_count: int,
+        on_token: TokenCallback,
+    ) -> LongFormPlan:
+        system_prompt = (
+            "You are a structured long-form planner. "
+            "Return JSON only with keys: version, title, summary, sections. "
+            "Each section must include: section_id, title, summary, key_points(list[str]), intent, source_refs(list[str])."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"project_id={project_id}\n"
+            f"audience={audience}\n"
+            f"purpose={purpose}\n"
+            f"tone={tone}\n"
+            f"target_section_count={target_section_count}\n"
+            f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
+            "Plan a source-aware long-form draft. Output JSON only."
+        )
+        response_format = self._longform_plan_response_format(
+            target_section_count=target_section_count
+        )
+        text = await self._chat_text(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=self.outline_temperature,
+            response_format=response_format,
+            allow_response_format_fallback=True,
+        )
+        for token in text.split():
+            await on_token(token + " ")
+        return self._parse_longform_plan_or_raise(
+            text=text,
+            topic=topic,
+            target_section_count=target_section_count,
+            rag_context_snippets=rag_context_snippets,
+        )
+
+    async def repair_longform_plan(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+        audience: str,
+        purpose: str,
+        tone: str,
+        target_section_count: int,
+        previous_response: str,
+        error_category: str,
+        error_details: list[str],
+    ) -> LongFormPlan:
+        system_prompt = (
+            "You repair malformed long-form plan JSON. "
+            "Return JSON only with keys: version, title, summary, sections. "
+            "Each section must include: section_id, title, summary, key_points, intent, source_refs."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"project_id={project_id}\n"
+            f"audience={audience}\n"
+            f"purpose={purpose}\n"
+            f"tone={tone}\n"
+            f"target_section_count={target_section_count}\n"
+            f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
+            f"error_category={error_category}\n"
+            f"error_details={json.dumps(error_details, ensure_ascii=False)}\n"
+            "Fix only the format/schema issues while preserving content intent.\n"
+            f"previous_response=\n{previous_response[:20000]}\n"
+            "Output JSON only."
+        )
+        response_format = self._longform_plan_response_format(
+            target_section_count=target_section_count
+        )
+        text = await self._chat_text(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=self.outline_temperature,
+            response_format=response_format,
+            allow_response_format_fallback=True,
+        )
+        return self._parse_longform_plan_or_raise(
+            text=text,
+            topic=topic,
+            target_section_count=target_section_count,
+            rag_context_snippets=rag_context_snippets,
+        )
+
+    async def critique_longform_plan(
+        self,
+        *,
+        topic: str,
+        audience: str,
+        purpose: str,
+        tone: str,
+        target_section_count: int,
+        plan: LongFormPlan,
+    ) -> LongFormPlan:
+        system_prompt = (
+            "You are a QA reviewer for structured long-form plans. "
+            "Ensure the sequence is coherent, section intents are distinct, and source_refs remain concise. "
+            "Return JSON only with the same schema."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"audience={audience}\n"
+            f"purpose={purpose}\n"
+            f"tone={tone}\n"
+            f"target_section_count={target_section_count}\n"
+            f"plan={plan.model_dump_json()}\n"
+            "Return improved plan JSON only."
+        )
+        response_format = self._longform_plan_response_format(
+            target_section_count=target_section_count
+        )
+        text = await self._chat_text(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=self.outline_temperature,
+            response_format=response_format,
+            allow_response_format_fallback=True,
+        )
+        return self._parse_longform_plan_or_raise(
+            text=text,
+            topic=topic,
+            target_section_count=target_section_count,
+            rag_context_snippets=[],
+        )
+
+    async def generate_section_draft(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        audience: str,
+        purpose: str,
+        tone: str,
+        plan: LongFormPlan,
+        section_id: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> LongFormDraftSection:
+        section = next(
+            item for item in plan.sections if item.section_id == section_id
+        )
+        system_prompt = (
+            "You draft one structured long-form section. "
+            "Return JSON only with keys: section_id, heading, blocks, citations, revision. "
+            "blocks items must use kind in heading|paragraph|bullet_list|quote with either text or items."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"project_id={project_id}\n"
+            f"audience={audience}\n"
+            f"purpose={purpose}\n"
+            f"tone={tone}\n"
+            f"section={section.model_dump_json()}\n"
+            f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
+            "Draft a clear, source-aware section with one heading, one paragraph, and one bullet_list at minimum."
+        )
+        text = await self._chat_text(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=self.slide_temperature,
+            response_format=self._longform_section_response_format(),
+            allow_response_format_fallback=True,
+        )
+        return self._parse_longform_section_or_raise(
+            text=text,
+            section_id=section.section_id,
+            heading=section.title,
+            key_points=section.key_points,
+            source_refs=section.source_refs,
+        )
+
+    async def revise_section_draft(
+        self,
+        *,
+        topic: str,
+        project_id: str,
+        audience: str,
+        purpose: str,
+        tone: str,
+        plan: LongFormPlan,
+        current_section: LongFormDraftSection,
+        instruction: str,
+        preserve_structure: bool,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> LongFormDraftSection:
+        system_prompt = (
+            "You revise one structured long-form section. "
+            "Return JSON only with keys: section_id, heading, blocks, citations, revision."
+        )
+        user_prompt = (
+            f"topic={topic}\n"
+            f"project_id={project_id}\n"
+            f"audience={audience}\n"
+            f"purpose={purpose}\n"
+            f"tone={tone}\n"
+            f"preserve_structure={json.dumps(preserve_structure)}\n"
+            f"instruction={instruction}\n"
+            f"plan={plan.model_dump_json()}\n"
+            f"current_section={current_section.model_dump_json()}\n"
+            f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
+            f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
+            "Apply the instruction while keeping citations concise and section-scoped."
+        )
+        text = await self._chat_text(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=self.slide_temperature,
+            response_format=self._longform_section_response_format(),
+            allow_response_format_fallback=True,
+        )
+        revised = self._parse_longform_section_or_raise(
+            text=text,
+            section_id=current_section.section_id,
+            heading=current_section.heading,
+            key_points=[],
+            source_refs=current_section.citations,
+        )
+        if revised.revision <= current_section.revision:
+            revised.revision = current_section.revision + 1
+        return revised
 
     async def generate_slide(
         self,
@@ -912,6 +1250,105 @@ class OpenAICompatibleLLMClient:
             },
         }
 
+    def _longform_plan_response_format(
+        self, *, target_section_count: int
+    ) -> dict[str, Any] | None:
+        if not self.outline_structured_output or self.api_style == "anthropic_messages":
+            return None
+        if "minimax" in self.model.lower():
+            return {"type": "json_object"}
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "version": {"type": "integer", "minimum": 1},
+                "title": {"type": "string"},
+                "summary": {"type": "string"},
+                "sections": {
+                    "type": "array",
+                    "minItems": target_section_count,
+                    "maxItems": target_section_count,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "section_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "key_points": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "intent": {"type": "string"},
+                            "source_refs": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": [
+                            "section_id",
+                            "title",
+                            "summary",
+                            "key_points",
+                            "intent",
+                            "source_refs",
+                        ],
+                    },
+                },
+            },
+            "required": ["version", "title", "summary", "sections"],
+        }
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "longform_plan",
+                "strict": True,
+                "schema": schema,
+            },
+        }
+
+    def _longform_section_response_format(self) -> dict[str, Any] | None:
+        if not self.outline_structured_output or self.api_style == "anthropic_messages":
+            return None
+        if "minimax" in self.model.lower():
+            return {"type": "json_object"}
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "section_id": {"type": "string"},
+                "heading": {"type": "string"},
+                "blocks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["heading", "paragraph", "bullet_list", "quote"],
+                            },
+                            "text": {"type": "string"},
+                            "items": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["kind", "text", "items"],
+                    },
+                },
+                "citations": {"type": "array", "items": {"type": "string"}},
+                "revision": {"type": "integer", "minimum": 1},
+            },
+            "required": ["section_id", "heading", "blocks", "citations", "revision"],
+        }
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "longform_section_draft",
+                "strict": True,
+                "schema": schema,
+            },
+        }
+
     def _slide_spec_response_format(self) -> dict[str, Any] | None:
         if not self.outline_structured_output or self.api_style == "anthropic_messages":
             return None
@@ -1027,6 +1464,241 @@ class OpenAICompatibleLLMClient:
             template_style=template_style,
         )
 
+    def _fit_longform_plan(
+        self,
+        plan: LongFormPlan,
+        *,
+        topic: str,
+        target_section_count: int,
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> LongFormPlan:
+        sections = list(plan.sections)
+        default_refs = [
+            str(item.get("chunk_id") or item.get("source_id") or f"src-{idx}")
+            for idx, item in enumerate(rag_context_snippets[:2], start=1)
+        ]
+        if len(sections) > target_section_count:
+            sections = sections[:target_section_count]
+        while len(sections) < target_section_count:
+            idx = len(sections) + 1
+            sections.append(
+                LongFormPlanSection(
+                    section_id=f"section-{idx}",
+                    title=f"{topic} - Section {idx}",
+                    summary=f"Explain theme {idx} of {topic}.",
+                    key_points=[f"{topic} point {idx}.1", f"{topic} point {idx}.2"],
+                    intent=f"clarify theme {idx}",
+                    source_refs=list(default_refs),
+                )
+            )
+        normalized: list[LongFormPlanSection] = []
+        for idx, section in enumerate(sections, start=1):
+            normalized.append(
+                LongFormPlanSection(
+                    section_id=str(section.section_id or f"section-{idx}").strip()
+                    or f"section-{idx}",
+                    title=str(section.title or f"{topic} - Section {idx}").strip()
+                    or f"{topic} - Section {idx}",
+                    summary=str(section.summary or "").strip(),
+                    key_points=[
+                        str(item).strip()
+                        for item in list(section.key_points or [])
+                        if str(item).strip()
+                    ][:6]
+                    or [f"{topic} point {idx}.1", f"{topic} point {idx}.2"],
+                    intent=str(section.intent or "").strip() or f"clarify theme {idx}",
+                    source_refs=[
+                        str(item).strip()
+                        for item in list(section.source_refs or [])
+                        if str(item).strip()
+                    ][:4]
+                    or list(default_refs),
+                )
+            )
+        return LongFormPlan(
+            version=max(1, plan.version),
+            title=str(plan.title or topic).strip() or topic,
+            summary=str(plan.summary or "").strip(),
+            sections=normalized,
+        )
+
+    def _parse_longform_plan_or_raise(
+        self,
+        *,
+        text: str,
+        topic: str,
+        target_section_count: int,
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> LongFormPlan:
+        try:
+            payload = _extract_json_object(text)
+        except Exception as exc:
+            raise LongFormFormatError(
+                category="parse",
+                details=[str(exc)],
+                raw_response=text,
+            ) from exc
+        try:
+            plan = LongFormPlan.model_validate(payload)
+        except ValidationError as exc:
+            details: list[str] = []
+            for item in exc.errors():
+                loc = ".".join(str(x) for x in item.get("loc", ()))
+                msg = str(item.get("msg", "validation error"))
+                details.append(f"{loc}: {msg}")
+            if not details:
+                details = [str(exc)]
+            raise LongFormFormatError(
+                category="schema",
+                details=details[:10],
+                raw_response=text,
+            ) from exc
+        return self._fit_longform_plan(
+            plan,
+            topic=topic,
+            target_section_count=target_section_count,
+            rag_context_snippets=rag_context_snippets,
+        )
+
+    def _parse_longform_section_or_raise(
+        self,
+        *,
+        text: str,
+        section_id: str,
+        heading: str,
+        key_points: list[str],
+        source_refs: list[str],
+    ) -> LongFormDraftSection:
+        try:
+            payload = _extract_json_object(text)
+        except Exception as exc:
+            raise LongFormFormatError(
+                category="parse",
+                details=[str(exc)],
+                raw_response=text,
+            ) from exc
+        try:
+            section = LongFormDraftSection.model_validate(payload)
+        except ValidationError as exc:
+            details: list[str] = []
+            for item in exc.errors():
+                loc = ".".join(str(x) for x in item.get("loc", ()))
+                msg = str(item.get("msg", "validation error"))
+                details.append(f"{loc}: {msg}")
+            if not details:
+                details = [str(exc)]
+            raise LongFormFormatError(
+                category="schema",
+                details=details[:10],
+                raw_response=text,
+            ) from exc
+        normalized_blocks = list(section.blocks or [])
+        if not normalized_blocks:
+            normalized_blocks = [
+                ContentBlock(kind="heading", text=heading),
+                ContentBlock(
+                    kind="paragraph",
+                    text=f"{heading} explains the section scope clearly.",
+                ),
+                ContentBlock(kind="bullet_list", items=list(key_points or [heading])),
+            ]
+        return LongFormDraftSection(
+            section_id=str(section.section_id or section_id).strip() or section_id,
+            heading=str(section.heading or heading).strip() or heading,
+            blocks=normalized_blocks,
+            citations=[
+                str(item).strip()
+                for item in list(section.citations or [])
+                if str(item).strip()
+            ][:6]
+            or list(source_refs),
+            revision=max(1, int(section.revision or 1)),
+        )
+
+    async def generate_structure_expansion(
+        self,
+        *,
+        generation_goal: str,
+        project_id: str,
+        source_scope: dict[str, Any],
+        evidence_refs: list[str],
+        anchor_context: StructureExpansionAnchorContext,
+        constraints: dict[str, Any],
+        requested_output_shape: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> StructureExpansionResult:
+        base_refs = [
+            str(item.get("chunk_id") or item.get("source_id") or f"src-{idx}")
+            for idx, item in enumerate(rag_context_snippets[:2], start=1)
+            if str(item.get("chunk_id") or item.get("source_id") or f"src-{idx}").strip()
+        ] or [str(item).strip() for item in evidence_refs if str(item).strip()]
+        anchor = str(anchor_context.anchor_label or "").strip() or "selected unit"
+        units = [
+            StructureExpansionUnit(
+                unit_id=f"unit-{idx}",
+                title=f"{anchor.title()} expansion {idx}",
+                summary=f"Expand {anchor} in service of {generation_goal}.",
+                key_points=[
+                    f"{generation_goal} aspect {idx}.1",
+                    f"{generation_goal} aspect {idx}.2",
+                ],
+                source_refs=list(base_refs),
+                anchor_ref=anchor,
+                revision_target=f"unit-{idx}",
+            )
+            for idx in range(1, 3)
+        ]
+        return StructureExpansionResult(
+            units=units,
+            anchors=[anchor] if anchor else [],
+            source_refs=list(base_refs),
+            revision_targets=[item.unit_id for item in units],
+            warnings=[] if base_refs else ["no_grounding_refs"],
+        )
+
+    async def generate_item_generation(
+        self,
+        *,
+        generation_goal: str,
+        project_id: str,
+        source_scope: dict[str, Any],
+        evidence_refs: list[str],
+        constraints: dict[str, Any],
+        requested_output_shape: str,
+        rag_source_ids: list[str],
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> ItemGenerationResult:
+        base_refs = [
+            str(item.get("chunk_id") or item.get("source_id") or f"src-{idx}")
+            for idx, item in enumerate(rag_context_snippets[:2], start=1)
+            if str(item.get("chunk_id") or item.get("source_id") or f"src-{idx}").strip()
+        ] or [str(item).strip() for item in evidence_refs if str(item).strip()]
+        items = [
+            GeneratedItem(
+                item_id=f"item-{idx}",
+                stem=f"What is the key idea {idx} in {generation_goal}?",
+                choices=[
+                    f"{generation_goal} option {idx}.A",
+                    f"{generation_goal} option {idx}.B",
+                    f"{generation_goal} option {idx}.C",
+                ],
+                expected_response=f"{generation_goal} option {idx}.A",
+                expected_response_hints=[f"reference the grounded concept {idx}"],
+                explanation=f"The explanation should stay anchored to the generated source-conditioned idea {idx}.",
+                source_refs=list(base_refs),
+                difficulty="medium",
+                intent="check understanding",
+            )
+            for idx in range(1, 3)
+        ]
+        return ItemGenerationResult(
+            items=items,
+            source_refs=list(base_refs),
+            revision_targets=[item.item_id for item in items],
+            warnings=[] if base_refs else ["no_grounding_refs"],
+        )
+
     def _assign_page_types(self, nodes: list[OutlineNode]) -> None:
         if not nodes:
             return
@@ -1048,5 +1720,3 @@ class OpenAICompatibleLLMClient:
         if fallback and fallback in allowed:
             return fallback
         return allowed[0] if allowed else None
-
-
