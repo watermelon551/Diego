@@ -1,3 +1,12 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:22-bookworm-slim AS node-runtime
+
+WORKDIR /node-runtime
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --no-audit --no-fund
+
 FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -6,18 +15,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends nodejs npm ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /node-runtime/node_modules ./node_modules
 
 COPY pyproject.toml README.md ./
 COPY service ./service
 
-RUN python -m pip install --upgrade pip \
-    && python -m pip install .
-
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN python -m pip install . \
+    && rm -rf /app/build /app/*.egg-info /app/service
 
 RUN groupadd --system diego \
     && useradd --system --gid diego --create-home --home /home/diego diego \
