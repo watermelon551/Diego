@@ -538,6 +538,50 @@ def test_content_module_layout_should_remain_explicit_and_split_by_runtime_role(
             "service/content/draft_runtime_mixin.py missing " + marker
         )
 
+    required_runtime_packages = {
+        "planning_runtime": {
+            "__init__.py",
+            "confirm_mixin.py",
+            "generation_mixin.py",
+            "requirements_mixin.py",
+        },
+        "drafting_runtime": {
+            "__init__.py",
+            "generation_mixin.py",
+            "revision_mixin.py",
+            "shape_mixin.py",
+        },
+        "structured_runtime": {
+            "__init__.py",
+            "generation_mixin.py",
+        },
+    }
+    for package_name, required_package_files in required_runtime_packages.items():
+        package_dir = content_dir / package_name
+        existing_package_files = {path.name for path in package_dir.glob("*.py")}
+        missing_package = sorted(required_package_files - existing_package_files)
+        assert not missing_package, (
+            f"service/content/{package_name} missing expected package modules: "
+            f"{missing_package}"
+        )
+
+    facade_expectations = {
+        "plan_confirm_mixin.py": "from .planning_runtime.confirm_mixin import ContentPlanConfirmMixin",
+        "plan_generation_mixin.py": "from .planning_runtime.generation_mixin import ContentPlanGenerationMixin",
+        "plan_requirements_mixin.py": "from .planning_runtime.requirements_mixin import ContentPlanRequirementsMixin",
+        "draft_generation_mixin.py": "from .drafting_runtime.generation_mixin import ContentDraftGenerationMixin",
+        "draft_revision_mixin.py": "from .drafting_runtime.revision_mixin import ContentDraftRevisionMixin",
+        "draft_shape_mixin.py": "from .drafting_runtime.shape_mixin import ContentDraftShapeMixin",
+        "structured_generation_mixin.py": "from .structured_runtime.generation_mixin import StructuredContentGenerationMixin",
+    }
+    for file_name, marker in facade_expectations.items():
+        facade_text = (content_dir / file_name).read_text(encoding="utf-8")
+        facade_lines = facade_text.count("\n") + 1
+        assert facade_lines <= 20, (
+            f"service/content/{file_name} should remain a thin facade"
+        )
+        assert marker in facade_text, f"service/content/{file_name} missing {marker}"
+
     contracts_dir = content_dir / "contracts"
     required_contract_files = {"__init__.py", "requests.py", "results.py"}
     existing_contract_files = {path.name for path in contracts_dir.glob("*.py")}

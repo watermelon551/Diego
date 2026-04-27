@@ -19,6 +19,8 @@
 ## 1.1 服务内部分层（2026-04 重构后）
 
 - `api`: FastAPI 路由与 SSE 出口
+- `application`: service-owned application facades over run, content, slide, and template capabilities
+  - `application/runs_runtime` / `application/slides_runtime`: feature-owned application composition packages behind thin public facades
 - `run`: 运行编排、状态流转、失败收敛
   - `run/flows`: `outline_flow` / `scratch_flow` / `template_flow` 主流程执行器
   - `run/services`: `quality_repair_service` / `compile_service` / `reporting_service` 领域服务

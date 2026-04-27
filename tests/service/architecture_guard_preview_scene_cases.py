@@ -58,6 +58,12 @@ def test_preview_and_scene_helpers_should_not_drift_back_into_orchestrator() -> 
     app_scene_text = (
         ROOT / "service" / "application" / "slide_scene_application_mixin.py"
     ).read_text(encoding="utf-8")
+    app_preview_runtime_text = (
+        ROOT / "service" / "application" / "slides_runtime" / "preview_mixin.py"
+    ).read_text(encoding="utf-8")
+    app_scene_runtime_text = (
+        ROOT / "service" / "application" / "slides_runtime" / "scene_mixin.py"
+    ).read_text(encoding="utf-8")
 
     assert "def build_slide_preview_payload" in slide_preview_text
     assert "def build_placeholder_preview" in slide_preview_text
@@ -97,8 +103,10 @@ def test_preview_and_scene_helpers_should_not_drift_back_into_orchestrator() -> 
         )
     assert "SlidePreviewApplicationMixin" in app_slides_text
     assert "SlideSceneApplicationMixin" in app_slides_text
-    assert "build_slide_preview_payload" in app_preview_text
-    assert "scene_to_outline_node" in app_scene_text
+    assert "SlidePreviewApplicationMixin" in app_preview_text
+    assert "SlideSceneApplicationMixin" in app_scene_text
+    assert "build_slide_preview_payload" in app_preview_runtime_text
+    assert "scene_to_outline_node" in app_scene_runtime_text
 
 
 def test_slide_scene_module_layout_should_remain_explicit() -> None:
@@ -240,3 +248,35 @@ def test_slide_scene_module_layout_should_remain_explicit() -> None:
         "service/application missing expected slide application modules: "
         f"{missing_application}"
     )
+
+    slides_runtime_dir = application_dir / "slides_runtime"
+    required_slides_runtime_files = {
+        "__init__.py",
+        "preview_mixin.py",
+        "scene_mixin.py",
+        "regeneration_mixin.py",
+    }
+    existing_slides_runtime_files = {
+        path.name for path in slides_runtime_dir.glob("*.py")
+    }
+    missing_slides_runtime = sorted(
+        required_slides_runtime_files - existing_slides_runtime_files
+    )
+    assert not missing_slides_runtime, (
+        "service/application/slides_runtime missing expected package modules: "
+        f"{missing_slides_runtime}"
+    )
+
+    for file_name, marker in {
+        "slide_preview_application_mixin.py": "from .slides_runtime.preview_mixin import SlidePreviewApplicationMixin",
+        "slide_scene_application_mixin.py": "from .slides_runtime.scene_mixin import SlideSceneApplicationMixin",
+        "slide_regeneration_application_mixin.py": "from .slides_runtime.regeneration_mixin import SlideRegenerationApplicationMixin",
+    }.items():
+        facade_text = (application_dir / file_name).read_text(encoding="utf-8")
+        facade_lines = facade_text.count("\n") + 1
+        assert facade_lines <= 20, (
+            f"service/application/{file_name} should remain a thin facade"
+        )
+        assert marker in facade_text, (
+            f"service/application/{file_name} missing {marker}"
+        )

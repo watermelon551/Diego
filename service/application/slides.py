@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .slide_preview_application_mixin import SlidePreviewApplicationMixin
-from .slide_regeneration_application_mixin import (
+from .slides_runtime import (
+    SlidePreviewApplicationMixin,
     SlideRegenerationApplicationMixin,
+    SlideSceneApplicationMixin,
 )
-from .slide_scene_application_mixin import SlideSceneApplicationMixin
 
 
 class SlideApplicationService(
@@ -16,4 +16,3 @@ class SlideApplicationService(
 ):
     def __init__(self, orchestrator: Any) -> None:
         self.orch = orchestrator
-

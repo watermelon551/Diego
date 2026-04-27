@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .draft_generation_mixin import ContentDraftGenerationMixin
-from .draft_revision_mixin import ContentDraftRevisionMixin
-from .draft_shape_mixin import ContentDraftShapeMixin
+from .drafting_runtime import (
+    ContentDraftGenerationMixin,
+    ContentDraftRevisionMixin,
+    ContentDraftShapeMixin,
+)
 
 
 class ContentDraftRuntimeMixin(
