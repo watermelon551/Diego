@@ -123,6 +123,26 @@ Avoid:
 - silently downgrading failures into ambiguous success states
 - adding broad `helpers` or `utils` dumping grounds for core behavior
 
+### 5.1 Package By Feature
+
+Default structural direction in Diego is `package by feature`, not endless flat
+splitting inside one shared layer directory.
+
+Rules:
+
+- prefer feature-owned areas such as PPT run orchestration, slide scene editing,
+  template editing, content generation, and compile runtime
+- within a feature area, split oversized files by responsibility as needed
+- do not stop at size-only splitting if the result is many tiny flat files in one directory
+- when a facade remains, it should front a clearly owned feature package or compatibility seam
+- shared code should stay small and exist only when reuse and ownership are both obvious
+
+Refactoring heuristic:
+
+- first place code by feature ownership
+- then split large files inside that feature package
+- avoid moving feature logic back into a generic layer-wide overflow folder
+
 ## 6. Hot Spots And File Ownership
 
 ### `service/run/orchestrator.py`

@@ -1,4 +1,5 @@
-from .orchestrator import RunOrchestrator, build_orchestrator
+from .factory import build_orchestrator
+from .orchestrator import RunOrchestrator
 from .slide_scene import (
     SlideSceneConflictError,
     SlideSceneNodeNotFoundError,

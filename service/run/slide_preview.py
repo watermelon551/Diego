@@ -1,53 +1,36 @@
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import httpx
 
-_DEFAULT_PREVIEW_WIDTH = 960
-_DEFAULT_PREVIEW_HEIGHT = 540
+from .slide_preview_runtime import (
+    build_placeholder_preview as _build_placeholder_preview,
+    build_preview_runner_js as _build_preview_runner_js,
+    build_single_slide_compile_bundle as _build_single_slide_compile_bundle,
+    build_slide_preview_payload as _build_slide_preview_payload,
+    render_slide_via_pagevra_runtime,
+)
 
 
-def _encode_file(path: Path) -> str:
-    return base64.b64encode(path.read_bytes()).decode("ascii")
+def build_slide_preview_payload(
+    *, run_id: str, slide_no: int, preview: dict[str, Any]
+) -> dict[str, Any]:
+    return _build_slide_preview_payload(run_id=run_id, slide_no=slide_no, preview=preview)
 
 
-def _safe_theme(theme: dict[str, Any] | None) -> dict[str, str]:
-    source = theme if isinstance(theme, dict) else {}
-    result: dict[str, str] = {}
-    for key, fallback in {
-        "primary": "111111",
-        "secondary": "222222",
-        "accent": "0A84FF",
-        "light": "F2F3F5",
-        "bg": "FFFFFF",
-    }.items():
-        value = str(source.get(key) or fallback).strip().lstrip("#")
-        result[key] = value or fallback
-    return result
+def build_placeholder_preview(
+    *,
+    slide_no: int,
+    theme: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    return _build_placeholder_preview(slide_no=slide_no, theme=theme, reason=reason)
 
 
-def _collect_slide_bundle_files(slides_dir: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    files: list[dict[str, str]] = []
-    assets: list[dict[str, str]] = []
-    for file_path in sorted(slides_dir.rglob("*")):
-        if not file_path.is_file():
-            continue
-        rel_path = file_path.relative_to(slides_dir).as_posix()
-        if rel_path.startswith("output/") or rel_path.startswith(".pagevra-preview/"):
-            continue
-        entry = {
-            "path": f"slides/{rel_path}",
-            "content_base64": _encode_file(file_path),
-        }
-        if file_path.suffix.lower() == ".js":
-            files.append(entry)
-        else:
-            assets.append(entry)
-    return files, assets
+def build_preview_runner_js(*, slide_js_name: str, preview_name: str) -> str:
+    return _build_preview_runner_js(slide_js_name=slide_js_name, preview_name=preview_name)
 
 
 def build_single_slide_compile_bundle(
@@ -58,54 +41,13 @@ def build_single_slide_compile_bundle(
     provider_run_id: str | None = None,
     provider_trace_id: str | None = None,
 ) -> dict[str, Any]:
-    if not slide_js_path.exists() or not slide_js_path.is_file():
-        raise FileNotFoundError(f"slide js not found: {slide_js_path}")
-    slides_dir = slide_js_path.parent
-    files, assets = _collect_slide_bundle_files(slides_dir)
-    entrypoint = f"slides/{slide_js_path.relative_to(slides_dir).as_posix()}"
-    slide_index = max(0, int(slide_no or 1) - 1)
-    slide_id = f"slide-{slide_no:02d}"
-    return {
-        "provider": "diego",
-        "provider_run_id": provider_run_id or f"preview-{uuid4().hex}",
-        "provider_trace_id": provider_trace_id,
-        "mode": "single_slide",
-        "entrypoint": entrypoint,
-        "working_dir_manifest": {
-            "dirs": ["slides", "slides/output"],
-        },
-        "files": files,
-        "assets": assets,
-        "compile_options": {
-            "command": ["node", "__pagevra_single_slide_compile.js"],
-            "cwd": "slides",
-            "output_artifact_path": f"slides/output/{slide_id}.pptx",
-        },
-        "metadata": {
-            "compile_context": {
-                "theme": _safe_theme(theme),
-            },
-            "slide_id": slide_id,
-            "slide_index": slide_index,
-            "source_entrypoint": entrypoint,
-        },
-    }
-
-
-def _first_svg_preview(body: dict[str, Any]) -> dict[str, Any]:
-    artifacts = body.get("artifacts")
-    preview_pages = artifacts.get("preview_pages") if isinstance(artifacts, dict) else None
-    if not isinstance(preview_pages, list) or not preview_pages:
-        raise RuntimeError("pagevra single-slide compile returned no preview_pages")
-    first = preview_pages[0]
-    if not isinstance(first, dict):
-        raise RuntimeError("pagevra single-slide compile returned invalid preview manifest")
-    if str(first.get("format") or "").strip().lower() != "svg":
-        raise RuntimeError("pagevra single-slide compile returned non-svg preview")
-    svg_data_url = str(first.get("svg_data_url") or "").strip()
-    if not svg_data_url.startswith("data:image/svg+xml"):
-        raise RuntimeError("pagevra single-slide compile returned missing svg_data_url")
-    return first
+    return _build_single_slide_compile_bundle(
+        slide_js_path=slide_js_path,
+        theme=theme,
+        slide_no=slide_no,
+        provider_run_id=provider_run_id,
+        provider_trace_id=provider_trace_id,
+    )
 
 
 async def render_slide_via_pagevra(
@@ -117,54 +59,25 @@ async def render_slide_via_pagevra(
     timeout_sec: float = 30.0,
     provider_run_id: str | None = None,
     provider_trace_id: str | None = None,
-    **_: Any,
+    **kwargs: Any,
 ) -> dict[str, Any]:
-    base_url = str(pagevra_base_url or "").strip().rstrip("/")
-    if not base_url:
-        raise RuntimeError("pagevra_base_url is required for single-slide preview compile")
-    bundle = build_single_slide_compile_bundle(
+    return await render_slide_via_pagevra_runtime(
         slide_js_path=slide_js_path,
         theme=theme,
         slide_no=slide_no,
+        pagevra_base_url=pagevra_base_url,
+        httpx_module=httpx,
+        timeout_sec=timeout_sec,
         provider_run_id=provider_run_id,
         provider_trace_id=provider_trace_id,
+        **kwargs,
     )
 
-    try:
-        async with httpx.AsyncClient(timeout=max(1.0, float(timeout_sec or 30.0))) as client:
-            response = await client.post(f"{base_url}/compile/bundles", json=bundle)
-    except httpx.TimeoutException as exc:
-        raise RuntimeError(
-            f"pagevra single-slide compile timed out after {max(1.0, float(timeout_sec or 30.0)):.1f}s"
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"pagevra single-slide compile request failed: {exc}") from exc
 
-    try:
-        body = response.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            f"pagevra single-slide compile returned invalid JSON: {response.text[:200]}"
-        ) from exc
-
-    if not isinstance(body, dict):
-        raise RuntimeError("pagevra single-slide compile returned invalid payload")
-    if response.status_code >= 400:
-        reason = str(body.get("error") or body.get("state_reason") or response.text[:200]).strip()
-        raise RuntimeError(f"pagevra single-slide compile failed: {reason}")
-    if str(body.get("state") or "").strip().lower() != "success":
-        reason = str(body.get("state_reason") or body.get("error") or "single_slide_compile_failed").strip()
-        raise RuntimeError(f"pagevra single-slide compile failed: {reason}")
-
-    preview = _first_svg_preview(body)
-    width = preview.get("width")
-    height = preview.get("height")
-    return {
-        "preview": preview,
-        "preview_format": "svg",
-        "svg_data_url": preview["svg_data_url"],
-        "width": width if isinstance(width, (int, float)) and width > 0 else _DEFAULT_PREVIEW_WIDTH,
-        "height": height if isinstance(height, (int, float)) and height > 0 else _DEFAULT_PREVIEW_HEIGHT,
-        "pagevra_job_id": str(body.get("job_id") or ""),
-        "warnings": body.get("warnings") if isinstance(body.get("warnings"), list) else [],
-    }
+__all__ = [
+    "build_placeholder_preview",
+    "build_preview_runner_js",
+    "build_single_slide_compile_bundle",
+    "build_slide_preview_payload",
+    "render_slide_via_pagevra",
+]

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from ._compat import maybe_warn_legacy_import
 from .run import orchestrator as _run_orchestrator
-from .run.orchestrator import RunOrchestrator, build_orchestrator
+from .run import build_orchestrator
+from .run.orchestrator import RunOrchestrator
 from .run.types import (
     SlideGenerationError,
     TemplateAssetError,

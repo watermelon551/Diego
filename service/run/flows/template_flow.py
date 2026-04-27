@@ -1,231 +1,78 @@
 from __future__ import annotations
 
-import asyncio
-import shutil
-import sys
-import time
-from pathlib import Path
 from typing import Any
-from zipfile import ZipFile
 
-from ...models import EventType, GenerationMode, RunStatus
-from ..types import (
-    TemplateAssetError,
-    TemplateLayoutConflictError,
-    TemplateSlotMappingError,
+from .template_flow_runtime import (
+    TemplateFlowApplyCompileMixin,
+    TemplateFlowPreflightMixin,
+    TemplateFlowPrepareMixin,
+    TemplateFlowPreviewFinalizeMixin,
 )
 
 
-class TemplateFlowService:
+class TemplateFlowService(
+    TemplateFlowPreflightMixin,
+    TemplateFlowPrepareMixin,
+    TemplateFlowApplyCompileMixin,
+    TemplateFlowPreviewFinalizeMixin,
+):
     def __init__(self, orchestrator: Any) -> None:
         self.orch = orchestrator
 
     async def execute(self, run_id: str) -> None:
-        orch = self.orch
-        run = await orch.store.get_run(run_id)
-        assert run is not None and run.outline is not None
-        orch._init_run_llm_budget(
-            run_id=run_id, target_slide_count=run.input.target_slide_count
-        )
-        effective_template_style = orch._resolved_template_style(run)
-        design = orch._resolve_design_profile(
-            topic=run.input.topic,
-            template_style=effective_template_style,
-            requirements_report=(
-                run.research_report if isinstance(run.research_report, dict) else {}
-            ),
-        )
-        if not run.input.template_id:
-            await orch._fail_run(
-                run_id, "SLIDES_GENERATING", "TEMPLATE_ID_MISSING", retryable=False
-            )
+        context = await self._load_template_run_context(run_id)
+        if context is None:
             return
-
-        template_record = await orch.store.get_template(run.input.template_id)
-        if template_record is None:
-            await orch._fail_run(
-                run_id, "SLIDES_GENERATING", "TEMPLATE_NOT_FOUND", retryable=False
-            )
-            return
-
-        await orch.store.update_run(
-            run_id, lambda r: setattr(r, "status", RunStatus.COMPILING)
+        run, template_record, _effective_template_style, design = context
+        work_paths = await self._prepare_template_workspace(
+            run_id=run_id,
+            artifact_dir=run.artifact_dir,
+            template_path=template_record.path,
         )
-        await orch._publish(run_id, EventType.COMPILE_STARTED, {"mode": "template"})
-
+        if work_paths is None:
+            return
         (
-            template_dir,
-            work_template,
-            template_md,
+            _template_dir,
+            _work_template,
+            _template_md,
             unpacked,
             edited,
             template_slides_dir,
             template_compile_js,
             _,
-        ) = orch.template_engine.template_work_paths(Path(run.artifact_dir))
-        template_dir.mkdir(parents=True, exist_ok=True)
-        unpacked.mkdir(parents=True, exist_ok=True)
-        src_template = Path(template_record.path)
-        shutil.copy2(src_template, work_template)
-        markitdown_template = await asyncio.to_thread(
-            orch.subprocess.run,
-            [sys.executable, "-m", "markitdown", str(work_template)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
+        ) = work_paths
+        apply_result = await self._apply_template_generation(
+            run_id=run_id,
+            unpacked=unpacked,
+            design=design,
         )
-        if markitdown_template.returncode == 0 and markitdown_template.stdout:
-            template_md.write_text(markitdown_template.stdout, encoding="utf-8")
-        elif markitdown_template.returncode != 0:
-            markitdown_stderr = (markitdown_template.stderr or "").lower()
-            markitdown_stdout = (markitdown_template.stdout or "").lower()
-            if (
-                "template parse error" in markitdown_stderr
-                or "template parse error" in markitdown_stdout
-            ):
-                await orch._fail_run(
-                    run_id,
-                    "SLIDES_GENERATING",
-                    "TEMPLATE_MARKITDOWN_FAILED",
-                    retryable=False,
-                )
-                return
-            await orch._append_quality_entry(
-                run_id=run_id,
-                entry={
-                    "stage": "template.markitdown.preflight",
-                    "status": "degraded_skip",
-                    "reason": orch._summarize_process_failure(
-                        stderr=markitdown_template.stderr or "",
-                        stdout=markitdown_template.stdout or "",
-                    )[0],
-                },
-            )
-
-        if unpacked.exists():
-            shutil.rmtree(unpacked)
-        unpacked.mkdir(parents=True, exist_ok=True)
-        with ZipFile(work_template, "r") as zin:
-            zin.extractall(unpacked)
-
-        compile_start = time.perf_counter()
-        try:
-            artifacts = await orch.template_engine.apply_template_nodes_once(
-                run_id=run_id,
-                unpacked=unpacked,
-                design=design,
-                use_review=False,
-                forced_issues=None,
-            )
-        except TemplateAssetError:
-            await orch._fail_run(
-                run_id,
-                "SLIDES_GENERATING",
-                "TEMPLATE_ASSET_FETCH_FAILED",
-                retryable=False,
-            )
+        if apply_result is None:
             return
-        except TemplateSlotMappingError:
-            await orch._fail_run(
-                run_id, "SLIDES_GENERATING", "TEMPLATE_SLOT_UNMAPPED", retryable=False
-            )
-            return
-        except TemplateLayoutConflictError:
-            await orch._fail_run(
-                run_id, "SLIDES_GENERATING", "TEMPLATE_LAYOUT_CONFLICT", retryable=False
-            )
-            return
-        if not artifacts:
-            await orch._fail_run(
-                run_id, "SLIDES_GENERATING", "TEMPLATE_APPLY_FAILED", retryable=True
-            )
-            return
-        orch.template_engine.pack_template_unpacked(unpacked=unpacked, edited=edited)
-
-        compiled = await orch.template_engine.compile_template_js(
-            template_slides_dir=template_slides_dir
+        artifacts, compile_start = apply_result
+        compiled = await self._compile_template_outputs(
+            run_id=run_id,
+            artifacts=artifacts,
+            compile_start=compile_start,
+            unpacked=unpacked,
+            edited=edited,
+            template_slides_dir=template_slides_dir,
+            template_compile_js=template_compile_js,
         )
         if not compiled:
-            await orch._fail_run(
-                run_id, "COMPILING", "TEMPLATE_JS_COMPILE_FAILED", retryable=True
-            )
             return
-
-        def apply_compile(r: RunRecord) -> None:
-            r.compile_js_path = str(template_compile_js)
-            r.pptx_path = str(edited)
-            # Template editing is Diego-owned generation output, not an external
-            # compile-provider outcome. Keep provider seam fields neutral here.
-            r.compile_requested_provider = None
-            r.compile_provider = None
-            r.compile_status = "not_requested"
-            r.compile_bundle_ready = False
-            r.compile_error_code = None
-            r.compile_error_details = {}
-            r.stage_timings.compile_ms = int(
-                (time.perf_counter() - compile_start) * 1000
-            )
-            r.slides = artifacts
-            r.citation_map = {item.slide_no: list(item.citations) for item in artifacts}
-            r.render_version += 1
-
-        await orch.store.update_run(run_id, apply_compile)
-        try:
-            previews = await asyncio.gather(
-                *(
-                    orch.render_slide_preview_or_fallback(
-                        run_id=run_id,
-                        slide_no=item.slide_no,
-                        slide_js_path=Path(str(item.js_path or "")),
-                        theme=design.theme,
-                    )
-                    for item in artifacts
-                )
-            )
-        except Exception as exc:
-            await orch._fail_run(
-                run_id,
-                "COMPILING",
-                "SLIDE_PREVIEW_RENDER_FAILED",
-                retryable=True,
-                error_details={
-                    "reason": orch._exception_reason(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-            return
-        for artifact, preview in zip(artifacts, previews, strict=False):
-            await orch._publish(
-                run_id,
-                EventType.SLIDE_GENERATED,
-                {
-                    "slide_no": artifact.slide_no,
-                    "status": artifact.status,
-                    "preview": preview.get("preview"),
-                    "preview_format": "svg",
-                    "svg_data_url": preview.get("svg_data_url"),
-                    "preview_width": preview.get("width", 1280),
-                    "preview_height": preview.get("height", 720),
-                    "is_final": True,
-                },
-            )
-        await orch._publish(
-            run_id,
-            EventType.COMPILE_COMPLETED,
-            {
-                "file": str(edited),
-                "mode": "template",
-                "compile_js": str(template_compile_js),
-                "provider": None,
-                "requested_provider": "none",
-            },
-        )
-        await orch.finalize_quality_stage.execute(
+        previews_published = await self._publish_template_previews(
             run_id=run_id,
-            mode=GenerationMode.TEMPLATE,
-            design=design,
-            from_stage="COMPILING",
-            success_reason="template compile+qa completed",
+            artifacts=artifacts,
+            theme=design.theme,
         )
+        if not previews_published:
+            return
+        await self._finalize_template_run(
+            run_id=run_id,
+            edited=edited,
+            template_compile_js=template_compile_js,
+            design=design,
+        )
+
+
+__all__ = ["TemplateFlowService"]

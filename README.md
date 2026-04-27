@@ -50,6 +50,24 @@
 - `service/infra`: 内存存储与事件等待
 - `service/models`: API 契约模型
 
+`service/llm` 进一步按责任拆分为显式模块：
+
+- `client.py`: 对外门面与兼容入口
+- `transport.py`: provider 请求、重试与文本清洗
+- `response_formats.py`: structured output schema 定义
+- `outline_prompt_client.py`: outline/research prompt 生成
+- `longform_planning_client.py`: long-form plan/research/repair/critique
+- `longform_drafting_client.py`: long-form section drafting/revision
+- `slide_codegen_client.py`: slide JS codegen
+- `slide_spec_client.py`: slide spec generation
+- `slide_response_parsers.py` / `outline_normalization.py` / `parsing.py`: 明确 owned 的解析与归一化逻辑
+
+治理原则：
+
+- 不把新能力重新堆回 `service/llm/client.py`
+- 不引入 `helpers.py`、`utils.py`、`common.py`、`misc.py` 这类语义不清的 dumping ground
+- 运行时依赖拆分优先通过架构澄清推进，而不是先盲目删除 `Node`、`markitdown[pptx]` 或 `asyncpg`
+
 兼容性说明：
 
 - 旧导入路径（如 `service.orchestrator`、`service.llm_client`）仍可用，通过 shim 转发。

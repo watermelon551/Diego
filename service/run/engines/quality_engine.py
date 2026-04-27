@@ -4,7 +4,7 @@ from typing import Any
 
 from ...design.skill_profile import DesignProfile
 from ...models import GenerationMode, OutlineNode
-from ..services.quality_repair_service import QualityRepairService
+from ..services.quality_repair import QualityRepairService
 
 
 class QualityEngine:

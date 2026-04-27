@@ -23,17 +23,62 @@
   - `run/flows`: `outline_flow` / `scratch_flow` / `template_flow` 主流程执行器
   - `run/services`: `quality_repair_service` / `compile_service` / `reporting_service` 领域服务
     - `orchestrator` 仅保留生命周期编排与失败收敛，重逻辑下沉到 services
+  - `run/factory.py`: runtime construction and dependency wiring for the public run facade
 - `llm`: provider 调用、协议与输出解析
 - `slides`: scratch 侧 JS 合约校验、质量门禁、诊断
+  - `slides/skill_slide_renderer.py`: scratch slide JS rendering and compile-script source generation
+  - `slides/skill_slide_blocks.py`: page-type/layout-specific JS block composition rules
 - `templates`: 模板结构重建、slot mapping、layout reflow、素材注入
 - `design`: 样式策略与主题映射
+  - `design/design_resolution.py`: style preset selection, requirements-report shaping, and design-profile resolution
 - `infra`: 内存存储与事件等待机制
 - `models`: API/状态对象契约
 - `content`: host-agnostic long-form planning, drafting, and section revision
+- `run/slide_preview.py`: single-slide preview bundle construction, fallback preview shaping, preview-runner source generation
+- `run/slide_scene.py`: deterministic scene parsing, scene operations, and scene-to-outline projection
+- `run/slide_plan_rules.py`: slide-plan construction, visual-policy shaping, and asset extraction rules
+- `run/slide_generation_briefs.py`: slide brief shaping, fallback research brief, and generated/spec conversions
+- `run/slide_spec_repair.py`: local slide-spec repair heuristics and layout rotation rules
+
+### 1.2 `service/llm` layering rule
+
+`service/llm` 仍然是 Diego 的 generation-side boundary，不是上游 shell glue。
+
+推荐责任划分：
+
+- `client.py`: thin facade，只负责组合公开 client surface
+- `transport.py`: provider transport、retry、response text sanitation
+- `response_formats.py`: structured response schema construction
+- `outline_prompt_client.py`: outline/research prompt construction and request flow
+- `longform_planning_client.py`: long-form planning, repair, critique
+- `longform_drafting_client.py`: long-form section drafting and revision
+- `slide_codegen_client.py`: generated slide JS request flow
+- `slide_spec_client.py`: slide spec request flow
+- `slide_response_parsers.py`, `outline_normalization.py`, `parsing.py`: owned parsing and normalization boundaries
+
+治理约束：
+
+- 不要把新能力重新塞回一个 giant `client.py`
+- 不要新增 `helpers.py`、`utils.py`、`common.py`、`misc.py` 作为核心语义落点
+- provider request logic、prompt logic、response parsing、normalization 应保持显式分层
+- Docker/runtime 瘦身应在职责清晰后讨论；当前 Node、`markitdown[pptx]`、`asyncpg` 仍按真实服务职责保留
 
 兼容层策略：
 - `service.orchestrator`、`service.llm_client` 等旧路径仍保留为 shim。
 - shim 默认静默；设置 `PPT_AGENT_SHIM_WARNINGS=1` 时会抛出弃用告警，便于迁移。
+
+`service/run/orchestrator.py` 仍是当前 repo 的过渡热点，但治理方向是明确的：
+
+- 它是 transition facade，不是新业务逻辑的默认落点
+- 新的 stage 实现细节应继续下沉到 `run/flows/*`、`run/services/*`、`run/engines/*`
+- runtime construction and dependency wiring 应优先进入 `run/factory.py`
+- preview payload shaping、placeholder preview、preview-runner source 这类纯 preview helper 应优先进入 `run/slide_preview.py`
+- scene projection helper 应优先进入 `run/slide_scene.py`
+- style preset selection、requirements report shaping、design profile resolution 应优先进入 `service/design/design_resolution.py`
+- slide plan / spec repair 这类纯规则应优先进入 `run/slide_plan_rules.py`、`run/slide_generation_briefs.py`、`run/slide_spec_repair.py`
+- skill slide JS rendering and page block composition 应优先进入 `service/slides/skill_slide_renderer.py`、`service/slides/skill_slide_blocks.py`
+- runtime compatibility surface 应尽量经由 `run/runtime_support.py` 这类显式组合边界承接
+- 不要为了省事把 slide/template/report/provider 细节重新堆回 orchestrator
 
 ## 2. 运行状态机
 

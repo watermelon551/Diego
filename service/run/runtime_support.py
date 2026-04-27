@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from .asset_flow_mixin import RunAssetFlowMixin
-from ..slides.js_quality_mixin import SlideJsQualityMixin
-from ..templates.template_ops_mixin import TemplateOpsMixin
+from ..slides.js_quality import SlideJsQualityMixin
+from ..templates.template_editing import TemplateOpsMixin
 
 
 class RuntimeSupport(RunAssetFlowMixin, SlideJsQualityMixin, TemplateOpsMixin):
