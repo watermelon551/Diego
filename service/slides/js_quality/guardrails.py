@@ -43,6 +43,15 @@ def has_valid_page_badge(*, js_code: str, slide_no: int) -> bool:
 def _ensure_create_slide_returns_slide(js_code: str) -> str:
     fixed = str(js_code or "")
     fixed, count = re.subn(r"(?m)^\s*return\s*\{\s*createSlide\s*,\s*slideConfig\s*\}\s*;\s*$", "  return slide;", fixed)
+    fixed, moved_count = _remove_return_slide_from_slide_config(fixed)
+    if moved_count > 0:
+        marker = "module.exports = { createSlide, slideConfig };"
+        if re.search(r"\bfunction\s+createSlide\s*\(", fixed) and marker in fixed:
+            idx = fixed.find(marker)
+            prefix = fixed[:idx]
+            suffix = fixed[idx:]
+            if not re.search(r"(?m)^\s*return\s+slide\s*;\s*$", prefix):
+                fixed = _insert_return_into_create_slide(prefix) + suffix
     if count > 0 or not re.search(r"\bfunction\s+createSlide\s*\(", fixed) or re.search(r"(?m)^\s*return\s+slide\s*;\s*$", fixed):
         return fixed
     marker = "module.exports = { createSlide, slideConfig };"
@@ -51,11 +60,46 @@ def _ensure_create_slide_returns_slide(js_code: str) -> str:
         prefix = fixed[:idx]
         suffix = fixed[idx:]
         if "}" in prefix:
-            last_brace = prefix.rfind("}")
-            if last_brace >= 0:
-                prefix = prefix[:last_brace] + "  return slide;\n" + prefix[last_brace:]
-                return prefix + suffix
+            return _insert_return_into_create_slide(prefix) + suffix
     return fixed
+
+
+def _insert_return_into_create_slide(js_code: str) -> str:
+    start_match = re.search(r"\bfunction\s+createSlide\s*\(", js_code)
+    if not start_match:
+        return js_code
+    slide_config_match = re.search(r"\b(?:const|let|var)\s+slideConfig\s*=", js_code[start_match.end() :])
+    search_end = (
+        start_match.end() + slide_config_match.start()
+        if slide_config_match
+        else len(js_code)
+    )
+    close_idx = js_code.rfind("}", start_match.end(), search_end)
+    if close_idx < 0:
+        close_idx = js_code.rfind("}")
+    if close_idx < 0:
+        return js_code
+    return js_code[:close_idx] + "  return slide;\n" + js_code[close_idx:]
+
+
+def _remove_return_slide_from_slide_config(js_code: str) -> tuple[str, int]:
+    match = re.search(r"\b(?:const|let|var)\s+slideConfig\s*=\s*\{", js_code)
+    if not match:
+        return js_code, 0
+    end = js_code.find("\n};", match.end())
+    if end < 0:
+        end = js_code.find("};", match.end())
+    if end < 0:
+        return js_code, 0
+    end += 3 if js_code.startswith("\n};", end) else 2
+    block = js_code[match.start() : end]
+    cleaned = re.sub(r"(?m)^\s*return\s+slide\s*;\s*$", "", block)
+    if cleaned == block:
+        cleaned = block.replace("return slide;", "")
+    count = 0 if cleaned == block else 1
+    if count <= 0:
+        return js_code, 0
+    return js_code[: match.start()] + cleaned + js_code[end:], count
 
 
 def _ensure_slide_config_index(js_code: str, *, slide_no: int) -> str:

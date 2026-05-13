@@ -83,9 +83,14 @@ class CompileEngine(
         resolver = getattr(self.runtime, "_resolve_run_design", None)
         if callable(resolver):
             theme = dict(getattr(resolver(run), "theme", {}) or {})
+        self._restore_scratch_slides_from_run(run=run, slides_dir=slides_dir)
         self._ensure_compile_script(
             slides_dir=slides_dir,
             slide_count=slide_count,
             theme=theme,
         )
-        return await self._build_scratch_compile_bundle(run=run, slides_dir=slides_dir)
+        return await self._build_scratch_compile_bundle(
+            run=run,
+            slides_dir=slides_dir,
+            theme=theme,
+        )

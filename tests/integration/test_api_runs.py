@@ -301,10 +301,21 @@ def test_build_compile_bundle_returns_high_fidelity_scratch_manifest(tmp_path: P
     assert bundle["entrypoint"] == "slides/compile.js"
     assert bundle["compile_options"]["cwd"] == "slides"
     assert any(item["path"] == "slides/compile.js" for item in bundle["files"])
+    theme = bundle["metadata"]["compile_context"]["theme"]
+    assert set(theme) == {"primary", "secondary", "accent", "light", "bg"}
+    assert all(theme.values())
+
+    import shutil
+
+    run = asyncio.run(orch.store.get_run(run_id))
+    assert run is not None
+    shutil.rmtree(Path(run.artifact_dir) / "slides")
 
     api_bundle = client.get(f"/v1/ppt/runs/{run_id}/artifacts/compile-bundle")
     assert api_bundle.status_code == 200
-    assert api_bundle.json()["entrypoint"] == "slides/compile.js"
+    api_payload = api_bundle.json()
+    assert api_payload["entrypoint"] == "slides/compile.js"
+    assert api_payload["metadata"]["compile_context"]["theme"] == theme
 
 def test_outline_update_then_approve_flow(tmp_path: Path) -> None:
     client = make_client(tmp_path)

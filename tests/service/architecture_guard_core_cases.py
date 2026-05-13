@@ -1157,6 +1157,7 @@ def test_store_module_layout_should_remain_explicit() -> None:
         "runtime_mixin.py",
         "run_records_mixin.py",
         "template_records_mixin.py",
+        "schema_migrations.py",
     }
     existing_postgres_store_files = {
         path.name for path in postgres_store_dir.glob("*.py")

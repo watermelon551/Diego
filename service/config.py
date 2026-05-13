@@ -48,6 +48,7 @@ class Settings:
     llm_concurrency_repair: int = 1
     timeout_streak_degrade_threshold: int = 3
     timeout_streak_recover_window_sec: float = 120.0
+    slide_generation_timeout_sec: float = 900.0
     qa_finalize_timeout_sec: float = 300.0
     compile_provider: str = "none"
     pagevra_base_url: str = ""
@@ -137,6 +138,9 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     qa_finalize_timeout_sec = _env_float("QA_FINALIZE_TIMEOUT_SEC", 300.0)
     if qa_finalize_timeout_sec <= 0:
         raise ValueError("QA_FINALIZE_TIMEOUT_SEC must be > 0")
+    slide_generation_timeout_sec = _env_float("DIEGO_SLIDE_GENERATION_TIMEOUT_SEC", 900.0)
+    if slide_generation_timeout_sec < 300:
+        raise ValueError("DIEGO_SLIDE_GENERATION_TIMEOUT_SEC must be >= 300")
     run_store = os.getenv("DIEGO_RUN_STORE", "memory").strip().lower()
     if run_store not in {"memory", "postgres"}:
         raise ValueError(f"invalid DIEGO_RUN_STORE={run_store!r}")
@@ -152,7 +156,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         llm_base_url=_require_env("LLM_BASE_URL"),
         llm_api_key=_require_env("LLM_API_KEY"),
         llm_model=_require_env("LLM_MODEL"),
-        llm_timeout_sec=_env_float("LLM_TIMEOUT_SEC", 120.0),
+        llm_timeout_sec=_env_float("LLM_TIMEOUT_SEC", 300.0),
         llm_max_retries=_env_int("LLM_MAX_RETRIES", 2),
         llm_temperature_outline=_env_float("LLM_TEMPERATURE_OUTLINE", 0.3),
         llm_temperature_slide=_env_float("LLM_TEMPERATURE_SLIDE", 0.6),
@@ -189,6 +193,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         llm_concurrency_repair=_env_int("LLM_CONCURRENCY_REPAIR", 1),
         timeout_streak_degrade_threshold=_env_int("TIMEOUT_STREAK_DEGRADE_THRESHOLD", 3),
         timeout_streak_recover_window_sec=timeout_streak_recover_window_sec,
+        slide_generation_timeout_sec=slide_generation_timeout_sec,
         qa_finalize_timeout_sec=qa_finalize_timeout_sec,
         compile_provider=compile_provider,
         pagevra_base_url=os.getenv("PAGEVRA_BASE_URL", "").strip().rstrip("/"),

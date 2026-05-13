@@ -35,12 +35,6 @@ class TemplateAssetSearchMixin(
                 "png",
                 {"provider": "mock", "source": "mock", "query": query, "key": f"mock:{slide_no}:{rel_id}:{normalized_slot}"},
             )
-        if provider == "none":
-            raise TemplateAssetError("asset provider is disabled")
-
-        providers = self._asset_provider_chain(provider)
-        if not providers:
-            raise TemplateAssetError(f"no configured asset providers for {provider}")
 
         ctx = search_context if isinstance(search_context, dict) else {}
         queries = self._build_asset_query_candidates(
@@ -53,6 +47,38 @@ class TemplateAssetSearchMixin(
         seen_used = {str(item).strip() for item in (used_asset_keys or set()) if str(item).strip()}
         all_candidates: list[dict[str, Any]] = []
         all_candidates.extend(self._collect_project_asset_candidates(search_context=ctx, queries=queries, slot_type=normalized_slot))
+
+        if provider == "none":
+            if not all_candidates:
+                raise TemplateAssetError("asset provider is disabled")
+            with httpx.Client(timeout=self.settings.asset_timeout_sec, follow_redirects=True) as client:
+                for candidate in self._rank_asset_candidates(
+                    candidates=all_candidates,
+                    queries=queries,
+                    slot_type=normalized_slot,
+                    search_context=ctx,
+                    used_asset_keys=seen_used,
+                ):
+                    try:
+                        asset_bytes, ext = self._resolve_candidate_asset_bytes(candidate=candidate, client=client)
+                        return (
+                            asset_bytes,
+                            ext,
+                            {
+                                "key": str(candidate.get("key", "")).strip(),
+                                "provider": "project",
+                                "source": "project",
+                                "query": str(candidate.get("query", "")).strip() or query,
+                                "slot_type": normalized_slot,
+                            },
+                        )
+                    except Exception:
+                        continue
+            raise TemplateAssetError("project asset candidates were unavailable")
+
+        providers = self._asset_provider_chain(provider)
+        if not providers:
+            raise TemplateAssetError(f"no configured asset providers for {provider}")
 
         last_error: Exception | None = None
         per_query = 4

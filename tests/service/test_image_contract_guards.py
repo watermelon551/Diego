@@ -39,6 +39,134 @@ def test_auto_canonicalize_should_rewrite_addimage_positional_signature(tmp_path
     assert any("normalize addImage(path, opts)" in item for item in fixes)
 
 
+def test_auto_canonicalize_should_rewrite_addshape_positional_signature(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const slideConfig = { type: 'content', index: 2, title: 'Bad AddShape', bullets: ['a', 'b'] };",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addShape(pres.shapes.LINE, 7.8, 2.65, 0, 0.4, { line: { color: theme.accent, width: 2 } });",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+
+    canonical, fixes = orch._auto_canonicalize_slide_js(
+        js_code,
+        slide_no=2,
+        node=OutlineNode(title="Bad AddShape", bullets=["a", "b"]),
+        target_slide_count=8,
+    )
+
+    assert "normalize addShape(shape, x, y, w, h, opts)" in " ".join(fixes)
+    assert "slide.addShape(pres.shapes.LINE, { x: 7.8, y: 2.65, w: 0.01, h: 0.4, line:" in canonical
+
+
+def test_auto_canonicalize_should_fix_line_zero_geometry_with_nested_options(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const slideConfig = { type: 'content', index: 2, title: 'Line', bullets: ['a', 'b'] };",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addShape(pres.shapes.LINE, { x: 1, y: 2, w: 8, h: 0, line: { color: theme.accent, width: 2 } });",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+
+    canonical, fixes = orch._auto_canonicalize_slide_js(
+        js_code,
+        slide_no=2,
+        node=OutlineNode(title="Line", bullets=["a", "b"]),
+        target_slide_count=8,
+    )
+
+    assert "fix LINE shape zero geometry" in fixes
+    assert "h: 0.01" in canonical
+    assert "line: { color: theme.accent, width: 2 }" in canonical
+
+
+def test_auto_canonicalize_should_fix_line_negative_geometry(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const slideConfig = { type: 'content', index: 2, title: 'Line', bullets: ['a', 'b'] };",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addShape(pres.shapes.LINE, { x: 1, y: 2, w: 8, h: -0.24, line: { color: theme.accent, width: 2 } });",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+
+    canonical, fixes = orch._auto_canonicalize_slide_js(
+        js_code,
+        slide_no=2,
+        node=OutlineNode(title="Line", bullets=["a", "b"]),
+        target_slide_count=8,
+    )
+
+    assert "fix LINE shape zero geometry" in fixes
+    assert "h: 0.24" in canonical
+    assert "h: -0.24" not in canonical
+
+
+def test_local_guardrails_should_move_return_slide_out_of_slide_config(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "}",
+            "const slideConfig = {",
+            "  index: 4,",
+            "  title: 'Broken'",
+            "  return slide;",
+            "};",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+
+    guarded = orch._apply_local_js_guardrails(
+        js_code=js_code,
+        slide_no=4,
+        page_type=SlidePageType.CONTENT,
+    )
+
+    assert "title: 'Broken'" in guarded
+    assert "title: 'Broken'\n  return slide;" not in guarded
+    assert "return slide;\n}" in guarded
+
+
 def test_validate_contract_should_block_placeholder_when_assets_planned(tmp_path: Path) -> None:
     orch = RunOrchestrator(
         store=RunStore(base_dir=tmp_path),

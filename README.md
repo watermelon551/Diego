@@ -113,6 +113,7 @@ Copy-Item .env.example .env
 - `PAGEVRA_PREVIEW_ENABLED`: `0 | 1`，默认 `0`，仅在需要外部 SVG preview 时启用
 - `ASSET_PROVIDER`: `mock | none | auto | unsplash | pexels`
 - `UNSPLASH_ACCESS_KEY` / `PEXELS_API_KEY`
+- `DIEGO_SLIDE_GENERATION_TIMEOUT_SEC`: slide 生成阶段总超时，必须不小于 `300` 秒，默认 `900`
 - `QA_FINALIZE_TIMEOUT_SEC`
 
 完整列表见 [`.env.example`](./.env.example)。
@@ -148,6 +149,7 @@ docker compose down
 - Compose 服务名为 `diego-service`，默认映射到 `http://127.0.0.1:8000`。
 - 健康检查探针为 `GET /healthz`。
 - 默认以 `DIEGO_RUN_STORE=postgres` 持久化 run 元数据，并挂载 `diego-runtime` volume 保留 `.runtime` 产物。
+- `DIEGO_DATABASE_URL` 仅在 `DIEGO_RUN_STORE=postgres` 时必需；`memory` 模式不要求数据库。
 - 若切回 `DIEGO_RUN_STORE=memory`，容器重启会丢失内存态 run。
 
 ## 3. 接口说明
@@ -339,7 +341,7 @@ data: {"seq":27,"event":"slide.generated","ts":"2026-04-12T10:00:00Z","payload":
 常见 `error_code`：
 
 - 大纲阶段：`OUTLINE_LLM_TIMEOUT`、`OUTLINE_LLM_ERROR`、`OUTLINE_REPAIR_EXHAUSTED`
-- 生成阶段：`SLIDE_LLM_ERROR`、`VISUAL_POLICY_UNSATISFIED`
+- 生成阶段：`SLIDE_LLM_ERROR`、`SLIDE_GENERATION_TIMEOUT`、`VISUAL_POLICY_UNSATISFIED`
 - 模板阶段：`TEMPLATE_ID_MISSING`、`TEMPLATE_NOT_FOUND`、`TEMPLATE_ASSET_FETCH_FAILED`、`TEMPLATE_SLOT_UNMAPPED`、`TEMPLATE_LAYOUT_CONFLICT`
 - 编译/收尾：`COMPILE_SCRIPT_FAILED`、`TEMPLATE_JS_COMPILE_FAILED`、`QA_FAILED`、`FINALIZE_TIMEOUT`
 

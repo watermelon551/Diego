@@ -51,10 +51,11 @@ class ScratchFlowService(ScratchSlideBatchMixin, ScratchCompileMixin):
             )
             return
         if failures:
+            error_type = str(failures[0].get("details", {}).get("error_type") or "")
             await orch._fail_run(
                 run_id,
                 "SLIDES_GENERATING",
-                "SLIDE_LLM_ERROR",
+                "SLIDE_GENERATION_TIMEOUT" if error_type == "SlideGenerationTimeout" else "SLIDE_LLM_ERROR",
                 retryable=True,
                 error_details={
                     "failure_count": len(failures),

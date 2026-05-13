@@ -231,7 +231,7 @@ def is_js_intentional_container_overlap(left: JsLayoutBox, right: JsLayoutBox) -
     if container.area <= 0:
         return False
     ratio = inner.area / container.area
-    return 0.05 <= ratio <= 0.95
+    return 0.03 <= ratio <= 0.95
 
 
 def js_box_overlap_ratio(left: JsLayoutBox, right: JsLayoutBox) -> float:

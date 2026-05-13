@@ -81,13 +81,20 @@ class ScratchSlideBatchMixin:
                     },
                 )
 
-        results = await asyncio.gather(
-            *(
-                generate_one(i, node)
-                for i, node in enumerate(run.outline.nodes, start=1)
-            ),
-            return_exceptions=True,
-        )
+        tasks = [
+            generate_one(i, node)
+            for i, node in enumerate(run.outline.nodes, start=1)
+        ]
+        timeout_sec = float(getattr(orch.settings, "slide_generation_timeout_sec", 900.0) or 900.0)
+        timed_out = False
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=max(0.001, timeout_sec),
+            )
+        except asyncio.TimeoutError:
+            timed_out = True
+            results = []
         await orch.store.update_run(
             run_id,
             lambda r: setattr(
@@ -97,6 +104,23 @@ class ScratchSlideBatchMixin:
             ),
         )
         failures: list[dict[str, Any]] = []
+        if timed_out:
+            latest_run = await orch.store.get_run(run_id)
+            completed_slides = len(latest_run.slides) if latest_run is not None else 0
+            failures.append(
+                {
+                    "slide_no": 0,
+                    "phase": "slides.batch",
+                    "reason": f"slide generation exceeded {timeout_sec:.0f}s",
+                    "details": {
+                        "error_type": "SlideGenerationTimeout",
+                        "timeout_sec": timeout_sec,
+                        "completed_slides": completed_slides,
+                        "target_slide_count": len(run.outline.nodes),
+                    },
+                }
+            )
+            return failures
         if any(isinstance(item, VisualPolicyUnsatisfiedError) for item in results):
             failures.append(
                 {

@@ -102,8 +102,8 @@ def normalize_generated_slide_js(
         ])
         normalized = normalized.replace("function createSlide(", badge_helper + "function createSlide(", 1) if "function createSlide(" in normalized else badge_helper + normalized
 
-    _replace_regex(r"(addShape\(\s*pres\.shapes\.LINE\s*,\s*\{[^{}]*?\bw\s*:\s*)0(?:\.0+)?(?=\s*(?:,|\}|$))", r"\g<1>0.01", "fix LINE shape zero width", flags=re.S)
-    _replace_regex(r"(addShape\(\s*pres\.shapes\.LINE\s*,\s*\{[^{}]*?\bh\s*:\s*)0(?:\.0+)?(?=\s*(?:,|\}|$))", r"\g<1>0.01", "fix LINE shape zero height", flags=re.S)
+    _replace_regex(r"(addShape\(\s*pres\.shapes\.LINE\s*,\s*\{[^{}]*?\bw\s*:\s*)-?0(?:\.0+)?(?=\s*(?:,|\}|$))", r"\g<1>0.01", "fix LINE shape zero width", flags=re.S)
+    _replace_regex(r"(addShape\(\s*pres\.shapes\.LINE\s*,\s*\{[^{}]*?\bh\s*:\s*)-?0(?:\.0+)?(?=\s*(?:,|\}|$))", r"\g<1>0.01", "fix LINE shape zero height", flags=re.S)
     _replace_regex(r"module\.exports\s*=\s*createSlide\s*;", "module.exports = { createSlide, slideConfig };", "normalize module.exports short form")
     _replace_regex(r"module\.exports\s*=\s*\{\s*createSlide\s*\}\s*;", "module.exports = { createSlide, slideConfig };", "normalize module.exports object form")
 

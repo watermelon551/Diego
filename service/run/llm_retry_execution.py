@@ -30,7 +30,7 @@ async def call_llm_with_timeout_retry(
     retry_after_seconds: Callable[[Exception], float | None],
 ) -> Any:
     max_attempts = outline_timeout_retries + 1
-    gate_timeout_sec = max(1.0, float(llm_timeout_sec) + 5.0)
+    gate_timeout_sec = max(300.0, float(llm_timeout_sec) + 5.0)
     for attempt in range(1, max_attempts + 1):
         acquired_global = False
         acquired_phase = False

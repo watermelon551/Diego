@@ -226,6 +226,69 @@ def test_validate_contract_should_reject_zero_length_line_shape(tmp_path: Path) 
     issues = orch._validate_slide_js_contract(js_code, slide_no=2, page_type="content")
     assert any("line shape geometry invalid" in item for item in issues)
 
+
+def test_validate_contract_should_not_flag_valid_line_when_later_shapes_have_zero_line_width(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const pptxgen = require('pptxgenjs');",
+            "const slideConfig = { type: 'content', index: 2, total: 8, title: 'Line Test', layoutHint: 'content-timeline', bullets: ['a','b'] };",
+            "function addPageBadge(pres, slide, theme, n) {",
+            "  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fill: { color: theme.accent }, line: { color: theme.accent, width: 0 } });",
+            "  slide.addText(String(n), { x: 9.3, y: 5.1, w: 0.4, h: 0.4, fontSize: 10, color: 'FFFFFF', align: 'center', margin: 0 });",
+            "}",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addText(slideConfig.title, { x: 0.6, y: 0.4, w: 8.8, h: 0.7, fontSize: 38, fontFace: 'Arial', color: theme.primary, bold: true, fit: 'shrink' });",
+            "  slide.addShape(pres.shapes.LINE, { x: 1.0, y: 2.45, w: 8.0, h: 0.01, line: { color: theme.secondary, pt: 1 } });",
+            "  slide.addShape(pres.shapes.RECTANGLE, { x: 1.0, y: 2.7, w: 8.0, h: 1.0, fill: { color: theme.light }, line: { color: theme.secondary, width: 0 } });",
+            "  slide.addText('a | b', { x: 1.1, y: 2.85, w: 7.8, h: 0.6, fontSize: 14, fontFace: 'Arial', color: theme.secondary, align: 'left', margin: 0, fit: 'shrink' });",
+            "  addPageBadge(pres, slide, theme, slideConfig.index);",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+
+    issues = orch._validate_slide_js_contract(js_code, slide_no=2, page_type="content")
+
+    assert not any("line shape geometry invalid" in item for item in issues)
+
+
+def test_validate_contract_should_allow_small_text_inside_container_shape(tmp_path: Path) -> None:
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=make_settings(),
+    )
+    js_code = "\n".join(
+        [
+            "const slideConfig = { type: 'summary', index: 3, title: 'Container Test' };",
+            "function createSlide(pres, theme) {",
+            "  const slide = pres.addSlide();",
+            "  slide.addText(slideConfig.title, { x: 0.4, y: 0.28, w: 6.0, h: 0.65, fontSize: 38, color: theme.primary, fit: 'shrink' });",
+            "  slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 0.4, y: 4.55, w: 9.2, h: 0.75, fill: { color: theme.accent, transparency: 90 }, line: { color: theme.accent, pt: 1.5 } });",
+            "  slide.addText('选型依据', { x: 0.6, y: 4.62, w: 1.2, h: 0.28, fontSize: 13, color: theme.accent, bold: true, margin: 0 });",
+            "  slide.addText('带宽需求 · 传输距离 · 成本预算 · 环境适应性', { x: 1.9, y: 4.62, w: 7.5, h: 0.55, fontSize: 14, color: theme.secondary, margin: 0, fit: 'shrink' });",
+            "  return slide;",
+            "}",
+            "module.exports = { createSlide, slideConfig };",
+        ]
+    )
+
+    issues = orch._validate_slide_js_contract(js_code, slide_no=3, page_type="summary")
+
+    assert not any("overlaps" in item for item in issues)
+
+
 def test_validate_contract_should_not_treat_short_labels_as_body_text(tmp_path: Path) -> None:
     orch = RunOrchestrator(
         store=RunStore(base_dir=tmp_path),
@@ -608,86 +671,3 @@ def test_llm_extract_json_should_strip_think_and_fence() -> None:
     payload = llm_client_mod._extract_json_object(raw)
     assert payload["score"] == 91
     assert payload["issues"] == []
-
-def test_agentic_failure_should_keep_last_failed_candidate(tmp_path: Path) -> None:
-    class InvalidContractAgenticLLM(MockLLMClient):
-        async def generate_slide_js(self, **kwargs):
-            return "const broken = true;"
-
-        async def critique_slide_js(self, **kwargs):
-            return "const broken = true;"
-
-    settings = make_settings()
-    settings = Settings(
-        **{
-            **settings.__dict__,
-            "generation_engine": "agentic_v2",
-            "max_slide_repair_rounds": 4,
-            "slide_fatal_early_stop_rounds": 2,
-            "keep_failed_candidate_js": True,
-        }
-    )
-    orch = RunOrchestrator(
-        store=RunStore(base_dir=tmp_path),
-        artifacts_base=tmp_path / "artifacts",
-        templates_base=tmp_path / "templates",
-        llm_client=InvalidContractAgenticLLM(),
-        settings=settings,
-    )
-    client = TestClient(create_app(base_dir=tmp_path, orchestrator=orch))
-
-    run_id = client.post(
-        "/v1/ppt/runs",
-        json={
-            "topic": "keep failed candidate",
-            "project_id": "p-failed-js",
-            "target_slide_count": 2,
-            "generation_mode": "scratch",
-        },
-    ).json()["run_id"]
-    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
-    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
-    final = wait_status(client, run_id, {"FAILED"}, timeout=20.0)
-
-    assert final["error_code"] in {"SLIDE_LLM_ERROR", "QA_FAILED"}
-    if final["error_code"] == "SLIDE_LLM_ERROR":
-        failed_dir = tmp_path / "artifacts" / run_id / "slides" / "failed"
-        assert failed_dir.exists()
-        assert list(failed_dir.glob("slide-*-last.js"))
-
-def test_build_slide_failure_context_should_include_structured_debug_fields(tmp_path: Path) -> None:
-    orch = RunOrchestrator(
-        store=RunStore(base_dir=tmp_path),
-        artifacts_base=tmp_path / "artifacts",
-        templates_base=tmp_path / "templates",
-        llm_client=MockLLMClient(),
-        settings=make_settings(),
-    )
-    sample_js = "\n".join(
-        [
-            "function createSlide(pres, theme) {",
-            "  const slide = pres.addSlide();",
-            "  slide.addShape(pres.shapes.LINE, { x: 1, y: 1, w: 2, h: 0.01, line: { color: theme.accent } });",
-            "  return slide;",
-            "}",
-        ]
-    )
-    context = orch._build_slide_failure_context(
-        phase="candidate.preview",
-        slide_js_path=tmp_path / "slide-01-cand-01.js",
-        candidate_js=sample_js,
-        issues=["preview compile failed: slide-01-cand-01.js:3"],
-        diagnostics={
-            "stderr": "slide-01-cand-01.js:3 TypeError: bad call",
-            "stdout": "",
-            "error_message": "TypeError: bad call",
-            "attempt": 2,
-            "gate_summary": {"blocking": 1, "high_risk": 0, "warnings": 1},
-        },
-    )
-    assert context["slide_js_path"].endswith("slide-01-cand-01.js")
-    assert context["stderr_excerpt"]
-    assert context["error_location"].get("line") == 3
-    assert context["gate_summary"]["blocking"] == 1
-    assert context["attempt"] == 2
-

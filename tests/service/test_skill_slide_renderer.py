@@ -78,3 +78,42 @@ def test_render_skill_slide_js_should_emit_exported_slide_module() -> None:
     assert "\"content\"" in js_code
     assert "\"asset.png\"" in js_code
     assert "slide.addImage(" in js_code
+
+
+def test_render_skill_slide_js_should_not_emit_visual_text_placeholders() -> None:
+    node = OutlineNode(
+        title="Hello",
+        bullets=["One", "Two", "Three"],
+        page_type=SlidePageType.CONTENT,
+        layout_hint="content-showcase",
+    )
+    generated = GeneratedSlide(
+        title="Hello",
+        bullets=["One", "Two", "Three"],
+        citations=["src-1"],
+        page_type=SlidePageType.CONTENT,
+        layout_hint="content-showcase",
+    )
+    chart_plan = ChartPlan(
+        has_verified_data=False,
+        mode="qualitative_fallback",
+        labels=[],
+        values=[],
+        unit="",
+        note="No verified data",
+        source="",
+    )
+    js_code = render_skill_slide_js(
+        slide_no=2,
+        total=5,
+        node=node,
+        generated=generated,
+        design=_design(),
+        chart_plan=chart_plan,
+        visual_kind="shape",
+        visual_assets=[],
+    )
+
+    assert "Visual showcase area" not in js_code
+    assert "slide.addText('Visual'" not in js_code
+    assert "slide.addShape(" in js_code

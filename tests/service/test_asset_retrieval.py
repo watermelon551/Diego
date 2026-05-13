@@ -64,6 +64,50 @@ def test_fetch_slot_asset_should_prioritize_project_candidates(tmp_path: Path, m
     assert meta.get("provider") == "project"
 
 
+def test_fetch_slot_asset_should_use_project_candidates_when_external_provider_disabled(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings()
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "asset_provider": "none",
+        }
+    )
+    orch = RunOrchestrator(
+        store=RunStore(base_dir=tmp_path),
+        artifacts_base=tmp_path / "artifacts",
+        templates_base=tmp_path / "templates",
+        llm_client=MockLLMClient(),
+        settings=settings,
+    )
+    image_path = tmp_path / "source-image.png"
+    image_path.write_bytes(b"project-image-bytes")
+    node = OutlineNode(
+        title="Project Rollout",
+        bullets=["Milestones", "Risks"],
+        page_type=SlidePageType.CONTENT,
+        layout_hint="content-two-column",
+    )
+
+    asset_bytes, ext, meta = orch._fetch_slot_asset(
+        query="project rollout timeline",
+        slot_type="image",
+        node=node,
+        slide_no=3,
+        rel_id="unit-test",
+        search_context={
+            "topic": "Project Rollout",
+            "project_asset_urls": [str(image_path)],
+        },
+    )
+
+    assert asset_bytes == b"project-image-bytes"
+    assert ext == "png"
+    assert meta.get("source") == "project"
+    assert meta.get("provider") == "project"
+
+
 def test_prepare_scratch_visual_assets_icon_rows_should_use_image_slots(tmp_path: Path) -> None:
     settings = make_settings()
     settings = Settings(

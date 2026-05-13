@@ -62,9 +62,9 @@ def validate_slide_js_contract(
             dedupe=dedupe_preserve_order,
         )
     )
-    if re.search(
-        r"addShape\(\s*pres\.shapes\.LINE[\s\S]*?\{[\s\S]*?\b(?:w|h)\s*:\s*0(?:\.0+)?\b",
+    if _has_invalid_line_geometry(
         js_code,
+        extract_method_call_args=extract_method_call_args,
     ):
         issues.append("line shape geometry invalid: w/h must be > 0")
     if re.search(r"['\"]#[0-9a-fA-F]{3,8}['\"]", js_code):
@@ -116,3 +116,16 @@ def validate_slide_js_contract(
                 issues.append("visual_policy violation: basic_graphics_only forbids addImage()")
     issues.extend(collect_js_style_issues(js_code=js_code, page_type=page_type))
     return dedupe_preserve_order(issues)
+
+
+def _has_invalid_line_geometry(js_code: str, *, extract_method_call_args) -> bool:
+    calls = extract_method_call_args(str(js_code or ""), r"\bslide\.addShape\s*\(")
+    for args in calls:
+        if len(args) != 2 or "pres.shapes.LINE" not in str(args[0]):
+            continue
+        options = str(args[1])
+        for key in ("w", "h"):
+            match = re.search(rf"\b{key}\s*:\s*(-?\d+(?:\.\d+)?)\b", options)
+            if match and float(match.group(1)) <= 0:
+                return True
+    return False

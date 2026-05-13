@@ -4,9 +4,37 @@ import base64
 from pathlib import Path
 from typing import Any
 
+from ..slide_preview_runtime.payloads import _safe_theme
+
 
 class CompileScriptBundleMixin:
     runtime: Any
+
+    def _restore_scratch_slides_from_run(
+        self,
+        *,
+        run: Any,
+        slides_dir: Path,
+    ) -> None:
+        slides = sorted(getattr(run, "slides", []) or [], key=lambda item: item.slide_no)
+        if not slides:
+            return
+        missing = [
+            slide
+            for slide in slides
+            if not (slides_dir / f"slide-{int(slide.slide_no):02d}.js").is_file()
+        ]
+        if not missing:
+            return
+        slides_dir.mkdir(parents=True, exist_ok=True)
+        for slide in slides:
+            js_code = str(getattr(slide, "js_code", "") or "")
+            if not js_code.strip():
+                continue
+            (slides_dir / f"slide-{int(slide.slide_no):02d}.js").write_text(
+                js_code,
+                encoding="utf-8",
+            )
 
     def _ensure_compile_script(
         self,
@@ -25,6 +53,8 @@ class CompileScriptBundleMixin:
     async def _build_scratch_compile_bundle(
         self, *, run: Any, slides_dir: Path, theme: dict[str, Any] | None = None
     ) -> dict[str, Any]:
+        safe_theme = _safe_theme(theme)
+        self._restore_scratch_slides_from_run(run=run, slides_dir=slides_dir)
         files: list[dict[str, str]] = []
         assets: list[dict[str, str]] = []
         for file_path in sorted(slides_dir.rglob("*")):
@@ -63,7 +93,7 @@ class CompileScriptBundleMixin:
                 "artifact_dir": str(run.artifact_dir),
                 "theme_source": "diego",
                 "compile_context": {
-                    "theme": theme or {},
+                    "theme": safe_theme,
                 },
             },
         }
