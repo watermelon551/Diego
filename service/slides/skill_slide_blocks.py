@@ -3,7 +3,6 @@ from __future__ import annotations
 from ..design.skill_profile import StyleRecipe
 from ..models import SlidePageType
 
-
 def slide_content_block(
     *,
     page_type: SlidePageType,
@@ -39,55 +38,62 @@ def slide_block_cover(layout_hint: str) -> str:
         ]
     )
 
-
 def slide_block_toc(layout_hint: str) -> str:
     if layout_hint == "toc-grid":
         return "\n".join(
             [
-                "  const items = bullets.slice(0, 6);",
+                "  const items = (Array.isArray(slideConfig.tocItems) && slideConfig.tocItems.length ? slideConfig.tocItems : bullets.map((title) => ({ title, details: [] }))).slice(0, 6);",
                 "  items.forEach((item, idx) => {",
+                "    const title = String(item.title || item || '').trim(); const details = Array.isArray(item.details) ? item.details.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 2) : [];",
                 "    const col = idx % 2;",
                 "    const row = Math.floor(idx / 2);",
                 "    const x = 0.8 + col * 4.5;",
                 "    const y = 1.3 + row * 1.2;",
                 "    slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x, y, w: 4.0, h: 0.95, fill: { color: theme.light, transparency: 12 }, line: { color: theme.secondary, pt: 1 }, rectRadius: style.cornerMedium });",
                 "    slide.addText(String(idx + 1).padStart(2, '0'), { x: x + 0.2, y: y + 0.2, w: 0.7, h: 0.5, fontSize: 20, fontFace: fonts.title, color: theme.accent, bold: true, margin: 0 });",
-                "    slide.addText(item, { x: x + 1.0, y: y + 0.24, w: 2.8, h: 0.48, fontSize: 16, fontFace: fonts.body, color: theme.secondary, bold: false, align: 'left', margin: 0, fit: 'shrink' });",
+                "    slide.addText(title, { x: x + 1.0, y: y + 0.17, w: 2.8, h: 0.35, fontSize: 15, fontFace: fonts.body, color: theme.secondary, bold: true, align: 'left', margin: 0, fit: 'shrink' });",
+                "    if (details.length) slide.addText(details.join(' · ').slice(0, 92), { x: x + 1.0, y: y + 0.55, w: 2.75, h: 0.25, fontSize: 8.5, fontFace: fonts.body, color: theme.secondary, bold: false, align: 'left', margin: 0, fit: 'shrink' });",
                 "  });",
             ]
         )
     if layout_hint == "toc-sidebar":
         return "\n".join(
             [
-                "  const items = bullets.slice(0, 5);",
+                "  const items = (Array.isArray(slideConfig.tocItems) && slideConfig.tocItems.length ? slideConfig.tocItems : bullets.map((title) => ({ title, details: [] }))).slice(0, 5);",
                 "  slide.addShape(pres.shapes.RECTANGLE, { x: 0.55, y: 1.2, w: 1.0, h: 3.8, fill: { color: theme.primary, transparency: 8 }, line: { color: theme.primary } });",
                 "  items.forEach((item, idx) => {",
+                "    const title = String(item.title || item || '').trim(); const details = Array.isArray(item.details) ? item.details.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 2) : [];",
                 "    const y = 1.4 + idx * 0.72;",
                 "    slide.addShape(pres.shapes.OVAL, { x: 0.85, y: y + 0.1, w: 0.3, h: 0.3, fill: { color: theme.accent }, line: { color: theme.accent } });",
                 "    slide.addText(String(idx + 1), { x: 0.85, y: y + 0.1, w: 0.3, h: 0.3, fontSize: 11, fontFace: fonts.body, color: 'FFFFFF', bold: true, align: 'center', valign: 'mid', margin: 0 });",
-                "    slide.addText(item, { x: 1.8, y, w: 7.7, h: 0.44, fontSize: 18, fontFace: fonts.body, color: theme.secondary, bold: false, margin: 0, fit: 'shrink' });",
+                "    slide.addText(title, { x: 1.8, y, w: 7.7, h: 0.28, fontSize: 16, fontFace: fonts.body, color: theme.secondary, bold: true, margin: 0, fit: 'shrink' });",
+                "    if (details.length) slide.addText(details.join(' · ').slice(0, 130), { x: 1.8, y: y + 0.34, w: 7.2, h: 0.22, fontSize: 8.5, fontFace: fonts.body, color: theme.secondary, margin: 0, fit: 'shrink' });",
                 "  });",
             ]
         )
     if layout_hint == "toc-cards":
         return "\n".join(
             [
-                "  const items = bullets.slice(0, 4);",
+                "  const items = (Array.isArray(slideConfig.tocItems) && slideConfig.tocItems.length ? slideConfig.tocItems : bullets.map((title) => ({ title, details: [] }))).slice(0, 4);",
                 "  items.forEach((item, idx) => {",
+                "    const title = String(item.title || item || '').trim(); const details = Array.isArray(item.details) ? item.details.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 2) : [];",
                 "    const x = 0.8 + idx * 2.25;",
                 "    slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x, y: 2.0, w: 2.0, h: 1.7, fill: { color: theme.light, transparency: 10 }, line: { color: theme.secondary, pt: 1 }, rectRadius: style.cornerLarge });",
                 "    slide.addText(String(idx + 1).padStart(2, '0'), { x: x + 0.1, y: 2.18, w: 1.8, h: 0.48, fontSize: 28, fontFace: fonts.title, color: theme.accent, bold: true, align: 'center', margin: 0 });",
-                "    slide.addText(item, { x: x + 0.15, y: 2.72, w: 1.7, h: 0.8, fontSize: 13, fontFace: fonts.body, color: theme.secondary, bold: false, align: 'center', margin: 0, fit: 'shrink' });",
+                "    slide.addText(title, { x: x + 0.15, y: 2.68, w: 1.7, h: 0.38, fontSize: 12, fontFace: fonts.body, color: theme.secondary, bold: true, align: 'center', margin: 0, fit: 'shrink' });",
+                "    if (details.length) slide.addText(details.join('\\n').slice(0, 86), { x: x + 0.2, y: 3.12, w: 1.6, h: 0.42, fontSize: 7.5, fontFace: fonts.body, color: theme.secondary, align: 'center', margin: 0, fit: 'shrink' });",
                 "  });",
             ]
         )
     return "\n".join(
         [
-            "  const items = bullets.slice(0, 6);",
+            "  const items = (Array.isArray(slideConfig.tocItems) && slideConfig.tocItems.length ? slideConfig.tocItems : bullets.map((title) => ({ title, details: [] }))).slice(0, 6);",
             "  items.forEach((item, idx) => {",
+            "    const title = String(item.title || item || '').trim(); const details = Array.isArray(item.details) ? item.details.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 2) : [];",
             "    const y = 1.35 + idx * 0.6;",
             "    slide.addText(String(idx + 1).padStart(2, '0'), { x: 0.9, y, w: 0.8, h: 0.45, fontSize: 24, fontFace: fonts.title, color: theme.accent, bold: true, margin: 0 });",
-            "    slide.addText(item, { x: 1.9, y: y + 0.03, w: 7.6, h: 0.42, fontSize: 17, fontFace: fonts.body, color: theme.secondary, bold: false, margin: 0, fit: 'shrink' });",
+            "    slide.addText(title, { x: 1.9, y: y + 0.01, w: 7.6, h: 0.25, fontSize: 15.5, fontFace: fonts.body, color: theme.secondary, bold: true, margin: 0, fit: 'shrink' });",
+            "    if (details.length) slide.addText(details.join(' · ').slice(0, 132), { x: 1.9, y: y + 0.33, w: 7.3, h: 0.18, fontSize: 8.5, fontFace: fonts.body, color: theme.secondary, margin: 0, fit: 'shrink' });",
             "  });",
         ]
     )

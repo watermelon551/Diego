@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ..models import LongFormDraftSection, LongFormPlan
+from .format_errors import LongFormFormatError
 
 
 class LLMLongFormDraftingMixin:
@@ -46,13 +47,30 @@ class LLMLongFormDraftingMixin:
             response_format=self._longform_section_response_format(),
             allow_response_format_fallback=True,
         )
-        return self._parse_longform_section_or_raise(
-            text=text,
-            section_id=section.section_id,
-            heading=section.title,
-            key_points=section.key_points,
-            source_refs=section.source_refs,
-        )
+        try:
+            return self._parse_longform_section_or_raise(
+                text=text,
+                section_id=section.section_id,
+                heading=section.title,
+                key_points=section.key_points,
+                source_refs=section.source_refs,
+            )
+        except LongFormFormatError as exc:
+            if exc.category != "parse":
+                raise
+            payload = await self._extract_json_object_with_repair(
+                text=text,
+                expected_keys=["section_id", "heading", "blocks", "citations", "revision"],
+                temperature=self.slide_temperature,
+            )
+            return self._parse_longform_section_payload_or_raise(
+                payload=payload,
+                section_id=section.section_id,
+                heading=section.title,
+                key_points=section.key_points,
+                source_refs=section.source_refs,
+                raw_response=text,
+            )
 
     async def revise_section_draft(
         self,
@@ -96,13 +114,30 @@ class LLMLongFormDraftingMixin:
             response_format=self._longform_section_response_format(),
             allow_response_format_fallback=True,
         )
-        revised = self._parse_longform_section_or_raise(
-            text=text,
-            section_id=current_section.section_id,
-            heading=current_section.heading,
-            key_points=[],
-            source_refs=current_section.citations,
-        )
+        try:
+            revised = self._parse_longform_section_or_raise(
+                text=text,
+                section_id=current_section.section_id,
+                heading=current_section.heading,
+                key_points=[],
+                source_refs=current_section.citations,
+            )
+        except LongFormFormatError as exc:
+            if exc.category != "parse":
+                raise
+            payload = await self._extract_json_object_with_repair(
+                text=text,
+                expected_keys=["section_id", "heading", "blocks", "citations", "revision"],
+                temperature=self.slide_temperature,
+            )
+            revised = self._parse_longform_section_payload_or_raise(
+                payload=payload,
+                section_id=current_section.section_id,
+                heading=current_section.heading,
+                key_points=[],
+                source_refs=current_section.citations,
+                raw_response=text,
+            )
         if revised.revision <= current_section.revision:
             revised.revision = current_section.revision + 1
         return revised

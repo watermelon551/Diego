@@ -5,6 +5,22 @@ from typing import Any
 from ..models import SlidePageType
 
 
+PAGE_TYPE_ENUM = [
+    SlidePageType.COVER.value,
+    SlidePageType.TOC.value,
+    SlidePageType.SECTION.value,
+    SlidePageType.CONTENT.value,
+    SlidePageType.SUMMARY.value,
+]
+
+
+def _json_schema_response(*, name: str, schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "strict": True, "schema": schema},
+    }
+
+
 class LLMStructuredOutputMixin:
     def _outline_response_format(
         self, *, target_slide_count: int
@@ -35,13 +51,7 @@ class LLMStructuredOutputMixin:
                             },
                             "page_type": {
                                 "type": "string",
-                                "enum": [
-                                    SlidePageType.COVER.value,
-                                    SlidePageType.TOC.value,
-                                    SlidePageType.SECTION.value,
-                                    SlidePageType.CONTENT.value,
-                                    SlidePageType.SUMMARY.value,
-                                ],
+                                "enum": PAGE_TYPE_ENUM,
                             },
                             "layout_hint": {"type": ["string", "null"]},
                         },
@@ -51,14 +61,7 @@ class LLMStructuredOutputMixin:
             },
             "required": ["version", "summary", "nodes"],
         }
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "outline_document",
-                "strict": True,
-                "schema": schema,
-            },
-        }
+        return _json_schema_response(name="outline_document", schema=schema)
 
     def _longform_plan_response_format(
         self, *, target_section_count: int
@@ -109,14 +112,7 @@ class LLMStructuredOutputMixin:
             },
             "required": ["version", "title", "summary", "sections"],
         }
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "longform_plan",
-                "strict": True,
-                "schema": schema,
-            },
-        }
+        return _json_schema_response(name="longform_plan", schema=schema)
 
     def _longform_section_response_format(self) -> dict[str, Any] | None:
         if not self.outline_structured_output or self.api_style == "anthropic_messages":
@@ -157,12 +153,90 @@ class LLMStructuredOutputMixin:
             },
             "required": ["section_id", "heading", "blocks", "citations", "revision"],
         }
+        return _json_schema_response(name="longform_section_draft", schema=schema)
+
+    def _structure_expansion_response_format(self) -> dict[str, Any] | None:
+        if not self.outline_structured_output or self.api_style == "anthropic_messages":
+            return None
+        if "minimax" in self.model.lower():
+            return {"type": "json_object"}
         return {
             "type": "json_schema",
             "json_schema": {
-                "name": "longform_section_draft",
+                "name": "structure_expansion",
                 "strict": True,
-                "schema": schema,
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "units": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "unit_id": {"type": "string"},
+                                    "title": {"type": "string"},
+                                    "summary": {"type": "string"},
+                                    "key_points": {"type": "array", "items": {"type": "string"}},
+                                    "source_refs": {"type": "array", "items": {"type": "string"}},
+                                    "anchor_ref": {"type": "string"},
+                                    "revision_target": {"type": "string"},
+                                },
+                                "required": ["unit_id", "title", "summary", "key_points", "source_refs", "anchor_ref", "revision_target"],
+                            },
+                        },
+                        "anchors": {"type": "array", "items": {"type": "string"}},
+                        "source_refs": {"type": "array", "items": {"type": "string"}},
+                        "revision_targets": {"type": "array", "items": {"type": "string"}},
+                        "warnings": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["units", "anchors", "source_refs", "revision_targets", "warnings"],
+                },
+            },
+        }
+
+    def _item_generation_response_format(self) -> dict[str, Any] | None:
+        if not self.outline_structured_output or self.api_style == "anthropic_messages":
+            return None
+        if "minimax" in self.model.lower():
+            return {"type": "json_object"}
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "item_generation",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "item_id": {"type": "string"},
+                                    "stem": {"type": "string"},
+                                    "choices": {"type": "array", "items": {"type": "string"}},
+                                    "expected_response": {"type": "string"},
+                                    "expected_response_hints": {"type": "array", "items": {"type": "string"}},
+                                    "explanation": {"type": "string"},
+                                    "source_refs": {"type": "array", "items": {"type": "string"}},
+                                    "difficulty": {"type": "string"},
+                                    "intent": {"type": "string"},
+                                },
+                                "required": ["item_id", "stem", "choices", "expected_response", "expected_response_hints", "explanation", "source_refs", "difficulty", "intent"],
+                            },
+                        },
+                        "source_refs": {"type": "array", "items": {"type": "string"}},
+                        "revision_targets": {"type": "array", "items": {"type": "string"}},
+                        "warnings": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["items", "source_refs", "revision_targets", "warnings"],
+                },
             },
         }
 
@@ -181,13 +255,7 @@ class LLMStructuredOutputMixin:
                 "bullets": {"type": "array", "items": {"type": "string"}},
                 "page_type": {
                     "type": "string",
-                    "enum": [
-                        SlidePageType.COVER.value,
-                        SlidePageType.TOC.value,
-                        SlidePageType.SECTION.value,
-                        SlidePageType.CONTENT.value,
-                        SlidePageType.SUMMARY.value,
-                    ],
+                    "enum": PAGE_TYPE_ENUM,
                 },
                 "layout_hint": {"type": ["string", "null"]},
                 "visual_kind": {
@@ -208,11 +276,4 @@ class LLMStructuredOutputMixin:
                 "citations",
             ],
         }
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "slide_spec",
-                "strict": True,
-                "schema": schema,
-            },
-        }
+        return _json_schema_response(name="slide_spec", schema=schema)

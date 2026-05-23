@@ -45,6 +45,54 @@ def build_compile_script(*, total: int, theme: dict[str, str]) -> str:
     )
 
 
+def build_toc_items(
+    *, node: OutlineNode, outline_nodes: list[OutlineNode] | None = None
+) -> list[dict[str, Any]]:
+    """Project sibling outline nodes into render-only TOC card details."""
+    if node.page_type != SlidePageType.TOC:
+        return []
+
+    def normalize(value: str) -> str:
+        return " ".join(str(value).strip().lower().split())
+
+    siblings = [
+        candidate
+        for candidate in (outline_nodes or [])
+        if candidate.page_type not in {SlidePageType.COVER, SlidePageType.TOC}
+    ]
+    items: list[dict[str, Any]] = []
+    for raw_title in node.bullets:
+        title = str(raw_title).strip()
+        if not title:
+            continue
+        normalized_title = normalize(title)
+        matched = next(
+            (
+                candidate
+                for candidate in siblings
+                if normalize(candidate.title) == normalized_title
+            ),
+            None,
+        )
+        if matched is None:
+            matched = next(
+                (
+                    candidate
+                    for candidate in siblings
+                    if normalize(candidate.title) in normalized_title
+                    or normalized_title in normalize(candidate.title)
+                ),
+                None,
+            )
+        details = [
+            str(item).strip()
+            for item in (matched.bullets if matched is not None else [])
+            if str(item).strip() and normalize(str(item)) != normalized_title
+        ][:2]
+        items.append({"title": title, "details": details})
+    return items
+
+
 def render_skill_slide_js(
     *,
     slide_no: int,
@@ -55,6 +103,7 @@ def render_skill_slide_js(
     chart_plan: ChartPlan,
     visual_kind: str | None = None,
     visual_assets: list[dict[str, Any]] | None = None,
+    outline_nodes: list[OutlineNode] | None = None,
 ) -> str:
     page_type = node.page_type
     title = json.dumps(generated.title, ensure_ascii=False)
@@ -65,6 +114,10 @@ def render_skill_slide_js(
         (visual_kind or "shape").strip().lower(), ensure_ascii=False
     )
     visual_assets_literal = json.dumps(visual_assets or [], ensure_ascii=False)
+    toc_items_literal = json.dumps(
+        build_toc_items(node=node, outline_nodes=outline_nodes),
+        ensure_ascii=False,
+    )
     chart_plan_literal = json.dumps(
         {
             "hasVerifiedData": chart_plan.has_verified_data,
@@ -100,6 +153,7 @@ def render_skill_slide_js(
             f"  title: {title},",
             f"  layoutHint: {layout_hint},",
             f"  bullets: {bullets_literal},",
+            f"  tocItems: {toc_items_literal},",
             f"  visualKind: {visual_kind_literal},",
             f"  assets: {visual_assets_literal},",
             f"  chartPlan: {chart_plan_literal},",

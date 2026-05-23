@@ -34,6 +34,7 @@ class SlideGenerationRenderAdapterMixin:
         chart_plan: ChartPlan,
         visual_kind: str | None = None,
         visual_assets: list[dict[str, Any]] | None = None,
+        outline_nodes: list[OutlineNode] | None = None,
     ) -> str:
         return render_skill_slide_js(
             slide_no=slide_no,
@@ -44,6 +45,7 @@ class SlideGenerationRenderAdapterMixin:
             chart_plan=chart_plan,
             visual_kind=visual_kind,
             visual_assets=visual_assets,
+            outline_nodes=outline_nodes,
         )
 
     def _slide_content_block(

@@ -54,6 +54,15 @@ class StructuredContentGenerationMixin:
                 error_details={"error_category": exc.category, "error_details": exc.details},
             )
             return
+        except Exception as exc:
+            await self.orch._fail_run(
+                run_id,
+                "DRAFTING",
+                "STRUCTURE_EXPANSION_FAILED",
+                retryable=True,
+                error_details={"reason": self.orch._exception_reason(exc)},
+            )
+            return
 
         def apply_result(record: Any) -> None:
             record.structure_expansion_result = result
@@ -114,6 +123,15 @@ class StructuredContentGenerationMixin:
                 "ITEM_GENERATION_INVALID",
                 retryable=True,
                 error_details={"error_category": exc.category, "error_details": exc.details},
+            )
+            return
+        except Exception as exc:
+            await self.orch._fail_run(
+                run_id,
+                "DRAFTING",
+                "ITEM_GENERATION_FAILED",
+                retryable=True,
+                error_details={"reason": self.orch._exception_reason(exc)},
             )
             return
 

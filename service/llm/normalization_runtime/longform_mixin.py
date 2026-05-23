@@ -128,8 +128,29 @@ class LLMLongFormNormalizationMixin:
                 details=[str(exc)],
                 raw_response=text,
             ) from exc
+        return self._parse_longform_section_payload_or_raise(
+            payload=payload,
+            section_id=section_id,
+            heading=heading,
+            key_points=key_points,
+            source_refs=source_refs,
+            raw_response=text,
+        )
+
+    def _parse_longform_section_payload_or_raise(
+        self,
+        *,
+        payload: dict[str, Any],
+        section_id: str,
+        heading: str,
+        key_points: list[str],
+        source_refs: list[str],
+        raw_response: str,
+    ) -> LongFormDraftSection:
         try:
-            section = LongFormDraftSection.model_validate(payload)
+            section = LongFormDraftSection.model_validate(
+                self._normalize_longform_section_payload(payload)
+            )
         except ValidationError as exc:
             details: list[str] = []
             for item in exc.errors():
@@ -141,7 +162,7 @@ class LLMLongFormNormalizationMixin:
             raise LongFormFormatError(
                 category="schema",
                 details=details[:10],
-                raw_response=text,
+                raw_response=raw_response,
             ) from exc
         normalized_blocks = list(section.blocks or [])
         if not normalized_blocks:
@@ -154,7 +175,7 @@ class LLMLongFormNormalizationMixin:
                 ContentBlock(kind="bullet_list", items=list(key_points or [heading])),
             ]
         return LongFormDraftSection(
-            section_id=str(section.section_id or section_id).strip() or section_id,
+            section_id=section_id,
             heading=str(section.heading or heading).strip() or heading,
             blocks=normalized_blocks,
             citations=[
@@ -165,3 +186,87 @@ class LLMLongFormNormalizationMixin:
             or list(source_refs),
             revision=max(1, int(section.revision or 1)),
         )
+
+    def _normalize_longform_section_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        blocks: list[dict[str, Any]] = []
+        for raw in self._list_payload_items(payload.get("blocks")):
+            if not isinstance(raw, dict):
+                text = self._text_value(raw)
+                if text:
+                    blocks.append({"kind": "paragraph", "text": text})
+                continue
+            kind = self._text_value(raw.get("kind")) or "paragraph"
+            if kind not in {"heading", "paragraph", "bullet_list", "quote"}:
+                kind = "bullet_list" if raw.get("items") else "paragraph"
+            if kind == "bullet_list":
+                items = [
+                    text
+                    for item in self._list_payload_items(raw.get("items"))
+                    if (text := self._text_value(item))
+                ]
+                if not items and (text := self._text_value(raw.get("text"))):
+                    items = [text]
+                if items:
+                    blocks.append({"kind": "bullet_list", "items": items})
+                continue
+            text = self._text_value(raw.get("text")) or self._text_value(raw.get("content"))
+            if not text and raw.get("items"):
+                text = "；".join(
+                    text
+                    for item in self._list_payload_items(raw.get("items"))
+                    if (text := self._text_value(item))
+                )
+            if text:
+                blocks.append({"kind": kind, "text": text})
+
+        normalized = dict(payload)
+        normalized["section_id"] = self._text_value(payload.get("section_id"))
+        normalized["heading"] = self._text_value(payload.get("heading")) or self._text_value(payload.get("title"))
+        normalized["blocks"] = blocks
+        normalized["citations"] = [
+            text
+            for item in self._list_payload_items(payload.get("citations"))
+            if (text := self._text_value(item))
+        ]
+        normalized["revision"] = self._positive_int(payload.get("revision"), default=1)
+        return normalized
+
+    def _list_payload_items(self, value: Any) -> list[Any]:
+        return value if isinstance(value, list) else []
+
+    def _text_value(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, dict):
+            for key in (
+                "text",
+                "content",
+                "title",
+                "label",
+                "name",
+                "value",
+                "summary",
+                "id",
+                "source_id",
+                "chunk_id",
+            ):
+                text = self._text_value(value.get(key))
+                if text:
+                    return text
+        return str(value).strip()
+
+    def _positive_int(self, value: Any, *, default: int) -> int:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, int):
+            return max(1, value)
+        if isinstance(value, float):
+            return max(1, int(value))
+        text = self._text_value(value)
+        if text.isdigit():
+            return max(1, int(text))
+        return default

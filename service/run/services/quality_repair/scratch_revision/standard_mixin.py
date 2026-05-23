@@ -66,6 +66,7 @@ class StandardScratchRevisionMixin:
                 generated=reviewed,
                 design=design,
                 chart_plan=chart_plan,
+                outline_nodes=list(run.outline.nodes) if run.outline is not None else [],
             )
             slide_path = Path(run.artifact_dir) / "slides" / f"slide-{slide.slide_no:02d}.js"
             slide_path.write_text(fixed_js, encoding="utf-8")

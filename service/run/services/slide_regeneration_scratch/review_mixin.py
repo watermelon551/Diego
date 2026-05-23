@@ -50,5 +50,6 @@ class SlideRegenerationReviewedScratchMixin:
                 ),
                 source_refs=slide.citations,
             ),
+            outline_nodes=list(run.outline.nodes) if run.outline is not None else [],
         )
         return reviewed, js_code
