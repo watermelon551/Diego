@@ -19,6 +19,10 @@ from service.models import (
 from service.run.engines import CompileEngine
 from service.run.engines.pptd_layout import PptdDeckWriter
 from service.run.engines.pptd_preview import PptdProjectPreviewRenderer
+from service.run.slide_scene.pptd_scene import (
+    apply_pptd_scene_operations,
+    build_pptd_slide_scene,
+)
 
 from tests.support.runtime_helpers import make_settings
 
@@ -503,3 +507,84 @@ def test_pptd_project_preview_renders_custom_paths_and_inline_text_styles(tmp_pa
     assert 'transform="translate(680 0)"' in svg
     assert 'font-size="72"' in svg
     assert 'fill="#FFFFFF18"' in svg
+
+
+def test_pptd_scene_reads_and_patches_text_nodes_without_legacy_js(tmp_path: Path) -> None:
+    pptd_path = tmp_path / "presentation.pptd"
+    pages_dir = tmp_path / "pages"
+    pages_dir.mkdir()
+    pptd_path.write_text(
+        "\n".join(
+            [
+                'title: "Editable"',
+                "size: [1280, 720]",
+                "pages:",
+                "  - pages/slide-01.page",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    page_path = pages_dir / "slide-01.page"
+    page_path.write_text(
+        "\n".join(
+            [
+                "pageType: cover",
+                "elements:",
+                "  - elementId: cover-title",
+                "    elementType: text",
+                "    bounds: [60, 160, 600, 160]",
+                "    content:",
+                "      lineHeight: 1.2",
+                "      text: |",
+                '        <p><span style="font-size:56px;"><strong>旧标题</strong></span></p>',
+                "  - elementId: accent-line",
+                "    elementType: shape",
+                "    bounds: [60, 330, 120, 0]",
+                "    shapeName: straightConnector1",
+                "  - elementId: symbol-pi",
+                "    elementType: text",
+                "    bounds: [980, 180, 120, 80]",
+                "    content:",
+                "      text: |",
+                '        <p><span style="font-size:72px; color:#FFFFFF18;">π</span></p>',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    scene = build_pptd_slide_scene(
+        pptd_path=pptd_path,
+        page_path=page_path,
+        run_id="r-pptd-edit",
+        slide_no=1,
+    )
+
+    assert scene.readonly is False
+    assert len(scene.nodes) == 1
+    assert scene.nodes[0].node_id == "text:pptd:cover-title"
+    assert scene.nodes[0].label == "Title"
+    assert scene.nodes[0].text == "旧标题"
+
+    next_scene = apply_pptd_scene_operations(
+        pptd_path=pptd_path,
+        page_path=page_path,
+        scene_version=scene.scene_version,
+        operations=[
+            {
+                "op": "replace_text",
+                "node_id": "text:pptd:cover-title",
+                "value": "新标题",
+            }
+        ],
+        run_id="r-pptd-edit",
+        slide_no=1,
+    )
+
+    updated_page = page_path.read_text(encoding="utf-8")
+    assert "旧标题" not in updated_page
+    assert "新标题" in updated_page
+    assert "font-size:56px" in updated_page
+    assert next_scene.nodes[0].text == "新标题"
+    assert next_scene.scene_version != scene.scene_version
