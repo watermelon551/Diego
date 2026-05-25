@@ -188,3 +188,68 @@ def test_pptd_outline_normalizer_does_not_force_second_concept_page_to_toc() -> 
     node = fitted.nodes[1]
     assert node.page_type == SlidePageType.CONTENT
     assert node.layout_hint == "content-icon-rows"
+
+
+def test_pptd_outline_normalizer_keeps_small_deck_second_page_as_content() -> None:
+    outline = OutlineDocument(
+        version=1,
+        summary="数据链路层课程",
+        nodes=[
+            OutlineNode(title="封面", page_type=SlidePageType.COVER),
+            OutlineNode(
+                title="差错检测：CRC校验",
+                bullets=[
+                    "原理：通过添加冗余信息检测传输错误",
+                    "核心工具：循环冗余校验（CRC）",
+                    "发送：数据D与校验码R拼接后发送",
+                    "接收：余数为0则认为无错",
+                ],
+                page_type=SlidePageType.TOC,
+                layout_hint="toc-list",
+            ),
+            OutlineNode(title="ARQ协议", bullets=["停等ARQ", "滑动窗口"], page_type=SlidePageType.CONTENT),
+            OutlineNode(title="总结", page_type=SlidePageType.SUMMARY),
+        ],
+    )
+
+    fitted = _OutlineNormalizer()._fit_outline(
+        outline,
+        topic="数据链路层",
+        target_slide_count=4,
+        template_style="education courseware",
+    )
+
+    node = fitted.nodes[1]
+    assert node.page_type == SlidePageType.CONTENT
+    assert node.layout_hint != "toc-list"
+
+
+def test_pptd_outline_normalizer_keeps_explicit_toc_for_larger_deck() -> None:
+    outline = OutlineDocument(
+        version=1,
+        summary="数据链路层课程",
+        nodes=[
+            OutlineNode(title="封面", page_type=SlidePageType.COVER),
+            OutlineNode(
+                title="学习路径",
+                bullets=["成帧", "差错检测", "ARQ", "滑动窗口"],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-showcase",
+            ),
+            OutlineNode(title="成帧", bullets=["界定帧边界"], page_type=SlidePageType.CONTENT),
+            OutlineNode(title="差错检测", bullets=["CRC"], page_type=SlidePageType.CONTENT),
+            OutlineNode(title="ARQ", bullets=["ACK", "重传"], page_type=SlidePageType.CONTENT),
+            OutlineNode(title="总结", page_type=SlidePageType.SUMMARY),
+        ],
+    )
+
+    fitted = _OutlineNormalizer()._fit_outline(
+        outline,
+        topic="数据链路层",
+        target_slide_count=6,
+        template_style="education courseware",
+    )
+
+    node = fitted.nodes[1]
+    assert node.page_type == SlidePageType.TOC
+    assert node.layout_hint.startswith("toc-")

@@ -69,9 +69,47 @@ def has_strong_content_signal(node: OutlineNode) -> bool:
     text = " ".join([node.title, *node.bullets]).lower()
     return (
         _is_core_concept_page(text)
-        or any(keyword in text for keyword in ("gbn", "sr", "对比", "比较", "差异", "指标", "性能", "利用率", "吞吐"))
+        or any(
+            keyword in text
+            for keyword in (
+                "gbn",
+                "sr",
+                "crc",
+                "arq",
+                "ack",
+                "对比",
+                "比较",
+                "差异",
+                "指标",
+                "性能",
+                "利用率",
+                "吞吐",
+                "差错检测",
+                "校验",
+                "成帧",
+                "滑动窗口",
+            )
+        )
         or any(keyword in text for keyword in ("步骤", "流程", "过程", "机制", "sequence", "timeline"))
         or any("|" in bullet for bullet in node.bullets)
+        or _has_labeled_content_bullets(node)
+    )
+
+
+def has_toc_signal(node: OutlineNode) -> bool:
+    text = " ".join([node.title, *node.bullets]).lower()
+    return any(
+        keyword in text
+        for keyword in (
+            "目录",
+            "大纲",
+            "学习路径",
+            "课程结构",
+            "roadmap",
+            "agenda",
+            "contents",
+            "table of contents",
+        )
     )
 
 
@@ -92,6 +130,17 @@ def _is_core_concept_page(text: str) -> bool:
             "building block",
         )
     )
+
+
+def _has_labeled_content_bullets(node: OutlineNode) -> bool:
+    labeled_count = 0
+    for bullet in node.bullets:
+        text = _compact_text(bullet)
+        if not text:
+            continue
+        if re.match(r"^[^：:]{1,14}[：:]", text):
+            labeled_count += 1
+    return labeled_count >= 2
 
 
 def _label_key(text: str) -> str:

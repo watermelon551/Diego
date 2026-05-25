@@ -39,6 +39,7 @@ class LLMOutlinePlanningMixin:
             f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
             "Plan varied layouts and avoid repeating adjacent layouts. "
             "When target_slide_count is small, compress the complete narrative into those pages instead of producing generic summaries. "
+            "For decks with 4 or fewer pages, do not insert a table-of-contents page unless the user explicitly asks for one; use content pages for core knowledge instead. "
             "Output JSON only."
         )
         response_format = self._outline_response_format(
