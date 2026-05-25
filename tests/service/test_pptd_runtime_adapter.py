@@ -158,3 +158,46 @@ def test_pptd_runtime_adapter_can_write_output_outside_pptd_project(
     command = " ".join(calls[0])
     assert "/work/pptd/deck.pptd" in command
     assert "/work/output/presentation.pptx" in command
+
+
+def test_pptd_runtime_adapter_local_mode_runs_scripts_without_docker(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[list[str], Path | None]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append((list(args), kwargs.get("cwd")))
+        if "convert.sh" in " ".join(args):
+            (tmp_path / "project" / "deck.pptx").write_bytes(b"pptx")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="Created", stderr="")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="Checking deck.pptd\nSummary: 0 errors, 0 warnings",
+            stderr="",
+        )
+
+    pptd_path = _write_minimal_project(tmp_path / "project")
+    skill_dir = tmp_path / "pptx-skill"
+    (skill_dir / "scripts" / "runtime").mkdir(parents=True)
+    (skill_dir / "scripts" / "check.sh").parent.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "scripts" / "check.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    (skill_dir / "scripts" / "convert.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    (skill_dir / "scripts" / "runtime" / "tool.pptd").write_text("", encoding="utf-8")
+    adapter = PptdRuntimeAdapter(
+        skill_dir=skill_dir,
+        runner_image="",
+        runner_mode="local",
+        run_subprocess=fake_run,
+    )
+
+    check = adapter.check(pptd_path)
+    convert = adapter.convert(pptd_path, output_path=tmp_path / "project" / "deck.pptx")
+
+    assert check.ok is True
+    assert convert.ok is True
+    assert len(calls) == 2
+    assert calls[0][0][:2] == ["bash", "scripts/check.sh"]
+    assert calls[1][0][:2] == ["bash", "scripts/convert.sh"]
+    assert all(call[1] is not None for call in calls)
+    assert all("docker" not in call[0] for call in calls)

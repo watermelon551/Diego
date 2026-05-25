@@ -47,6 +47,7 @@ def test_load_settings_should_accept_pptd_compile_provider(
     monkeypatch.setenv("COMPILE_PROVIDER", "pptd")
     monkeypatch.setenv("PPTD_SKILL_DIR", "/opt/pptx-skill")
     monkeypatch.setenv("PPTD_RUNNER_IMAGE", "debian:bookworm-slim")
+    monkeypatch.setenv("PPTD_RUNNER_MODE", "local")
     monkeypatch.setenv("PPTD_RUNNER_PLATFORM", "linux/amd64")
     monkeypatch.setenv("PPTD_RUNNER_TIMEOUT_SEC", "45")
 
@@ -55,5 +56,6 @@ def test_load_settings_should_accept_pptd_compile_provider(
     assert settings.compile_provider == "pptd"
     assert settings.pptd_skill_dir == "/opt/pptx-skill"
     assert settings.pptd_runner_image == "debian:bookworm-slim"
+    assert settings.pptd_runner_mode == "local"
     assert settings.pptd_runner_platform == "linux/amd64"
     assert settings.pptd_runner_timeout_sec == 45

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from os.path import commonpath
 from pathlib import Path
@@ -30,18 +32,21 @@ class PptdRuntimeAdapter:
         run_subprocess: RunSubprocess = subprocess.run,
         platform: str = "linux/amd64",
         timeout_sec: float = 120.0,
+        runner_mode: str = "docker",
     ) -> None:
         self.skill_dir = Path(skill_dir)
         self.runner_image = runner_image
         self.run_subprocess = run_subprocess
         self.platform = platform
         self.timeout_sec = timeout_sec
+        self.runner_mode = runner_mode
 
     def check(self, pptd_path: Path) -> PptdRuntimeResult:
         pptd_path = Path(pptd_path)
         work_dir = self._work_root([pptd_path])
+        script_path = str(pptd_path) if self.runner_mode == "local" else self._work_path(pptd_path, work_dir)
         result = self._run(
-            ["bash", "scripts/check.sh", self._work_path(pptd_path, work_dir)],
+            ["bash", "scripts/check.sh", script_path],
             work_dir=work_dir,
         )
         if not result.ok:
@@ -60,13 +65,15 @@ class PptdRuntimeAdapter:
         pptd_path = Path(pptd_path)
         output_path = Path(output_path)
         work_dir = self._work_root([pptd_path, output_path])
+        script_pptd_path = str(pptd_path) if self.runner_mode == "local" else self._work_path(pptd_path, work_dir)
+        script_output_path = str(output_path) if self.runner_mode == "local" else self._work_path(output_path, work_dir)
         result = self._run(
             [
                 "bash",
                 "scripts/convert.sh",
-                self._work_path(pptd_path, work_dir),
+                script_pptd_path,
                 "-o",
-                self._work_path(output_path, work_dir),
+                script_output_path,
             ],
             work_dir=work_dir,
         )
@@ -100,6 +107,8 @@ class PptdRuntimeAdapter:
         )
 
     def _run(self, runtime_args: Sequence[str], *, work_dir: Path) -> PptdRuntimeResult:
+        if self.runner_mode == "local":
+            return self._run_local(runtime_args)
         command = self._docker_command(runtime_args, work_dir=work_dir)
         try:
             completed = self.run_subprocess(
@@ -111,6 +120,46 @@ class PptdRuntimeAdapter:
                 timeout=self.timeout_sec,
                 check=False,
             )
+        except FileNotFoundError as exc:
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_runner_unavailable",
+                return_code=None,
+                stderr=str(exc),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_runner_timeout",
+                return_code=None,
+                stdout=str(exc.stdout or ""),
+                stderr=str(exc.stderr or ""),
+            )
+        return PptdRuntimeResult(
+            ok=True,
+            reason="",
+            return_code=completed.returncode,
+            stdout=completed.stdout or "",
+            stderr=completed.stderr or "",
+        )
+
+    def _run_local(self, runtime_args: Sequence[str]) -> PptdRuntimeResult:
+        try:
+            with tempfile.TemporaryDirectory(prefix="pptd-runtime-") as temp_dir:
+                skill_copy = Path(temp_dir) / "pptx-skill"
+                shutil.copytree(self.skill_dir, skill_copy)
+                for runtime_file in (skill_copy / "scripts" / "runtime").glob("*pptd"):
+                    runtime_file.chmod(runtime_file.stat().st_mode | 0o111)
+                completed = self.run_subprocess(
+                    list(runtime_args),
+                    cwd=skill_copy,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self.timeout_sec,
+                    check=False,
+                )
         except FileNotFoundError as exc:
             return PptdRuntimeResult(
                 ok=False,

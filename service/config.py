@@ -52,6 +52,7 @@ class Settings:
     qa_finalize_timeout_sec: float = 300.0
     compile_provider: str = "none"
     pptd_skill_dir: str = ""
+    pptd_runner_mode: str = "docker"
     pptd_runner_image: str = "debian:bookworm-slim"
     pptd_runner_platform: str = "linux/amd64"
     pptd_runner_timeout_sec: float = 120.0
@@ -123,6 +124,9 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     pptd_runner_timeout_sec = _env_float("PPTD_RUNNER_TIMEOUT_SEC", 120.0)
     if pptd_runner_timeout_sec <= 0:
         raise ValueError("PPTD_RUNNER_TIMEOUT_SEC must be > 0")
+    pptd_runner_mode = os.getenv("PPTD_RUNNER_MODE", "docker").strip().lower()
+    if pptd_runner_mode not in {"docker", "local"}:
+        raise ValueError(f"invalid PPTD_RUNNER_MODE={pptd_runner_mode!r}")
     pagevra_compile_timeout_sec = _env_float("PAGEVRA_COMPILE_TIMEOUT_SEC", 180.0)
     if pagevra_compile_timeout_sec <= 0:
         raise ValueError("PAGEVRA_COMPILE_TIMEOUT_SEC must be > 0")
@@ -204,6 +208,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         qa_finalize_timeout_sec=qa_finalize_timeout_sec,
         compile_provider=compile_provider,
         pptd_skill_dir=os.getenv("PPTD_SKILL_DIR", "").strip(),
+        pptd_runner_mode=pptd_runner_mode,
         pptd_runner_image=os.getenv("PPTD_RUNNER_IMAGE", "debian:bookworm-slim").strip(),
         pptd_runner_platform=os.getenv("PPTD_RUNNER_PLATFORM", "linux/amd64").strip(),
         pptd_runner_timeout_sec=pptd_runner_timeout_sec,

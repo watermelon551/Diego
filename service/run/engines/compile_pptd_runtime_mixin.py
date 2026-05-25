@@ -37,6 +37,9 @@ class CompilePptdRuntimeMixin:
         )
         adapter = PptdRuntimeAdapter(
             skill_dir=Path(str(getattr(self.runtime.settings, "pptd_skill_dir", "") or "")),
+            runner_mode=str(
+                getattr(self.runtime.settings, "pptd_runner_mode", "") or "docker"
+            ),
             runner_image=str(
                 getattr(self.runtime.settings, "pptd_runner_image", "")
                 or "debian:bookworm-slim"
