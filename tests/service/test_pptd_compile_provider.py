@@ -544,10 +544,103 @@ def test_pptd_writer_uses_outline_semantics_to_choose_template_pages(tmp_path: P
 
     assert "section.page" in (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
     assert "content2.page" in (pptd_path.parent / "pages" / "slide-04.page").read_text(encoding="utf-8")
-    assert "content2.page" in (pptd_path.parent / "pages" / "slide-05.page").read_text(encoding="utf-8")
+    assert "content3.page" in (pptd_path.parent / "pages" / "slide-05.page").read_text(encoding="utf-8")
     assert "content3.page" in (pptd_path.parent / "pages" / "slide-06.page").read_text(encoding="utf-8")
     assert "content4.page" in (pptd_path.parent / "pages" / "slide-07.page").read_text(encoding="utf-8")
     assert "content5.page" in (pptd_path.parent / "pages" / "slide-08.page").read_text(encoding="utf-8")
+
+
+def test_pptd_writer_prefers_content_semantics_over_broad_layout_hints(tmp_path: Path) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-3" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-3.pptd").write_text(
+        "\n".join(['title: "Template"', "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old page title",
+            "  - elementId: template-kind",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        {kind}",
+            "  - elementId: left-title-label",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old left",
+            "  - elementId: right-title-label",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old right",
+            "",
+        ]
+    )
+    for page_name in (
+        "cover.page",
+        "toc.page",
+        "content1.page",
+        "content2.page",
+        "content3.page",
+        "content4.page",
+        "final.page",
+    ):
+        (pages_dir / page_name).write_text(page_template.format(kind=page_name), encoding="utf-8")
+
+    nodes = [
+        OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+        OutlineNode(title="目录", bullets=["流程", "指标"], page_type=SlidePageType.TOC),
+        OutlineNode(
+            title="流程解析：成帧与差错检测技术",
+            bullets=["成帧方法：", "字节计数法", "字节填充法", "差错检测技术：", "CRC", "校验和"],
+            layout_hint="content-comparison",
+        ),
+        OutlineNode(
+            title="关键指标与协议性能对比",
+            bullets=["评估指标：", "信道利用率", "吞吐量", "性能对比表：", "| 特性 | GBN | SR |"],
+            layout_hint="content-comparison",
+        ),
+        OutlineNode(
+            title="对比分析：GBN vs SR",
+            bullets=[
+                "GBN：",
+                "接收窗口为 1",
+                "重传所有未确认帧",
+                "SR：",
+                "缓存乱序帧",
+                "仅重传出错帧",
+            ],
+            layout_hint="content-comparison",
+        ),
+        OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+    ]
+    pptd_path = tmp_path / "artifacts" / "r-quality" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=nodes,
+        slide_count=len(nodes),
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        template_style="education courseware",
+    )
+
+    assert "content3.page" in (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
+    assert "content4.page" in (pptd_path.parent / "pages" / "slide-04.page").read_text(encoding="utf-8")
+    comparison_page = (pptd_path.parent / "pages" / "slide-05.page").read_text(encoding="utf-8")
+    assert "content2.page" in comparison_page
+    assert "<strong>GBN</strong>" in comparison_page
+    assert "<strong>SR</strong>" in comparison_page
 
 
 def test_pptd_project_preview_renders_custom_paths_and_inline_text_styles(tmp_path: Path) -> None:

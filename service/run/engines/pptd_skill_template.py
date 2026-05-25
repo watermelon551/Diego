@@ -220,30 +220,30 @@ class PptdSkillTemplateDeck:
         )
 
     def _render_two_panel(self, text: str, slide: PptdSlideContent) -> str:
-        items = self._display_items(slide, count=6)
-        left = items[:3]
-        right = items[3:6] if len(items) > 3 else items[:3]
-        left_head, left_desc = self._split_item(left[0])
-        right_head, right_desc = self._split_item(right[0])
+        left_title, left_desc, left_items, right_title, right_desc, right_items = self._two_panel_groups(slide)
         replacements = {
             "page-title": self._p(slide.title),
             "subject-tag-text": self._p("<strong>对比分析</strong>", escaped=False),
-            "left-title-label": self._p(f"<strong>{self._plain(left_head)}</strong>", escaped=False),
-            "right-title-label": self._p(f"<strong>{self._plain(right_head)}</strong>", escaped=False),
+            "left-title-label": self._p(f"<strong>{self._plain(left_title)}</strong>", escaped=False),
+            "right-title-label": self._p(f"<strong>{self._plain(right_title)}</strong>", escaped=False),
             "left-definition": self._p(left_desc),
             "right-definition": self._p(right_desc),
             "left-feat-label": self._p("关键特征"),
             "right-feat-label": self._p("关键特征"),
             "left-apply-label": self._p("适用判断"),
             "right-apply-label": self._p("适用判断"),
-            "left-apply-text": self._p(self._short_label(left[-1], max_len=34)),
-            "right-apply-text": self._p(self._short_label(right[-1], max_len=34)),
-            "left-example-text": self._p(f"例：{self._short_label(left[0], max_len=28)}"),
-            "right-example-text": self._p(f"例：{self._short_label(right[0], max_len=28)}"),
+            "left-apply-text": self._p(self._short_label(left_items[-1], max_len=34)),
+            "right-apply-text": self._p(self._short_label(right_items[-1], max_len=34)),
+            "left-example-text": self._p(f"例：{self._short_label(left_items[0], max_len=28)}"),
+            "right-example-text": self._p(f"例：{self._short_label(right_items[0], max_len=28)}"),
         }
         for idx in range(1, 4):
-            replacements[f"left-feat{idx}"] = self._p(self._short_label(left[min(idx - 1, len(left) - 1)], max_len=32))
-            replacements[f"right-feat{idx}"] = self._p(self._short_label(right[min(idx - 1, len(right) - 1)], max_len=32))
+            replacements[f"left-feat{idx}"] = self._p(
+                self._short_label(left_items[min(idx - 1, len(left_items) - 1)], max_len=32)
+            )
+            replacements[f"right-feat{idx}"] = self._p(
+                self._short_label(right_items[min(idx - 1, len(right_items) - 1)], max_len=32)
+            )
         return self._generic_fill_text_blocks(
             self._replace_many(text, replacements),
             slide=slide,
@@ -251,7 +251,7 @@ class PptdSkillTemplateDeck:
         )
 
     def _render_process_case(self, text: str, slide: PptdSlideContent) -> str:
-        items = self._display_items(slide, count=4)
+        items = self._process_items(slide)
         replacements = {
             "page-title": self._p(slide.title),
             "example-tag-text": self._p("<strong>流程推演</strong>", escaped=False),
@@ -272,11 +272,11 @@ class PptdSkillTemplateDeck:
         )
 
     def _render_data_cards(self, text: str, slide: PptdSlideContent) -> str:
-        items = self._display_items(slide, count=3)
+        items = self._metric_items(slide)
         replacements = {
             "page-title": self._p(slide.title),
             "data-tag-text": self._p("<strong>量化观察</strong>", escaped=False),
-            "chart-title": self._p("机制效果示意"),
+            "chart-title": self._p(self._data_chart_title(slide)),
         }
         for idx, item in enumerate(items[:3], start=1):
             number, unit, desc = self._metric_parts(item, fallback=str(idx))
@@ -466,7 +466,7 @@ class PptdSkillTemplateDeck:
     def _slide_content(self, *, index: int, total: int, nodes: list[Any]) -> PptdSlideContent:
         node = nodes[index] if index < len(nodes) else None
         title = str(getattr(node, "title", "") or f"Slide {index + 1}")
-        bullets = [str(item) for item in list(getattr(node, "bullets", []) or [])[:6]]
+        bullets = [str(item) for item in list(getattr(node, "bullets", []) or [])[:12]]
         page_type = str(
             getattr(getattr(node, "page_type", ""), "value", "")
             or getattr(node, "page_type", "")
@@ -484,24 +484,36 @@ class PptdSkillTemplateDeck:
 
     def _preferred_content_pages(self, *, slide: PptdSlideContent) -> list[str]:
         hint = slide.layout_hint.lower()
+        title_signal = slide.title.lower()
+        signal = " ".join([slide.title, *slide.bullets]).lower()
+        process_signal = any(
+            token in signal
+            for token in ("流程", "步骤", "机制", "过程", "滑动窗口", "确认", "重传", "timeline", "process", "flow")
+        )
+        data_signal = any(
+            token in title_signal
+            for token in ("指标", "性能", "量化", "利用率", "吞吐", "延迟", "数据分析", "chart", "data", "metric", "ratio")
+        ) or any(
+            self._is_table_row(str(item)) for item in slide.bullets
+        )
+        compare_signal = any(
+            token in signal
+            for token in (" vs ", "gbn", "sr", "对比", "比较", "差异", "优劣", "versus")
+        )
+        framework_signal = any(
+            token in signal
+            for token in ("框架", "结构", "关系", "协同", "概念", "framework", "concept", "map")
+        )
+        if data_signal or any(token in hint for token in ("data", "chart", "metric", "kpi", "table")):
+            return ["content4.page", "content-data.page", "data_highlight.page", "content_chart.page"]
+        if compare_signal:
+            return ["content2.page", "comparison.page", "two_column.page", "market_comparison.page"]
+        if framework_signal or any(token in hint for token in ("framework", "concept", "map", "grid")):
+            return ["content5.page", "framework.page", "content-concepts.page", "content_grid.page"]
+        if process_signal or any(token in hint for token in ("timeline", "process", "flow", "step")):
+            return ["content3.page", "process.page", "content-process.page", "process_timeline.page", "timeline.page"]
         if any(token in hint for token in ("two-column", "two_col", "showcase", "comparison", "compare")):
             return ["content2.page", "comparison.page", "two_column.page", "market_comparison.page"]
-        if any(token in hint for token in ("timeline", "process", "flow", "step")):
-            return ["content3.page", "process.page", "content-process.page", "process_timeline.page", "timeline.page"]
-        if any(token in hint for token in ("data", "chart", "metric", "kpi")):
-            return ["content4.page", "content-data.page", "data_highlight.page", "content_chart.page"]
-        if any(token in hint for token in ("framework", "concept", "map", "grid")):
-            return ["content5.page", "framework.page", "content-concepts.page", "content_grid.page"]
-
-        signal = " ".join([slide.title, *slide.bullets]).lower()
-        if any(token in signal for token in (" vs ", "gbn", "sr", "对比", "比较", "差异", "优劣", "versus")):
-            return ["content2.page", "comparison.page", "two_column.page", "market_comparison.page"]
-        if any(token in signal for token in ("框架", "结构", "关系", "协同", "概念", "framework", "concept", "map")):
-            return ["content5.page", "framework.page", "content-concepts.page", "content_grid.page"]
-        if any(token in signal for token in ("流程", "步骤", "机制", "过程", "滑动窗口", "确认", "重传", "timeline", "process", "flow")):
-            return ["content3.page", "process.page", "content-process.page", "process_timeline.page", "timeline.page"]
-        if any(token in signal for token in ("数据", "指标", "效率", "利用率", "%", "chart", "data", "metric", "ratio")):
-            return ["content4.page", "content-data.page", "data_highlight.page", "content_chart.page"]
         return ["content1.page", "content_bullets.page", "content-bullets.page", "bullets.page"]
 
     def _display_items(self, slide: PptdSlideContent, *, count: int) -> list[str]:
@@ -530,7 +542,7 @@ class PptdSkillTemplateDeck:
 
     def _metric_parts(self, item: str, *, fallback: str) -> tuple[str, str, str]:
         plain = self._plain(item)
-        match = re.search(r"([0-9]+(?:\\.[0-9]+)?)(\\s*%|倍|帧|bit|ms|s)?", plain)
+        match = re.search(r"([0-9]+(?:\.[0-9]+)?)(\s*%|倍|帧|bit|ms|s)?", plain)
         if match:
             number = match.group(1)
             unit = (match.group(2) or "").strip() or "指标"
@@ -538,6 +550,90 @@ class PptdSkillTemplateDeck:
             return number, unit, self._short_label(desc, max_len=34)
         head, desc = self._split_item(plain)
         return fallback.zfill(2), head, self._short_label(desc, max_len=34)
+
+    def _two_panel_groups(
+        self, slide: PptdSlideContent
+    ) -> tuple[str, str, list[str], str, str, list[str]]:
+        groups = self._content_groups(slide.bullets)
+        if len(groups) >= 2:
+            left_name, left_items = groups[0]
+            right_name, right_items = groups[1]
+            return (
+                self._short_label(left_name, max_len=12),
+                self._short_label(left_items[0] if left_items else left_name, max_len=42),
+                self._pad_items(left_items, count=3),
+                self._short_label(right_name, max_len=12),
+                self._short_label(right_items[0] if right_items else right_name, max_len=42),
+                self._pad_items(right_items, count=3),
+            )
+        items = self._display_items(slide, count=6)
+        left = self._pad_items(items[:3], count=3)
+        right = self._pad_items(items[3:6] if len(items) > 3 else items[:3], count=3)
+        left_head, left_desc = self._split_item(left[0])
+        right_head, right_desc = self._split_item(right[0])
+        return left_head, left_desc, left, right_head, right_desc, right
+
+    def _process_items(self, slide: PptdSlideContent) -> list[str]:
+        groups = self._content_groups(slide.bullets)
+        if groups:
+            candidates: list[str] = []
+            for name, items in groups:
+                candidates.append(f"{name}：{items[0]}" if items else name)
+            return self._pad_items(candidates, count=4)
+        return self._display_items(slide, count=4)
+
+    def _metric_items(self, slide: PptdSlideContent) -> list[str]:
+        groups = self._content_groups(slide.bullets)
+        if groups:
+            flattened = [f"{name}：{items[0]}" if items else name for name, items in groups]
+            return self._pad_items(flattened, count=3)
+        return self._display_items(slide, count=3)
+
+    def _data_chart_title(self, slide: PptdSlideContent) -> str:
+        if any("|" in item for item in slide.bullets):
+            return "结构化对照表"
+        if "指标" in slide.title or "性能" in slide.title:
+            return "关键指标速览"
+        return "机制效果示意"
+
+    def _content_groups(self, bullets: list[str]) -> list[tuple[str, list[str]]]:
+        groups: list[tuple[str, list[str]]] = []
+        current_name = ""
+        current_items: list[str] = []
+        for raw in bullets:
+            item = self._clean_bullet(raw)
+            if not item or self._is_table_row(item):
+                continue
+            if self._is_heading(item):
+                if current_name or current_items:
+                    groups.append((current_name or "要点", current_items))
+                current_name = item.rstrip("：:")
+                current_items = []
+                continue
+            current_items.append(item)
+        if current_name or current_items:
+            groups.append((current_name or "要点", current_items))
+        return [(name, items) for name, items in groups if name or items]
+
+    def _clean_bullet(self, value: str) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"^\s*[-•]\s*", "", text)
+        text = re.sub(r"^\s*\d+[.)、]\s*", "", text)
+        return text.strip()
+
+    def _is_heading(self, value: str) -> bool:
+        text = value.strip()
+        return len(text) <= 22 and text.endswith(("：", ":"))
+
+    def _is_table_row(self, value: str) -> bool:
+        text = value.strip()
+        return text.startswith("|") and text.endswith("|")
+
+    def _pad_items(self, items: list[str], *, count: int) -> list[str]:
+        cleaned = [str(item).strip() for item in items if str(item).strip()]
+        if not cleaned:
+            cleaned = ["建立概念、识别条件、迁移应用。"]
+        return [*cleaned[:count], *([cleaned[-1]] * max(0, count - len(cleaned)))]
 
     def _short_label(self, value: str, *, max_len: int) -> str:
         plain = self._plain(value)
