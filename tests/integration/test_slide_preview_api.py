@@ -313,6 +313,75 @@ def test_slide_scene_endpoint_returns_nodes_and_save_updates_preview(
     )
 
 
+def test_slide_scene_save_updates_pptd_page_before_recompile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_pptd_subprocess(args, cwd=None, **kwargs):
+        command = " ".join(args) if isinstance(args, (list, tuple)) else str(args)
+        if "convert.sh" in command and isinstance(args, (list, tuple)):
+            output = Path(args[args.index("-o") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"fake-pptx")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="converted", stderr="")
+        return fake_subprocess_run(args, cwd=cwd, **kwargs)
+
+    skill_dir = tmp_path / "pptx-skill"
+    (skill_dir / "scripts" / "runtime").mkdir(parents=True)
+    (skill_dir / "scripts" / "check.sh").write_text("", encoding="utf-8")
+    (skill_dir / "scripts" / "convert.sh").write_text("", encoding="utf-8")
+    (skill_dir / "scripts" / "runtime" / "tool.pptd").write_text("", encoding="utf-8")
+    monkeypatch.setattr(orchestrator_mod.subprocess, "run", fake_pptd_subprocess)
+    monkeypatch.setattr(
+        "service.run.slide_preview.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    client = make_client(
+        tmp_path,
+        compile_provider="pptd",
+        pptd_skill_dir=str(skill_dir),
+        pptd_runner_mode="local",
+        pagevra_preview_enabled=True,
+        pagevra_base_url="http://pagevra.test",
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "PPTD Scene Save",
+            "project_id": "p-pptd-scene-save",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    wait_status(client, run_id, {"SUCCEEDED"})
+
+    scene = client.get(f"/v1/ppt/runs/{run_id}/slides/1/scene").json()
+    save_resp = client.post(
+        f"/v1/ppt/runs/{run_id}/slides/1/scene/save",
+        json={
+            "scene_version": scene["scene_version"],
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "node_id": "text:config:title",
+                    "value": "PPTD Saved Title",
+                }
+            ],
+        },
+    )
+
+    assert save_resp.status_code == 200
+    run_detail = client.get(f"/v1/ppt/runs/{run_id}").json()
+    pptd_path = Path(run_detail["compile_js_path"])
+    page_text = (pptd_path.parent / "pages" / "slide-01.page").read_text(encoding="utf-8")
+    assert "PPTD Saved Title" in page_text
+    assert run_detail["compile_provider"] == "pptd"
+
+
 def test_slide_scene_save_returns_conflict_for_stale_scene_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

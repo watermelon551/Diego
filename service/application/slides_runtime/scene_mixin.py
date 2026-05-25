@@ -74,19 +74,6 @@ class SlideSceneApplicationMixin:
                 next_scene.scene.readonly_reason or "slide is read-only"
             )
         slide_js_path.write_text(next_js_code, encoding="utf-8")
-        design = self.orch._resolve_run_design(run)
-        compile_start = time.perf_counter()
-        try:
-            preview = await self.render_slide_preview_or_fallback(
-                run_id=run_id,
-                slide_no=slide_no,
-                slide_js_path=slide_js_path,
-                theme=design.theme,
-            )
-            compile_result = await self._recompile_run_after_scene_save(run=run)
-        except Exception:
-            slide_js_path.write_text(js_code, encoding="utf-8")
-            raise
         updated_artifact = SlideArtifact(
             slide_no=slide.slide_no,
             js_path=str(slide_js_path),
@@ -104,6 +91,48 @@ class SlideSceneApplicationMixin:
             if current_outline_node is not None
             else None
         )
+        staged_for_compile = False
+        original_slide = slide.model_copy(deep=True)
+        original_outline_node = (
+            current_outline_node.model_copy(deep=True)
+            if current_outline_node is not None
+            else None
+        )
+        if self._scene_save_recompile_reads_run_record(run):
+            await self.orch.store.update_run(
+                run_id,
+                lambda r: self._apply_scene_save_to_run(
+                    r,
+                    slide_no=slide_no,
+                    updated_artifact=updated_artifact,
+                    updated_outline_node=updated_outline_node,
+                ),
+            )
+            staged_for_compile = True
+
+        design = self.orch._resolve_run_design(run)
+        compile_start = time.perf_counter()
+        try:
+            preview = await self.render_slide_preview_or_fallback(
+                run_id=run_id,
+                slide_no=slide_no,
+                slide_js_path=slide_js_path,
+                theme=design.theme,
+            )
+            compile_result = await self._recompile_run_after_scene_save(run=run)
+        except Exception:
+            slide_js_path.write_text(js_code, encoding="utf-8")
+            if staged_for_compile:
+                await self.orch.store.update_run(
+                    run_id,
+                    lambda r: self._rollback_scene_save_for_compile(
+                        r,
+                        slide_no=slide_no,
+                        original_slide=original_slide,
+                        original_outline_node=original_outline_node,
+                    ),
+                )
+            raise
 
         def apply_save(r: RunRecord) -> None:
             r.status = RunStatus.SUCCEEDED
@@ -215,3 +244,51 @@ class SlideSceneApplicationMixin:
             status=status,
             preview=preview,
         )
+
+    def _scene_save_recompile_reads_run_record(self, run: RunRecord) -> bool:
+        if run.input.generation_mode == GenerationMode.TEMPLATE:
+            return False
+        providers = {
+            str(getattr(self.orch.settings, "compile_provider", "") or "").lower(),
+            str(getattr(run, "compile_provider", "") or "").lower(),
+            str(getattr(run, "compile_requested_provider", "") or "").lower(),
+        }
+        return "pptd" in providers
+
+    def _apply_scene_save_to_run(
+        self,
+        run: RunRecord,
+        *,
+        slide_no: int,
+        updated_artifact: SlideArtifact,
+        updated_outline_node: Any,
+    ) -> None:
+        if (
+            updated_outline_node is not None
+            and run.outline is not None
+            and slide_no <= len(run.outline.nodes)
+        ):
+            run.outline.nodes[slide_no - 1] = updated_outline_node
+        for index, existing in enumerate(run.slides):
+            if int(getattr(existing, "slide_no", 0) or 0) == slide_no:
+                run.slides[index] = updated_artifact
+                break
+
+    def _rollback_scene_save_for_compile(
+        self,
+        run: RunRecord,
+        *,
+        slide_no: int,
+        original_slide: SlideArtifact,
+        original_outline_node: Any,
+    ) -> None:
+        if (
+            original_outline_node is not None
+            and run.outline is not None
+            and slide_no <= len(run.outline.nodes)
+        ):
+            run.outline.nodes[slide_no - 1] = original_outline_node
+        for index, existing in enumerate(run.slides):
+            if int(getattr(existing, "slide_no", 0) or 0) == slide_no:
+                run.slides[index] = original_slide
+                break
