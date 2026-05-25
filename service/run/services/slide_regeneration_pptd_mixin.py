@@ -8,8 +8,10 @@ import yaml
 
 from service.pptd_runtime import PptdRuntimeAdapter
 
+from ...llm import GeneratedSlide
 from ...models import EventType, OutlineNode, RunRecord, RunStatus, SlideArtifact
 from ...run.engines.pptd_layout import PptdDeckWriter
+from ..slide_regeneration_reporting import build_regeneration_rule_violations
 
 
 class SlideRegenerationPptdMixin:
@@ -33,8 +35,20 @@ class SlideRegenerationPptdMixin:
         try:
             next_nodes = list(run.outline.nodes)
             current_node = next_nodes[slide_no - 1]
-            next_nodes[slide_no - 1] = self._regenerated_pptd_outline_node(
+            current_slide = next(
+                (
+                    slide
+                    for slide in list(getattr(run, "slides", []) or [])
+                    if int(getattr(slide, "slide_no", 0) or 0) == slide_no
+                ),
+                None,
+            )
+            next_nodes[slide_no - 1] = await self._regenerated_pptd_outline_node(
+                run_id=run_id,
+                run=run,
+                slide_no=slide_no,
                 node=current_node,
+                citations=list(getattr(current_slide, "citations", []) or []),
                 instruction=instruction,
                 preserve_style=preserve_style,
             )
@@ -151,30 +165,57 @@ class SlideRegenerationPptdMixin:
             template_id=str(getattr(run.input, "template_id", "") or "") or None,
         )
 
-    def _regenerated_pptd_outline_node(
-        self, *, node: OutlineNode, instruction: str, preserve_style: bool
+    async def _regenerated_pptd_outline_node(
+        self,
+        *,
+        run_id: str,
+        run: RunRecord,
+        slide_no: int,
+        node: OutlineNode,
+        citations: list[str],
+        instruction: str,
+        preserve_style: bool,
     ) -> OutlineNode:
         clean_instruction = " ".join(str(instruction or "").split())
-        bullets = [item for item in list(node.bullets or []) if str(item).strip()]
-        if clean_instruction:
-            marker = f"重做要求：{clean_instruction}"
-            bullets = [marker, *[item for item in bullets if item != marker]]
-        return OutlineNode(
-            title=self._regenerated_title(node.title, clean_instruction),
-            bullets=bullets[:6],
+        candidate = GeneratedSlide(
+            title=node.title,
+            bullets=[item for item in list(node.bullets or []) if str(item).strip()],
+            citations=list(citations),
             page_type=node.page_type,
-            layout_hint=node.layout_hint if preserve_style else None,
+            layout_hint=node.layout_hint,
         )
-
-    def _regenerated_title(self, title: str, instruction: str) -> str:
-        current = str(title or "").strip()
-        if not instruction or "标题" not in instruction:
-            return current
-        if any(token in instruction for token in ("精简", "简短", "缩短")):
-            for separator in ("：", ":", "，", ",", "（", "("):
-                current = current.split(separator, 1)[0].strip()
-            return current[:18] or str(title or "").strip()
-        return current
+        reviewed = await self.orch._call_llm_with_timeout_retry(
+            run_id=run_id,
+            phase=f"slide.{slide_no}.pptd.regenerate.review",
+            action=lambda: self.orch.llm_client.review_slide(
+                topic=run.input.topic,
+                template_style=str(getattr(run.input, "template_style", "") or ""),
+                slide_no=slide_no,
+                target_slide_count=run.input.target_slide_count,
+                outline_node=node,
+                candidate=candidate,
+                rule_violations=build_regeneration_rule_violations(
+                    instruction=clean_instruction,
+                    preserve_style=preserve_style,
+                ),
+            ),
+        )
+        bullets = [
+            str(item).strip()
+            for item in list(getattr(reviewed, "bullets", []) or [])
+            if str(item).strip()
+        ]
+        if not bullets:
+            bullets = candidate.bullets
+        return OutlineNode(
+            title=str(getattr(reviewed, "title", "") or node.title).strip(),
+            bullets=bullets[:6],
+            page_type=getattr(reviewed, "page_type", None) or node.page_type,
+            layout_hint=(
+                getattr(reviewed, "layout_hint", None)
+                or (node.layout_hint if preserve_style else None)
+            ),
+        )
 
     def _recompile_pptd_project(self, *, pptd_path: Path, run: RunRecord) -> Path:
         pptx_path = (

@@ -52,6 +52,22 @@ class _FakeScenePreviewClient:
         return _FakeScenePreviewResponse(content=b"fake-pptx-from-pagevra")
 
 
+class _PptdRegenerateReviewLLM(MockLLMClient):
+    def __init__(self) -> None:
+        self.review_rule_violations: list[list[str]] = []
+
+    async def review_slide(self, **kwargs):
+        self.review_rule_violations.append(list(kwargs["rule_violations"]))
+        outline_node = kwargs["outline_node"]
+        return GeneratedSlide(
+            title="PPTD Reviewed Title",
+            bullets=["Reviewed mechanism point", "Reviewed classroom cue"],
+            citations=list(kwargs["candidate"].citations),
+            page_type=outline_node.page_type,
+            layout_hint=outline_node.layout_hint,
+        )
+
+
 def test_slide_preview_endpoint_returns_html_when_slide_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -273,8 +289,10 @@ def test_regenerate_slide_updates_pptd_project_without_legacy_slide_js(
         "service.run.slide_preview.httpx.AsyncClient",
         lambda *args, **kwargs: _FakeScenePreviewClient(),
     )
+    llm = _PptdRegenerateReviewLLM()
     client = make_client(
         tmp_path,
+        llm_client=llm,
         compile_provider="pptd",
         pptd_skill_dir=str(skill_dir),
         pptd_runner_mode="local",
@@ -331,7 +349,11 @@ def test_regenerate_slide_updates_pptd_project_without_legacy_slide_js(
     assert after["render_version"] == before["render_version"] + 1
     assert pptd_path.is_file()
     assert page_path.is_file()
-    assert "重做要求：精简标题" in page_path.read_text(encoding="utf-8")
+    page_text = page_path.read_text(encoding="utf-8")
+    assert "PPTD Reviewed Title" in page_text
+    assert "Reviewed mechanism point" in page_text
+    assert "重做要求：" not in page_text
+    assert any("精简标题" in item for item in llm.review_rule_violations[0])
     assert after["compile_provider"] == "pptd"
     assert after["compile_bundle"]["entrypoint"] == "slides/compile_pptd_bundle.js"
     assert any(
