@@ -25,9 +25,7 @@ class SlideRegenerationScratchRuntimeMixin:
             for item in run.slides
             if int(getattr(item, "slide_no", 0) or 0) == slide_no
         )
-        slide_path = Path(str(getattr(slide, "js_path", "") or "").strip())
-        if not str(slide_path) or not slide_path.exists() or not slide_path.is_file():
-            raise FileNotFoundError("slide js artifact missing")
+        slide_path = self._require_slide_js_artifact(slide)
         rule_violations = build_regeneration_rule_violations(
             instruction=instruction,
             preserve_style=preserve_style,
@@ -91,3 +89,16 @@ class SlideRegenerationScratchRuntimeMixin:
             preview=preview,
             design=design,
         )
+
+    def _require_slide_js_artifact(self, slide: SlideArtifact) -> Path:
+        slide_path = Path(str(getattr(slide, "js_path", "") or "").strip())
+        if not str(slide_path):
+            raise FileNotFoundError("slide js artifact missing")
+        if not slide_path.exists():
+            inline_js = str(getattr(slide, "js_code", "") or "")
+            if inline_js.strip():
+                slide_path.parent.mkdir(parents=True, exist_ok=True)
+                slide_path.write_text(inline_js, encoding="utf-8")
+        if not slide_path.exists() or not slide_path.is_file():
+            raise FileNotFoundError("slide js artifact missing")
+        return slide_path

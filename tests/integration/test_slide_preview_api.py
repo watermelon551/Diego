@@ -245,6 +245,92 @@ def test_regenerate_slide_endpoint_publishes_final_preview_event(
     assert after["render_version"] == before["render_version"] + 1
 
 
+def test_regenerate_slide_rehydrates_missing_slide_js_before_pptd_recompile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_pptd_subprocess(args, cwd=None, **kwargs):
+        command = " ".join(args) if isinstance(args, (list, tuple)) else str(args)
+        if "convert.sh" in command and isinstance(args, (list, tuple)):
+            output = Path(args[args.index("-o") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"fake-pptx")
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="converted",
+                stderr="",
+            )
+        return fake_subprocess_run(args, cwd=cwd, **kwargs)
+
+    skill_dir = tmp_path / "pptx-skill"
+    (skill_dir / "scripts" / "runtime").mkdir(parents=True)
+    (skill_dir / "scripts" / "check.sh").write_text("", encoding="utf-8")
+    (skill_dir / "scripts" / "convert.sh").write_text("", encoding="utf-8")
+    (skill_dir / "scripts" / "runtime" / "tool.pptd").write_text("", encoding="utf-8")
+    monkeypatch.setattr(orchestrator_mod.subprocess, "run", fake_pptd_subprocess)
+    monkeypatch.setattr(
+        "service.run.slide_preview.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    client = make_client(
+        tmp_path,
+        compile_provider="pptd",
+        pptd_skill_dir=str(skill_dir),
+        pptd_runner_mode="local",
+        pagevra_preview_enabled=True,
+        pagevra_base_url="http://pagevra.test",
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "PPTD Regenerate Rehydrate",
+            "project_id": "p-pptd-regenerate-rehydrate",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    wait_status(client, run_id, {"SUCCEEDED"})
+
+    before = client.get(f"/v1/ppt/runs/{run_id}").json()
+    slide_one = next(item for item in before["slides"] if item["slide_no"] == 1)
+    slide_js_path = Path(slide_one["js_path"])
+    assert slide_one["js_code"]
+    slide_js_path.unlink()
+
+    resp = client.post(
+        f"/v1/ppt/runs/{run_id}/slides/1/regenerate",
+        json={
+            "instruction": "精简标题",
+            "preserve_style": True,
+            "expected_render_version": before["render_version"],
+        },
+    )
+    assert resp.status_code == 200
+
+    deadline = time.time() + 5
+    after = before
+    while time.time() < deadline:
+        after = client.get(f"/v1/ppt/runs/{run_id}").json()
+        if after["render_version"] > before["render_version"]:
+            break
+        assert not any(
+            event["event"] == "slide.failed"
+            and event["payload"].get("phase") == "slide.regenerate"
+            for event in after["events"][len(before["events"]) :]
+        )
+        time.sleep(0.05)
+
+    assert after["render_version"] == before["render_version"] + 1
+    assert slide_js_path.exists()
+    assert after["compile_provider"] == "pptd"
+    assert after["compile_bundle"]["entrypoint"] == "slides/compile_pptd_bundle.js"
+
+
 def test_regenerate_slide_endpoint_rejects_stale_render_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
