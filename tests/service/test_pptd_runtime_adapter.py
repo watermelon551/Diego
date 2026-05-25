@@ -111,10 +111,12 @@ def test_pptd_runtime_adapter_classifies_check_failure(tmp_path: Path) -> None:
     assert result.ok is False
     assert result.reason == "pptd_check_failed"
     assert result.return_code == 1
+    assert result.error_count == 1
+    assert result.warning_count == 0
     assert "TextOverflowWarning" in result.stderr
 
 
-def test_pptd_runtime_adapter_allows_official_template_warnings_without_errors(
+def test_pptd_runtime_adapter_rejects_warnings_without_errors(
     tmp_path: Path,
 ) -> None:
     def fake_run(args, **_kwargs):
@@ -138,9 +140,37 @@ def test_pptd_runtime_adapter_allows_official_template_warnings_without_errors(
 
     result = adapter.check(pptd_path)
 
-    assert result.ok is True
+    assert result.ok is False
     assert result.reason == "pptd_check_warnings"
     assert result.return_code == 1
+    assert result.error_count == 0
+    assert result.warning_count == 2
+
+
+def test_pptd_runtime_adapter_rejects_zero_return_code_with_warning_summary(
+    tmp_path: Path,
+) -> None:
+    def fake_run(args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="Checking deck.pptd\nSummary: 0 errors, 1 warning",
+            stderr="",
+        )
+
+    pptd_path = _write_minimal_project(tmp_path / "project")
+    adapter = PptdRuntimeAdapter(
+        skill_dir=tmp_path / "pptx-skill",
+        runner_image="debian:bookworm-slim",
+        run_subprocess=fake_run,
+    )
+
+    result = adapter.check(pptd_path)
+
+    assert result.ok is False
+    assert result.reason == "pptd_check_warnings"
+    assert result.return_code == 0
+    assert result.warning_count == 1
 
 
 def test_pptd_runtime_adapter_classifies_runner_unavailable(tmp_path: Path) -> None:

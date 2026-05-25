@@ -68,6 +68,7 @@ class ScratchCompileMixin:
                     ),
                     "fallback_used": bool(compile_result.get("fallback_used")),
                     "fallback_from": compile_result.get("fallback_from"),
+                    "details": compile_result.get("error_details") or {},
                 },
             )
             return

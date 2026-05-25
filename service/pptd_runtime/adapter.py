@@ -7,6 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from os.path import commonpath
 from pathlib import Path
+import re
 from typing import Callable, Sequence
 
 
@@ -21,6 +22,8 @@ class PptdRuntimeResult:
     stdout: str = ""
     stderr: str = ""
     output_path: Path | None = None
+    error_count: int | None = None
+    warning_count: int | None = None
 
 
 class PptdRuntimeAdapter:
@@ -51,23 +54,36 @@ class PptdRuntimeAdapter:
         )
         if not result.ok:
             return result
+        summary = self._check_summary(result.stdout, result.stderr)
+        if summary["warning_count"] and summary["warning_count"] > 0:
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_check_warnings",
+                return_code=result.return_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                error_count=summary["error_count"],
+                warning_count=summary["warning_count"],
+            )
         if result.return_code != 0:
-            if self._check_output_reports_zero_errors(result.stdout, result.stderr):
-                return PptdRuntimeResult(
-                    ok=True,
-                    reason="pptd_check_warnings",
-                    return_code=result.return_code,
-                    stdout=result.stdout,
-                    stderr=result.stderr,
-                )
             return PptdRuntimeResult(
                 ok=False,
                 reason="pptd_check_failed",
                 return_code=result.return_code,
                 stdout=result.stdout,
                 stderr=result.stderr,
+                error_count=summary["error_count"],
+                warning_count=summary["warning_count"],
             )
-        return result
+        return PptdRuntimeResult(
+            ok=True,
+            reason="",
+            return_code=result.return_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            error_count=summary["error_count"],
+            warning_count=summary["warning_count"],
+        )
 
     def convert(self, pptd_path: Path, *, output_path: Path) -> PptdRuntimeResult:
         pptd_path = Path(pptd_path)
@@ -156,6 +172,26 @@ class PptdRuntimeAdapter:
         return "summary:" in output and (
             "0 errors" in output or "0 error(s)" in output
         )
+
+    def _check_summary(self, stdout: str, stderr: str) -> dict[str, int | None]:
+        output = f"{stdout}\n{stderr}"
+        summary_line = ""
+        for line in reversed(output.splitlines()):
+            if "summary:" in line.lower():
+                summary_line = line
+                break
+        if not summary_line:
+            return {"error_count": None, "warning_count": None}
+        error_match = re.search(r"(\d+)\s+error(?:\(s\)|s)?", summary_line, re.IGNORECASE)
+        warning_match = re.search(
+            r"(\d+)\s+warning(?:\(s\)|s)?",
+            summary_line,
+            re.IGNORECASE,
+        )
+        return {
+            "error_count": int(error_match.group(1)) if error_match else None,
+            "warning_count": int(warning_match.group(1)) if warning_match else None,
+        }
 
     def _run_local(self, runtime_args: Sequence[str]) -> PptdRuntimeResult:
         try:

@@ -63,7 +63,12 @@ class CompilePptdRuntimeMixin:
                 slides_dir=slides_dir,
                 reason=check.reason or "pptd_check_failed",
                 return_code=check.return_code,
-                details={"stdout": check.stdout, "stderr": check.stderr},
+                details={
+                    "stdout": check.stdout,
+                    "stderr": check.stderr,
+                    "error_count": check.error_count,
+                    "warning_count": check.warning_count,
+                },
             )
         convert = adapter.convert(pptd_path, output_path=pptx_path)
         if not convert.ok:

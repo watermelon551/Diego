@@ -325,6 +325,69 @@ def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -
     assert "convert.sh" in " ".join(calls[1])
 
 
+def test_compile_provider_pptd_fails_on_check_warnings_before_convert(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout="Checking presentation.pptd\nTextOverflowWarning\nSummary: 0 errors, 1 warning",
+            stderr="",
+        )
+
+    run = RunRecord(
+        run_id="r-pptd-warn",
+        trace_id="t-pptd-warn",
+        status=RunStatus.COMPILING,
+        input=CreateRunRequest(
+            topic="Data Link Layer",
+            project_id="p-pptd-warn",
+            target_slide_count=1,
+            generation_mode=GenerationMode.SCRATCH,
+        ),
+        artifact_dir=str(tmp_path / "artifacts" / "r-pptd-warn"),
+        outline=OutlineDocument(
+            version=1,
+            summary="network courseware",
+            nodes=[OutlineNode(title="Data Link Layer", bullets=["Framing"])],
+        ),
+        slides=[SlideArtifact(slide_no=1, js_code="", status="ready")],
+    )
+    runtime = SimpleNamespace(
+        settings=make_settings(
+            compile_provider="pptd",
+            pptd_skill_dir=str(tmp_path / "pptx-skill"),
+            pptd_runner_image="debian:bookworm-slim",
+            pptd_runner_timeout_sec=30.0,
+        ),
+        store=_Store(run),
+        subprocess=SimpleNamespace(run=fake_run),
+    )
+    engine = CompileEngine(runtime)
+
+    result = asyncio.run(
+        engine.compile_scratch_run(
+            run_id=run.run_id,
+            slides_dir=tmp_path / "artifacts" / "r-pptd-warn" / "slides",
+            slide_count=1,
+            theme={"primary": "#2563eb"},
+        )
+    )
+
+    assert result.ok is False
+    assert result.reason == "pptd_check_warnings"
+    assert result.error_details == {
+        "stdout": "Checking presentation.pptd\nTextOverflowWarning\nSummary: 0 errors, 1 warning",
+        "stderr": "",
+        "error_count": 0,
+        "warning_count": 1,
+    }
+    assert len(calls) == 1
+    assert "check.sh" in " ".join(calls[0])
+
+
 def test_compile_provider_pptd_normalizes_theme_colors_for_runtime_check(
     tmp_path: Path,
 ) -> None:
