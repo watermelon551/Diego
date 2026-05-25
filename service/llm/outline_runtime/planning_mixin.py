@@ -4,6 +4,10 @@ import json
 
 from ...models import OutlineDocument
 from ..types import TokenCallback
+from ..pptd_skill_guidance import (
+    PPTD_OUTLINE_QUALITY_GUIDANCE,
+    PPTD_SKILL_WORKFLOW_GUIDANCE,
+)
 
 
 class LLMOutlinePlanningMixin:
@@ -24,6 +28,7 @@ class LLMOutlinePlanningMixin:
             "Each node: title, bullets(list[str]), page_type(one of cover,toc,section,content,summary), layout_hint. "
             f"nodes length must equal {target_slide_count}. "
             "Layout hints must use skill-approved values only."
+            f"\n\n{PPTD_SKILL_WORKFLOW_GUIDANCE}\n\n{PPTD_OUTLINE_QUALITY_GUIDANCE}"
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -32,7 +37,9 @@ class LLMOutlinePlanningMixin:
             f"target_slide_count={target_slide_count}\n"
             f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
             f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
-            "Plan varied layouts and avoid repeating adjacent layouts. Output JSON only."
+            "Plan varied layouts and avoid repeating adjacent layouts. "
+            "When target_slide_count is small, compress the complete narrative into those pages instead of producing generic summaries. "
+            "Output JSON only."
         )
         response_format = self._outline_response_format(
             target_slide_count=target_slide_count
@@ -72,6 +79,7 @@ class LLMOutlinePlanningMixin:
             "You repair malformed PPT outline JSON. "
             "Return JSON only with keys: version, summary, nodes. "
             "Each node must have: title, bullets(list[str]), page_type(one of cover,toc,section,content,summary), layout_hint."
+            f"\n\n{PPTD_OUTLINE_QUALITY_GUIDANCE}"
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -118,6 +126,7 @@ class LLMOutlinePlanningMixin:
             "Ensure page types are well-distributed and avoid repetitive layouts. "
             "Return JSON only with the same schema. "
             "Layout hints must be valid skill layout names."
+            f"\n\n{PPTD_OUTLINE_QUALITY_GUIDANCE}"
         )
         user_prompt = (
             f"topic={topic}\n"

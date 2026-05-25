@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..pptd_skill_guidance import (
+    PPTD_SKILL_WORKFLOW_GUIDANCE,
+    PPTD_VISUAL_QUALITY_GUIDANCE,
+)
+
 
 class LLMOutlineRequirementsMixin:
     async def generate_research_brief(
@@ -20,6 +25,7 @@ class LLMOutlineRequirementsMixin:
             "Return JSON only with keys: audience, purpose, tone, narrative_arc, page_focus(list[str]), "
             "design_notes(list[str]), style_intent, effective_template_style. "
             "When rag_context_snippets is non-empty, ground page_focus and design_notes in that evidence."
+            f"\n\n{PPTD_SKILL_WORKFLOW_GUIDANCE}"
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -39,7 +45,16 @@ class LLMOutlineRequirementsMixin:
         )
         payload = await self._extract_json_object_with_repair(
             text=text,
-            expected_keys=["score", "issues", "repair_directives"],
+            expected_keys=[
+                "audience",
+                "purpose",
+                "tone",
+                "narrative_arc",
+                "page_focus",
+                "design_notes",
+                "style_intent",
+                "effective_template_style",
+            ],
             temperature=self.outline_temperature,
         )
         page_focus = payload.get("page_focus", [])
@@ -77,6 +92,7 @@ class LLMOutlineRequirementsMixin:
         system_prompt = (
             "You are a presentation design director. Return JSON only with keys: "
             "palette_name, style_recipe, title_font, body_font, visual_strategy, density, rationale."
+            f"\n\n{PPTD_VISUAL_QUALITY_GUIDANCE}"
         )
         user_prompt = (
             f"topic={topic}\n"
@@ -94,7 +110,15 @@ class LLMOutlineRequirementsMixin:
         )
         payload = await self._extract_json_object_with_repair(
             text=text,
-            expected_keys=["score", "issues", "repair_directives"],
+            expected_keys=[
+                "palette_name",
+                "style_recipe",
+                "title_font",
+                "body_font",
+                "visual_strategy",
+                "density",
+                "rationale",
+            ],
             temperature=self.outline_temperature,
         )
         return {

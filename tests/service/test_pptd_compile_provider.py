@@ -99,7 +99,15 @@ def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -
     assert result.requested_provider == "pptd"
     assert result.pptx_path == slides_dir / "output" / "presentation.pptx"
     assert (slides_dir / "pptd" / "presentation.pptd").is_file()
+    assert (slides_dir / "pptd" / "design.md").is_file()
+    assert (slides_dir / "pptd" / "outline.md").is_file()
     assert (slides_dir / "pptd" / "pages" / "slide-01.page").is_file()
+    assert "PPTD-first deck" in (slides_dir / "pptd" / "design.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## Page 2" in (slides_dir / "pptd" / "outline.md").read_text(
+        encoding="utf-8"
+    )
     cover_text = (slides_dir / "pptd" / "pages" / "slide-01.page").read_text(
         encoding="utf-8"
     )
@@ -225,6 +233,8 @@ def test_compile_provider_pptd_builds_pagevra_bundle_without_legacy_scene_entryp
     assert "slides/compile.js" not in paths
     assert "slides/compile_pptd_bundle.js" in paths
     assert "slides/pptd/presentation.pptd" in paths
+    assert "slides/pptd/design.md" in paths
+    assert "slides/pptd/outline.md" in paths
     assert "slides/pptd/pages/slide-01.page" in paths
     assert "slides/input/presentation.pptx" in paths
     preview_seed = next(
@@ -323,6 +333,8 @@ def test_pptd_writer_prefers_external_skill_template_when_available(tmp_path: Pa
     assert 'title: "Template Based"' in deck_text
     assert 'primary: "#123456"' in deck_text
     assert "pages/slide-01.page" in deck_text
+    assert (pptd_path.parent / "design.md").is_file()
+    assert (pptd_path.parent / "outline.md").is_file()
     assert "Old title" not in cover_text
     assert "Vendor footer" not in cover_text
     assert "Template Based" in cover_text

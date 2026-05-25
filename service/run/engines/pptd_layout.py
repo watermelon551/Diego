@@ -20,6 +20,13 @@ class PptdDeckWriter:
         theme: dict[str, Any],
         skill_dir: Path | None = None,
     ) -> None:
+        self._write_planning_docs(
+            pptd_dir=pptd_path.parent,
+            title=title,
+            nodes=nodes,
+            slide_count=slide_count,
+            theme=theme,
+        )
         if skill_dir and PptdSkillTemplateDeck().write_project(
             pptd_path=pptd_path,
             title=title,
@@ -128,6 +135,98 @@ class PptdDeckWriter:
         title = str(getattr(node, "title", "") or f"Slide {index + 1}")
         bullets = [str(item) for item in list(getattr(node, "bullets", []) or [])[:6]]
         return PptdSlideContent(index=index, total=total, title=title, bullets=bullets)
+
+    def _write_planning_docs(
+        self,
+        *,
+        pptd_dir: Path,
+        title: str,
+        nodes: list[Any],
+        slide_count: int,
+        theme: dict[str, Any],
+    ) -> None:
+        pptd_dir.mkdir(parents=True, exist_ok=True)
+        total = max(1, slide_count, len(nodes))
+        (pptd_dir / "design.md").write_text(
+            self._design_doc(title=title, theme=theme),
+            encoding="utf-8",
+        )
+        (pptd_dir / "outline.md").write_text(
+            self._outline_doc(title=title, nodes=nodes, slide_count=total),
+            encoding="utf-8",
+        )
+
+    def _design_doc(self, *, title: str, theme: dict[str, Any]) -> str:
+        primary = self._color(theme.get("primary") or theme.get("accent"), "#2563eb")
+        background = self._color(theme.get("background"), "#ffffff")
+        text = self._color(theme.get("text"), "#111827")
+        accent = self._color(theme.get("accent"), "#16a34a")
+        return "\n".join(
+            [
+                f"# Design Plan: {title}",
+                "",
+                "## Visual Mode",
+                "Creative mode unless an explicit reference/template is attached.",
+                "",
+                "## Style Direction",
+                "- PPTD-first deck generated from a durable outline before page authoring.",
+                "- Calm professional layout with strong title/body hierarchy and grid-aligned content.",
+                "- Use diagrams, timelines, comparisons, or summary blocks before decorative filler.",
+                "",
+                "## Theme",
+                "```yaml",
+                "theme:",
+                "  colors:",
+                f'    primary: "{primary}"',
+                f'    accent: "{accent}"',
+                f'    background: "{background}"',
+                f'    text: "{text}"',
+                "  textStyles:",
+                "    title:",
+                "      fontSize: 42",
+                '      fontFamily: "Liter, MiSans"',
+                "    body:",
+                "      fontSize: 21",
+                '      fontFamily: "Liter, MiSans"',
+                "      lineHeight: 1.35",
+                "```",
+                "",
+                "## Quality Guardrails",
+                "- Keep body text readable and avoid overflow-prone dense paragraphs.",
+                "- Preserve consistent margins, slide numbers, and common page elements.",
+                "- Avoid default decorative gradients and empty placeholder graphics.",
+                "",
+            ]
+        )
+
+    def _outline_doc(self, *, title: str, nodes: list[Any], slide_count: int) -> str:
+        lines = ["# Presentation Outline", "", f"## Deck", f"- **Title**: {title}", ""]
+        for index in range(slide_count):
+            node = nodes[index] if index < len(nodes) else None
+            slide_title = str(getattr(node, "title", "") or f"Slide {index + 1}")
+            page_type = str(
+                getattr(getattr(node, "page_type", ""), "value", "")
+                or getattr(node, "page_type", "")
+                or "content"
+            )
+            bullets = [
+                str(item)
+                for item in list(getattr(node, "bullets", []) or [])
+                if str(item).strip()
+            ]
+            lines.extend(
+                [
+                    f"## Page {index + 1} [{page_type}]",
+                    f"- **Title**: {slide_title}",
+                    "- **Content**:",
+                ]
+            )
+            if bullets:
+                lines.extend(f"  - {item}" for item in bullets)
+            else:
+                lines.append("  - ")
+            lines.append("")
+        return "\n".join(lines)
 
     def _yaml_plain(self, value: str) -> str:
         return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'

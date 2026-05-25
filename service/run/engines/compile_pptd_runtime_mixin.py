@@ -165,6 +165,10 @@ class CompilePptdRuntimeMixin:
             self._bundle_file_entry(preview_seed_path, slides_dir=slides_dir),
             self._bundle_file_entry(pptd_path, slides_dir=slides_dir),
         ]
+        for planning_doc in ("design.md", "outline.md"):
+            doc_path = slides_dir / "pptd" / planning_doc
+            if doc_path.is_file():
+                files.append(self._bundle_file_entry(doc_path, slides_dir=slides_dir))
         for page_path in sorted((slides_dir / "pptd" / "pages").glob("*.page")):
             files.append(self._bundle_file_entry(page_path, slides_dir=slides_dir))
         assets = [self._bundle_file_entry(input_pptx_path, slides_dir=slides_dir)]
