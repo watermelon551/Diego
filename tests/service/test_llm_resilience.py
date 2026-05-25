@@ -39,6 +39,24 @@ def test_outline_critique_format_error_should_repair_and_continue(tmp_path: Path
     assert any(item["payload"].get("phase") == "critique" and item["event"] == "outline.repair.failed" for item in events)
     assert any(item["payload"].get("phase") == "critique" and item["event"] == "outline.repair.completed" for item in events)
 
+def test_outline_critique_can_be_disabled_for_fast_pptd_path(tmp_path: Path) -> None:
+    llm = CountingCritiqueLLM()
+    client = make_client(tmp_path, llm_client=llm, outline_critique_enabled=False)
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Fast PPTD Outline",
+            "project_id": "p-fast-pptd",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    assert detail["outline"] is not None
+    assert llm.critique_calls == 0
+
 def test_outline_timeout_retry_then_success(tmp_path: Path) -> None:
     client = make_client(tmp_path, llm_client=TimeoutThenSuccessOutlineLLM(fail_times=2))
     run_id = client.post(

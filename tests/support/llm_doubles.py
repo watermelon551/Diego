@@ -235,6 +235,15 @@ class CritiqueMalformedThenRepairLLM(MockLLMClient):
         )
 
 
+class CountingCritiqueLLM(MockLLMClient):
+    def __init__(self) -> None:
+        self.critique_calls = 0
+
+    async def critique_outline(self, **kwargs):
+        self.critique_calls += 1
+        return await super().critique_outline(**kwargs)
+
+
 class TimeoutThenSuccessOutlineLLM(MockLLMClient):
     def __init__(self, *, fail_times: int = 1) -> None:
         self.fail_times = fail_times

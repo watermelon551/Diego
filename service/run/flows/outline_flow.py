@@ -40,13 +40,14 @@ class OutlineFlowService(
             )
             if outline is None:
                 return
-            outline = await self._critique_outline(
-                run_id=run_id,
-                run=run,
-                outline=outline,
-                rag_context_snippets=rag_context_snippets,
-                effective_template_style=effective_template_style,
-            )
+            if orch.settings.outline_critique_enabled:
+                outline = await self._critique_outline(
+                    run_id=run_id,
+                    run=run,
+                    outline=outline,
+                    rag_context_snippets=rag_context_snippets,
+                    effective_template_style=effective_template_style,
+                )
             await self._finalize_outline(
                 run_id=run_id,
                 run=run,
