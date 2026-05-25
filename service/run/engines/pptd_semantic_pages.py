@@ -148,7 +148,7 @@ class PptdSemanticPageRenderer:
             _TextSpec(
                 "concept-takeaway-text",
                 [92, 564, 1100, 40],
-                f"课堂判断：{self._join_brief(items[1:5], max_len=48)}",
+                self._classroom_judgment(items[1:4]),
                 18,
                 "$text",
                 "[center, middle]",
@@ -533,10 +533,26 @@ class PptdSemanticPageRenderer:
         ][:2]
 
     def _classroom_judgment(self, items: list[str]) -> str:
-        text = self._join_brief(items, max_len=40).strip()
+        labels = self._concept_labels(items, max_len=34)
+        text = labels or self._join_brief(items, max_len=34).strip()
         if text.startswith(("课堂判断：", "课堂判断:")):
             return text
         return f"课堂判断：{text}"
+
+    def _concept_labels(self, items: list[str], *, max_len: int) -> str:
+        labels: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            head, _desc = self._split_item(item)
+            label = self._clean_phrase(head)
+            if not label or label in seen:
+                continue
+            candidate = label if not labels else "、".join([*labels, label])
+            if len(candidate) > max_len:
+                break
+            labels.append(label)
+            seen.add(label)
+        return "、".join(labels)
 
     def _mentions_both_protocols(self, value: str) -> bool:
         text = self._plain_text(value).lower()
@@ -638,10 +654,13 @@ class PptdSemanticPageRenderer:
                 )
             else:
                 desc_budget = max(4, part_budget - len(head) - 1)
-                short_desc = self._clean_phrase(
-                    self._compact_label(desc, max_len=desc_budget)
-                )
-                part = f"{head}：{short_desc}" if short_desc else head
+                if len(desc) > desc_budget and not re.search(r"[，,、；;]", desc):
+                    part = head
+                else:
+                    short_desc = self._clean_phrase(
+                        self._compact_label(desc, max_len=desc_budget)
+                    )
+                    part = f"{head}：{short_desc}" if short_desc else head
             candidate = part if not brief_parts else "；".join([*brief_parts, part])
             if len(candidate) > max_len and brief_parts:
                 break
@@ -655,7 +674,7 @@ class PptdSemanticPageRenderer:
 
     def _node_label(self, value: str) -> str:
         head, _desc = self._split_item(value)
-        return self._short_label(head, max_len=6)
+        return self._short_label(head, max_len=8)
 
     def _teaching_step_desc(self, head: str, desc: str) -> str:
         clean_head = self._plain_text(head)
@@ -695,8 +714,8 @@ class PptdSemanticPageRenderer:
                 if sep in plain:
                     head = plain.split(sep, 1)[0].strip()
                     if head:
-                        return head[:max_len].strip()
-            return plain[:max_len].strip()
+                        return self._safe_truncate(head, max_len=max_len)
+            return self._safe_truncate(plain, max_len=max_len)
 
         clauses = [
             clause.strip()
@@ -716,8 +735,18 @@ class PptdSemanticPageRenderer:
                 fitted = self._fit_parts(comma_parts, max_len=max_len)
                 if fitted:
                     return fitted
-                return comma_parts[0][:max_len].strip()
-        return plain[:max_len].strip()
+                return self._safe_truncate(comma_parts[0], max_len=max_len)
+        return self._safe_truncate(plain, max_len=max_len)
+
+    def _safe_truncate(self, value: str, *, max_len: int) -> str:
+        text = str(value or "").strip()
+        if len(text) <= max_len:
+            return text
+        text = text[:max_len].strip()
+        for open_mark, close_mark in (("（", "）"), ("(", ")"), ("《", "》")):
+            if text.count(open_mark) > text.count(close_mark):
+                text = text.rsplit(open_mark, 1)[0].strip()
+        return text.strip(" ：:，,、；;。.!！?？")
 
     def _fit_delimited_parts(self, value: str, *, max_len: int) -> str:
         parts = [part.strip() for part in value.split("、") if part.strip()]

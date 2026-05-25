@@ -1601,6 +1601,132 @@ def test_pptd_semantic_renderer_does_not_split_ascii_acronyms_in_short_labels() 
     assert not label.endswith("、C")
 
 
+def test_pptd_concept_takeaway_uses_short_complete_judgment(tmp_path: Path) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-3" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-3.pptd").write_text(
+        "\n".join(['title: "Template"', "size: [1280, 720]", "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old placeholder",
+            "",
+        ]
+    )
+    for page_name in ("cover.page", "toc.page", "content1.page", "final.page"):
+        (pages_dir / page_name).write_text(page_template, encoding="utf-8")
+
+    pptd_path = tmp_path / "artifacts" / "r-complete-takeaway" / "slides" / "pptd" / "presentation.pptd"
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=[
+            OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+            OutlineNode(title="目录", bullets=["成帧"], page_type=SlidePageType.TOC),
+            OutlineNode(
+                title="成帧与差错检测技术",
+                bullets=[
+                    "成帧：将比特流划分为帧，关键问题是标识帧的开始与结束。",
+                    "常用方法：字节计数法、字节填充法、比特填充法",
+                    "差错检测：通过增加冗余信息（校验码）来检测传输错误。",
+                    "典型检错码：循环冗余校验 (CRC)",
+                ],
+            ),
+            OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+        ],
+        slide_count=4,
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        template_style="education courseware",
+    )
+
+    concept_page = (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
+    summary_block = re.search(
+        r"elementId: concept-takeaway-text.*?(?=\n  - elementId:|\Z)",
+        concept_page,
+        flags=re.S,
+    )
+
+    assert summary_block is not None
+    text = summary_block.group(0)
+    body_match = re.search(r"<p><strong>(.*?)</strong></p>", text)
+    assert body_match is not None
+    body = body_match.group(1)
+    assert "课堂判断：" in text
+    assert "（校验" not in text
+    assert "通过增加冗余信" not in body
+    assert len(body) <= 42
+
+
+def test_pptd_concept_takeaway_prefers_labels_over_partial_summaries(tmp_path: Path) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-3" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-3.pptd").write_text(
+        "\n".join(['title: "Template"', "size: [1280, 720]", "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old placeholder",
+            "",
+        ]
+    )
+    for page_name in ("cover.page", "toc.page", "content1.page", "final.page"):
+        (pages_dir / page_name).write_text(page_template, encoding="utf-8")
+
+    pptd_path = tmp_path / "artifacts" / "r-arq-takeaway" / "slides" / "pptd" / "presentation.pptd"
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=[
+            OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+            OutlineNode(title="目录", bullets=["ARQ"], page_type=SlidePageType.TOC),
+            OutlineNode(
+                title="ARQ：自动重传请求机制",
+                bullets=[
+                    "ARQ：接收方反馈确认(ACK/NAK)，发送方据此重传",
+                    "停等ARQ：发送一帧，等待确认后再发下一帧",
+                    "回退N帧ARQ：发送方可连续发送",
+                    "选择重传ARQ：只重传出错的单个帧，效率更高",
+                ],
+            ),
+            OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+        ],
+        slide_count=4,
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        template_style="education courseware",
+    )
+
+    concept_page = (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
+    summary_block = re.search(
+        r"elementId: concept-takeaway-text.*?(?=\n  - elementId:|\Z)",
+        concept_page,
+        flags=re.S,
+    )
+
+    assert "<p><strong>回退N帧ARQ</strong></p>" in concept_page
+    assert "<p><strong>选择重传ARQ</strong></p>" in concept_page
+    assert summary_block is not None
+    assert "课堂判断：停等ARQ、回退N帧ARQ、选择重传ARQ" in summary_block.group(0)
+    assert "发送方可" not in summary_block.group(0)
+
+
 def test_pptd_project_preview_renders_custom_paths_and_inline_text_styles(tmp_path: Path) -> None:
     pptd_path = tmp_path / "presentation.pptd"
     pages_dir = tmp_path / "pages"
