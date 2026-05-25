@@ -50,6 +50,8 @@ def test_load_settings_should_accept_pptd_compile_provider(
     monkeypatch.setenv("PPTD_RUNNER_MODE", "local")
     monkeypatch.setenv("PPTD_RUNNER_PLATFORM", "linux/amd64")
     monkeypatch.setenv("PPTD_RUNNER_TIMEOUT_SEC", "45")
+    monkeypatch.setenv("PPTD_SCREENSHOT_ENABLED", "true")
+    monkeypatch.setenv("PPTD_SCREENSHOT_DPI", "180")
 
     settings = load_settings()
 
@@ -59,3 +61,5 @@ def test_load_settings_should_accept_pptd_compile_provider(
     assert settings.pptd_runner_mode == "local"
     assert settings.pptd_runner_platform == "linux/amd64"
     assert settings.pptd_runner_timeout_sec == 45
+    assert settings.pptd_screenshot_enabled is True
+    assert settings.pptd_screenshot_dpi == 180

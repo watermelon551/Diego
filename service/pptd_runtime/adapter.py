@@ -22,6 +22,7 @@ class PptdRuntimeResult:
     stdout: str = ""
     stderr: str = ""
     output_path: Path | None = None
+    output_dir: Path | None = None
     error_count: int | None = None
     warning_count: int | None = None
 
@@ -128,6 +129,70 @@ class PptdRuntimeAdapter:
             stdout=result.stdout,
             stderr=result.stderr,
             output_path=output_path,
+        )
+
+    def screenshot(
+        self,
+        pptx_path: Path,
+        *,
+        output_dir: Path,
+        pages: str = "all",
+        dpi: int = 150,
+    ) -> PptdRuntimeResult:
+        pptx_path = Path(pptx_path)
+        output_dir = Path(output_dir)
+        work_dir = self._work_root([pptx_path, output_dir])
+        script_pptx_path = (
+            str(pptx_path)
+            if self.runner_mode == "local"
+            else self._work_path(pptx_path, work_dir)
+        )
+        script_output_dir = (
+            str(output_dir)
+            if self.runner_mode == "local"
+            else self._work_path(output_dir, work_dir)
+        )
+        result = self._run(
+            [
+                "bash",
+                "scripts/screenshot.sh",
+                script_pptx_path,
+                "--pages",
+                pages,
+                "--output",
+                script_output_dir,
+                "--dpi",
+                str(dpi),
+            ],
+            work_dir=work_dir,
+        )
+        if not result.ok:
+            return result
+        if result.return_code != 0:
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_screenshot_failed",
+                return_code=result.return_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                output_dir=output_dir,
+            )
+        if not any(output_dir.glob("*.png")):
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_screenshot_output_missing",
+                return_code=result.return_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                output_dir=output_dir,
+            )
+        return PptdRuntimeResult(
+            ok=True,
+            reason="",
+            return_code=result.return_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            output_dir=output_dir,
         )
 
     def _run(self, runtime_args: Sequence[str], *, work_dir: Path) -> PptdRuntimeResult:

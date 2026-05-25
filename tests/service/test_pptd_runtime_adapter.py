@@ -219,6 +219,66 @@ def test_pptd_runtime_adapter_can_write_output_outside_pptd_project(
     assert "/work/output/presentation.pptx" in command
 
 
+def test_pptd_runtime_adapter_renders_screenshots_from_pptx(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    pptx_path = tmp_path / "slides" / "output" / "presentation.pptx"
+    pptx_path.parent.mkdir(parents=True)
+    pptx_path.write_bytes(b"pptx")
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        output_dir = tmp_path / "slides" / "output" / "screenshots"
+        output_dir.mkdir(parents=True)
+        (output_dir / "slide-001.png").write_bytes(b"png")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="Rendered", stderr="")
+
+    adapter = PptdRuntimeAdapter(
+        skill_dir=tmp_path / "pptx-skill",
+        runner_image="debian:bookworm-slim",
+        run_subprocess=fake_run,
+    )
+
+    result = adapter.screenshot(
+        pptx_path,
+        output_dir=tmp_path / "slides" / "output" / "screenshots",
+        pages="all",
+        dpi=150,
+    )
+
+    assert result.ok is True
+    assert result.output_dir == tmp_path / "slides" / "output" / "screenshots"
+    command = " ".join(calls[0])
+    assert "screenshot.sh" in command
+    assert "/work/presentation.pptx" in command
+    assert "--pages all" in command
+    assert "--dpi 150" in command
+
+
+def test_pptd_runtime_adapter_classifies_missing_screenshot_output(
+    tmp_path: Path,
+) -> None:
+    pptx_path = tmp_path / "slides" / "output" / "presentation.pptx"
+    pptx_path.parent.mkdir(parents=True)
+    pptx_path.write_bytes(b"pptx")
+
+    def fake_run(args, **_kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="Rendered", stderr="")
+
+    adapter = PptdRuntimeAdapter(
+        skill_dir=tmp_path / "pptx-skill",
+        runner_image="debian:bookworm-slim",
+        run_subprocess=fake_run,
+    )
+
+    result = adapter.screenshot(
+        pptx_path,
+        output_dir=tmp_path / "slides" / "output" / "screenshots",
+    )
+
+    assert result.ok is False
+    assert result.reason == "pptd_screenshot_output_missing"
+
+
 def test_pptd_runtime_adapter_local_mode_runs_scripts_without_docker(
     tmp_path: Path,
 ) -> None:

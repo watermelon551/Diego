@@ -15,6 +15,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -eux; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update -o Acquire::Retries=8; \
+    apt-get install -y --fix-missing --no-install-recommends \
+      -o Acquire::Retries=8 \
+      ca-certificates \
+      libreoffice-core \
+      libreoffice-impress \
+      poppler-utils \
+      fonts-noto-cjk \
+      fonts-wqy-zenhei; \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /node-runtime/node_modules ./node_modules
 

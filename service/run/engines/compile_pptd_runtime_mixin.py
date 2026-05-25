@@ -105,12 +105,18 @@ class CompilePptdRuntimeMixin:
                 return_code=convert.return_code,
                 details={"stdout": convert.stdout, "stderr": convert.stderr},
             )
+        screenshot_details = self._render_pptd_screenshots(
+            slides_dir=slides_dir,
+            pptx_path=pptx_path,
+            adapter=adapter,
+        )
         self._write_pptd_compile_provenance(
             slides_dir=slides_dir,
             pptd_path=pptd_path,
             pptx_path=pptx_path,
             check=check,
             repair_details=repair_details,
+            screenshot_details=screenshot_details,
         )
         return ScratchCompileResult(
             ok=True,
@@ -226,6 +232,8 @@ class CompilePptdRuntimeMixin:
         for page_path in sorted((slides_dir / "pptd" / "pages").glob("*.page")):
             files.append(self._bundle_file_entry(page_path, slides_dir=slides_dir))
         assets = [self._bundle_file_entry(input_pptx_path, slides_dir=slides_dir)]
+        for screenshot_path in sorted((slides_dir / "output" / "screenshots").glob("*.png")):
+            assets.append(self._bundle_file_entry(screenshot_path, slides_dir=slides_dir))
         return {
             "provider": "diego",
             "provider_run_id": str(run.run_id),
@@ -300,6 +308,16 @@ class CompilePptdRuntimeMixin:
         theme: dict[str, Any],
         provenance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        screenshot_manifest = self._pptd_screenshot_preview_manifest(
+            run=run,
+            provenance=provenance,
+        )
+        if screenshot_manifest:
+            self._attach_preview_truth_metadata(
+                manifest=screenshot_manifest,
+                provenance=provenance,
+            )
+            return screenshot_manifest
         pptd_path = Path(str(getattr(run, "artifact_dir", "") or "")) / "slides" / "pptd" / "presentation.pptd"
         if pptd_path.is_file():
             manifest = PptdDeckWriter().preview_manifest_from_project(pptd_path=pptd_path)
@@ -322,6 +340,54 @@ class CompilePptdRuntimeMixin:
         self._attach_preview_truth_metadata(manifest=manifest, provenance=provenance)
         return manifest
 
+    def _pptd_screenshot_preview_manifest(
+        self,
+        *,
+        run: Any,
+        provenance: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        screenshot = provenance.get("screenshot") if isinstance(provenance, dict) else None
+        if not isinstance(screenshot, dict) or screenshot.get("status") != "completed":
+            return None
+        files = screenshot.get("files")
+        if not isinstance(files, list):
+            return None
+        artifact_dir = Path(str(getattr(run, "artifact_dir", "") or ""))
+        pages: list[dict[str, Any]] = []
+        for index, item in enumerate(files):
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                continue
+            rel_path = str(item["path"])
+            if not rel_path.startswith("slides/output/screenshots/") or ".." in Path(rel_path).parts:
+                continue
+            image_path = artifact_dir / rel_path
+            if not image_path.is_file():
+                continue
+            width, height = self._png_dimensions(image_path)
+            pages.append(
+                {
+                    "index": index,
+                    "slide_id": f"slide-{index + 1:02d}",
+                    "format": "png",
+                    "data_url": (
+                        "data:image/png;base64,"
+                        + base64.b64encode(image_path.read_bytes()).decode("ascii")
+                    ),
+                    "artifact_path": rel_path,
+                    "width": width,
+                    "height": height,
+                    "status": "rendered_from_pptx",
+                }
+            )
+        if not pages:
+            return None
+        return {
+            "schema_version": "pagevra.preview_manifest.v1",
+            "page_count": len(pages),
+            "pages": pages,
+            "source": "converted_pptx_screenshot",
+        }
+
     def _write_pptd_compile_provenance(
         self,
         *,
@@ -330,6 +396,7 @@ class CompilePptdRuntimeMixin:
         pptx_path: Path,
         check: Any,
         repair_details: dict[str, Any] | None,
+        screenshot_details: dict[str, Any],
     ) -> None:
         provenance = {
             "schema_version": "diego.pptd_compile_provenance.v1",
@@ -346,9 +413,54 @@ class CompilePptdRuntimeMixin:
                 "return_code": check.return_code,
             },
             "warning_repair": repair_details,
+            "screenshot": screenshot_details,
         }
         path = slides_dir / "pptd" / "compile_provenance.json"
         path.write_text(json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _render_pptd_screenshots(
+        self,
+        *,
+        slides_dir: Path,
+        pptx_path: Path,
+        adapter: PptdRuntimeAdapter,
+    ) -> dict[str, Any]:
+        if not bool(getattr(self.runtime.settings, "pptd_screenshot_enabled", False)):
+            return {"enabled": False}
+        output_dir = slides_dir / "output" / "screenshots"
+        result = adapter.screenshot(
+            pptx_path,
+            output_dir=output_dir,
+            pages="all",
+            dpi=int(getattr(self.runtime.settings, "pptd_screenshot_dpi", 150) or 150),
+        )
+        if not result.ok:
+            return {
+                "enabled": True,
+                "status": "failed",
+                "reason": result.reason or "pptd_screenshot_failed",
+                "return_code": result.return_code,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "output_dir": "slides/output/screenshots",
+            }
+        files = []
+        for path in sorted(output_dir.glob("*.png")):
+            files.append(
+                {
+                    "path": f"slides/{path.relative_to(slides_dir).as_posix()}",
+                    "sha256": self._sha256(path),
+                    "bytes": path.stat().st_size,
+                }
+            )
+        return {
+            "enabled": True,
+            "status": "completed",
+            "source": "converted_pptx",
+            "return_code": result.return_code,
+            "output_dir": "slides/output/screenshots",
+            "files": files,
+        }
 
     def _pptd_compile_provenance(self, *, slides_dir: Path) -> dict[str, Any] | None:
         path = slides_dir / "pptd" / "compile_provenance.json"
@@ -377,6 +489,7 @@ class CompilePptdRuntimeMixin:
             "pptx_sha256": provenance.get("pptx_sha256"),
             "check": provenance.get("check"),
             "warning_repair": provenance.get("warning_repair"),
+            "screenshot": provenance.get("screenshot"),
         }
         manifest["metadata"] = metadata
 
@@ -386,3 +499,10 @@ class CompilePptdRuntimeMixin:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    def _png_dimensions(self, path: Path) -> tuple[int | None, int | None]:
+        with path.open("rb") as handle:
+            header = handle.read(24)
+        if len(header) >= 24 and header.startswith(b"\x89PNG\r\n\x1a\n"):
+            return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+        return None, None

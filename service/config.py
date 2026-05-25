@@ -58,6 +58,8 @@ class Settings:
     pptd_runner_image: str = "debian:bookworm-slim"
     pptd_runner_platform: str = "linux/amd64"
     pptd_runner_timeout_sec: float = 120.0
+    pptd_screenshot_enabled: bool = False
+    pptd_screenshot_dpi: int = 150
     pagevra_base_url: str = ""
     pagevra_preview_enabled: bool = False
     pagevra_preview_timeout_sec: float = 30.0
@@ -126,6 +128,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     pptd_runner_timeout_sec = _env_float("PPTD_RUNNER_TIMEOUT_SEC", 120.0)
     if pptd_runner_timeout_sec <= 0:
         raise ValueError("PPTD_RUNNER_TIMEOUT_SEC must be > 0")
+    pptd_screenshot_dpi = _env_int("PPTD_SCREENSHOT_DPI", 150)
     pptd_runner_mode = os.getenv("PPTD_RUNNER_MODE", "docker").strip().lower()
     if pptd_runner_mode not in {"docker", "local"}:
         raise ValueError(f"invalid PPTD_RUNNER_MODE={pptd_runner_mode!r}")
@@ -218,6 +221,8 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         pptd_runner_image=os.getenv("PPTD_RUNNER_IMAGE", "debian:bookworm-slim").strip(),
         pptd_runner_platform=os.getenv("PPTD_RUNNER_PLATFORM", "linux/amd64").strip(),
         pptd_runner_timeout_sec=pptd_runner_timeout_sec,
+        pptd_screenshot_enabled=_env_bool("PPTD_SCREENSHOT_ENABLED", False),
+        pptd_screenshot_dpi=pptd_screenshot_dpi,
         pagevra_base_url=os.getenv("PAGEVRA_BASE_URL", "").strip().rstrip("/"),
         pagevra_preview_enabled=_env_bool("PAGEVRA_PREVIEW_ENABLED", False),
         pagevra_preview_timeout_sec=pagevra_preview_timeout_sec,

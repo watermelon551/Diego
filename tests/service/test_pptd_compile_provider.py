@@ -338,6 +338,126 @@ def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -
     assert "convert.sh" in " ".join(calls[1])
 
 
+def test_compile_provider_pptd_records_optional_screenshot_provenance(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        command = " ".join(args)
+        if "convert.sh" in command:
+            output = (
+                tmp_path
+                / "artifacts"
+                / "r-pptd-shot"
+                / "slides"
+                / "output"
+                / "presentation.pptx"
+            )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"pptx")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="Created", stderr="")
+        if "screenshot.sh" in command:
+            output_dir = (
+                tmp_path
+                / "artifacts"
+                / "r-pptd-shot"
+                / "slides"
+                / "output"
+                / "screenshots"
+            )
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "slide-001.png").write_bytes(b"png-1")
+            (output_dir / "slide-002.png").write_bytes(b"png-2")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="Rendered", stderr="")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="Checking presentation.pptd\nSummary: 0 errors, 0 warnings",
+            stderr="",
+        )
+
+    run = RunRecord(
+        run_id="r-pptd-shot",
+        trace_id="t-pptd-shot",
+        status=RunStatus.COMPILING,
+        input=CreateRunRequest(
+            topic="Data Link Layer",
+            project_id="p-pptd-shot",
+            target_slide_count=2,
+            generation_mode=GenerationMode.SCRATCH,
+        ),
+        artifact_dir=str(tmp_path / "artifacts" / "r-pptd-shot"),
+        outline=OutlineDocument(
+            version=1,
+            summary="network courseware",
+            nodes=[
+                OutlineNode(title="Data Link Layer", bullets=["Framing"]),
+                OutlineNode(title="Sliding Window", bullets=["ACK"]),
+            ],
+        ),
+        slides=[
+            SlideArtifact(slide_no=1, js_code="", status="ready"),
+            SlideArtifact(slide_no=2, js_code="", status="ready"),
+        ],
+    )
+    runtime = SimpleNamespace(
+        settings=make_settings(
+            compile_provider="pptd",
+            pptd_skill_dir=str(tmp_path / "pptx-skill"),
+            pptd_runner_timeout_sec=30.0,
+            pptd_screenshot_enabled=True,
+            pptd_screenshot_dpi=180,
+        ),
+        store=_Store(run),
+        subprocess=SimpleNamespace(run=fake_run),
+    )
+    engine = CompileEngine(runtime)
+    slides_dir = tmp_path / "artifacts" / "r-pptd-shot" / "slides"
+
+    result = asyncio.run(
+        engine.compile_scratch_run(
+            run_id="r-pptd-shot",
+            slides_dir=slides_dir,
+            slide_count=2,
+            theme={"primary": "#2563eb"},
+        )
+    )
+    bundle = asyncio.run(engine.build_compile_bundle("r-pptd-shot"))
+
+    assert result.ok is True
+    assert ["check.sh" in " ".join(call) for call in calls].count(True) == 1
+    assert ["convert.sh" in " ".join(call) for call in calls].count(True) == 1
+    screenshot_calls = [call for call in calls if "screenshot.sh" in " ".join(call)]
+    assert len(screenshot_calls) == 1
+    assert "--dpi 180" in " ".join(screenshot_calls[0])
+    provenance = json.loads(
+        (slides_dir / "pptd" / "compile_provenance.json").read_text(encoding="utf-8")
+    )
+    assert provenance["screenshot"]["enabled"] is True
+    assert provenance["screenshot"]["status"] == "completed"
+    assert provenance["screenshot"]["source"] == "converted_pptx"
+    assert [item["path"] for item in provenance["screenshot"]["files"]] == [
+        "slides/output/screenshots/slide-001.png",
+        "slides/output/screenshots/slide-002.png",
+    ]
+    assert all(len(item["sha256"]) == 64 for item in provenance["screenshot"]["files"])
+    paths = {item["path"] for item in bundle["files"] + bundle["assets"]}
+    assert "slides/output/screenshots/slide-001.png" in paths
+    assert "slides/output/screenshots/slide-002.png" in paths
+    preview_seed = next(
+        item
+        for item in bundle["files"]
+        if item["path"] == "slides/preview_seed.json"
+    )
+    preview = json.loads(base64.b64decode(preview_seed["content_base64"]))
+    assert preview["source"] == "converted_pptx_screenshot"
+    assert preview["pages"][0]["format"] == "png"
+    assert preview["pages"][0]["status"] == "rendered_from_pptx"
+    assert preview["metadata"]["preview_truth"]["screenshot"]["status"] == "completed"
+
+
 def test_compile_provider_pptd_fails_when_warning_repair_does_not_clear_check(
     tmp_path: Path,
 ) -> None:
