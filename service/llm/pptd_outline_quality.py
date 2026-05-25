@@ -10,17 +10,20 @@ def normalize_pptd_outline_nodes(nodes: list[OutlineNode]) -> None:
     for node in nodes:
         if node.page_type != SlidePageType.CONTENT:
             continue
-        _normalize_gbn_sr_comparison(node)
+        _normalize_protocol_comparison(node)
         _normalize_strong_layout_signal(node)
 
 
-def _normalize_gbn_sr_comparison(node: OutlineNode) -> None:
+def _normalize_protocol_comparison(node: OutlineNode) -> None:
     joined = " ".join([node.title, *node.bullets]).lower()
-    if "gbn" not in joined or "sr" not in joined:
+    if not _has_protocol_pair_signal(joined):
         return
 
-    existing_labels = {_label_key(item) for item in node.bullets}
-    if {"gbn", "sr"}.issubset(existing_labels):
+    existing_labels = {_heading_label_key(item) for item in node.bullets}
+    if (
+        {"gbn", "sr"}.issubset(existing_labels)
+        or {"回退n帧", "选择重传"}.issubset(existing_labels)
+    ):
         node.layout_hint = "content-comparison"
         return
 
@@ -32,9 +35,9 @@ def _normalize_gbn_sr_comparison(node: OutlineNode) -> None:
         if not text:
             continue
         lower = text.lower()
-        if "gbn" in lower and "sr" not in lower:
+        if _has_gbn_signal(lower) and not _has_sr_signal(lower):
             gbn_points.extend(_extract_labeled_points(text, "GBN"))
-        elif "sr" in lower and "gbn" not in lower:
+        elif _has_sr_signal(lower) and not _has_gbn_signal(lower):
             sr_points.extend(_extract_labeled_points(text, "SR"))
         else:
             other_points.append(text)
@@ -54,8 +57,13 @@ def _normalize_gbn_sr_comparison(node: OutlineNode) -> None:
 
 def _normalize_strong_layout_signal(node: OutlineNode) -> None:
     text = " ".join([node.title, *node.bullets]).lower()
-    if "|" in text and any(keyword in text for keyword in ("指标", "metric", "性能", "利用率", "吞吐")):
+    if node.layout_hint == "content-comparison" and _has_comparison_signal(text):
+        return
+    if _has_metric_signal(text, node):
         node.layout_hint = "content-stat-callout"
+        return
+    if _has_comparison_signal(text):
+        node.layout_hint = "content-comparison"
         return
     if _is_core_concept_page(text):
         node.layout_hint = "content-icon-rows"
@@ -63,6 +71,13 @@ def _normalize_strong_layout_signal(node: OutlineNode) -> None:
     if any(keyword in text for keyword in ("步骤", "流程", "过程", "机制", "sequence", "timeline")):
         if node.layout_hint not in {"content-comparison", "content-stat-callout"}:
             node.layout_hint = "content-timeline"
+            return
+    if node.layout_hint in {
+        "content-comparison",
+        "content-stat-callout",
+        "content-timeline",
+    }:
+        node.layout_hint = "content-icon-rows" if _has_labeled_content_bullets(node) else "content-showcase"
 
 
 def has_strong_content_signal(node: OutlineNode) -> bool:
@@ -98,17 +113,81 @@ def has_strong_content_signal(node: OutlineNode) -> bool:
 
 def has_toc_signal(node: OutlineNode) -> bool:
     text = " ".join([node.title, *node.bullets]).lower()
-    return any(
+    if any(
         keyword in text
         for keyword in (
             "目录",
             "大纲",
+            "导览",
             "学习路径",
             "课程结构",
+            "课程内容",
             "roadmap",
             "agenda",
             "contents",
             "table of contents",
+        )
+    ):
+        return True
+    numbered = sum(1 for bullet in node.bullets if re.match(r"^\s*\d+[.)、]\s*", str(bullet)))
+    return numbered >= 3
+
+
+def _has_protocol_pair_signal(text: str) -> bool:
+    return _has_gbn_signal(text) and _has_sr_signal(text)
+
+
+def _has_gbn_signal(text: str) -> bool:
+    return "gbn" in text or "go-back-n" in text or "回退n" in text or "后退n" in text
+
+
+def _has_sr_signal(text: str) -> bool:
+    return (
+        re.search(r"(?<![a-z0-9])sr(?![a-z0-9])", text) is not None
+        or "选择重传" in text
+        or "selective repeat" in text
+    )
+
+
+def _has_comparison_signal(text: str) -> bool:
+    return any(
+        keyword in text
+        for keyword in (
+            " vs ",
+            "对比",
+            "比较",
+            "差异",
+            "优劣",
+            "取舍",
+            "versus",
+            "compare",
+            "comparison",
+        )
+    ) or _has_protocol_pair_signal(text)
+
+
+def _has_metric_signal(text: str, node: OutlineNode) -> bool:
+    return (
+        any("|" in bullet for bullet in node.bullets)
+        and any(keyword in text for keyword in ("指标", "metric", "性能", "利用率", "吞吐"))
+    ) or any(
+        keyword in text
+        for keyword in (
+            "指标",
+            "性能",
+            "量化",
+            "利用率",
+            "吞吐",
+            "吞吐量",
+            "延迟",
+            "时延",
+            "rtt",
+            "带宽时延积",
+            "窗口大小",
+            "信道利用率",
+            "metric",
+            "ratio",
+            "throughput",
         )
     )
 
@@ -145,17 +224,30 @@ def _has_labeled_content_bullets(node: OutlineNode) -> bool:
 
 def _label_key(text: str) -> str:
     normalized = _compact_text(text).lower().rstrip(":：")
-    if normalized == "gbn":
+    label = normalized.split("：", 1)[0].split(":", 1)[0].strip()
+    if _has_gbn_signal(label):
         return "gbn"
-    if normalized == "sr":
+    if _has_sr_signal(label):
         return "sr"
     return normalized
 
 
+def _heading_label_key(text: str) -> str:
+    normalized = _compact_text(text).lower().rstrip(":：")
+    if not normalized or ("：" in normalized or ":" in normalized):
+        return normalized
+    return _label_key(normalized)
+
+
 def _extract_labeled_points(text: str, label: str) -> list[str]:
-    pattern = re.compile(
-        rf"(?i)\b{re.escape(label)}\b\s*(?:[（(][^）)]*[）)])?\s*[:：：-]?\s*"
-    )
+    if label == "GBN":
+        pattern = re.compile(r"(?i)(?:\bGBN\b|go-back-n|回退N?帧|后退N?帧)\s*(?:[（(][^）)]*[）)])?\s*[:：：-]?\s*")
+    elif label == "SR":
+        pattern = re.compile(r"(?i)(?:\bSR\b|selective repeat|选择重传)\s*(?:[（(][^）)]*[）)])?\s*[:：：-]?\s*")
+    else:
+        pattern = re.compile(
+            rf"(?i)\b{re.escape(label)}\b\s*(?:[（(][^）)]*[）)])?\s*[:：：-]?\s*"
+        )
     stripped = pattern.sub("", text, count=1)
     stripped = _compact_text(stripped)
     if not stripped:
@@ -171,7 +263,7 @@ def _trim_point(text: str) -> str:
         head = text.split(delimiter, 1)[0].strip()
         if 8 <= len(head) <= 36:
             return head
-    return text[:34].rstrip() + "..."
+    return text[:36].rstrip(" ：:，,、；;。.!！?？")
 
 
 def _compact_text(text: str) -> str:

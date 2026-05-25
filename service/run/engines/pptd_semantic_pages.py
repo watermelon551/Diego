@@ -77,6 +77,22 @@ class PptdSemanticPageRenderer:
         return template_page_name in self.semantic_templates
 
     def page_yaml(self, *, slide: PptdSlideContent, template_page_name: str) -> str:
+        hint = self._plain_text(slide.layout_hint).lower()
+        title_signal = self._plain_text(slide.title).lower()
+        if self._has_comparison_signal(title_signal):
+            return self._comparison_page(slide=slide, template_page_name=template_page_name)
+        if self._has_case_signal(title_signal):
+            return self._concept_page(slide=slide, template_page_name=template_page_name)
+        if self._has_metric_signal(title_signal):
+            return self._metrics_page(slide=slide, template_page_name=template_page_name)
+        if self._has_protocol_concept_signal(title_signal):
+            return self._concept_page(slide=slide, template_page_name=template_page_name)
+        if any(token in hint for token in ("comparison", "compare", "two-column", "two_col")):
+            return self._comparison_page(slide=slide, template_page_name=template_page_name)
+        if any(token in hint for token in ("stat", "metric", "data", "chart", "kpi", "table")):
+            return self._metrics_page(slide=slide, template_page_name=template_page_name)
+        if any(token in hint for token in ("timeline", "process", "flow", "step")):
+            return self._process_page(slide=slide, template_page_name=template_page_name)
         if template_page_name in {
             "content1.page",
             "content_bullets.page",
@@ -117,6 +133,39 @@ class PptdSemanticPageRenderer:
             return self._process_page(slide=slide, template_page_name=template_page_name)
         return self._metrics_page(slide=slide, template_page_name=template_page_name)
 
+    def _content_signal(self, slide: PptdSlideContent) -> str:
+        return self._plain_text(" ".join([slide.title, *slide.bullets])).lower()
+
+    def _has_comparison_signal(self, text: str) -> bool:
+        return any(token in text for token in (" vs", "vs.", "对比", "比较", "差异", "gbn", "回退n", "后退n")) and (
+            self._has_sr_token(text) or "选择重传" in text or "selective repeat" in text
+        )
+
+    def _has_metric_signal(self, text: str) -> bool:
+        return any(
+            token in text
+            for token in (
+                "指标",
+                "性能",
+                "利用率",
+                "窗口大小",
+                "吞吐",
+                "rtt",
+                "bdp",
+                " min(",
+                "u =",
+                "%",
+            )
+        )
+
+    def _has_case_signal(self, text: str) -> bool:
+        return any(token in text for token in ("协议实例", "实例", "案例", "应用场景", "ppp", "pppoe"))
+
+    def _has_protocol_concept_signal(self, text: str) -> bool:
+        if any(token in text for token in ("流程", "过程", "步骤", "process", "flow")):
+            return False
+        return any(token in text for token in ("协议", "arq", "crc", "成帧", "滑动窗口"))
+
     def _concept_page(self, *, slide: PptdSlideContent, template_page_name: str) -> str:
         items = self._display_items(slide, count=5)
         concept, concept_desc = self._split_item(items[0])
@@ -142,9 +191,9 @@ class PptdSemanticPageRenderer:
             _TextSpec("concept-definition-title", [88, 188, 360, 38], concept, 24, "$text", bold=True),
             _TextSpec("concept-definition-desc", [88, 236, 360, 58], concept_desc, 15, "#64748b", line_height=1.1),
             _TextSpec("concept-core-text", [812, 244, 134, 52], self._short_label(slide.title, max_len=6), 18, "#ffffff", "[center, middle]", bold=True, wrap=False),
-            _TextSpec("concept-left-text", [608, 250, 114, 40], self._node_label(items[1]), 15, "$text", "[center, middle]", bold=True, wrap=False),
-            _TextSpec("concept-right-text", [1034, 250, 114, 40], self._node_label(items[2]), 15, "$text", "[center, middle]", bold=True, wrap=False),
-            _TextSpec("concept-bottom-text", [822, 396, 114, 40], self._node_label(items[3]), 15, "$text", "[center, middle]", bold=True, wrap=False),
+            _TextSpec("concept-left-text", [608, 250, 114, 40], self._node_label(items[1]), 12, "$text", "[center, middle]", bold=True, wrap=False),
+            _TextSpec("concept-right-text", [1034, 250, 114, 40], self._node_label(items[2]), 12, "$text", "[center, middle]", bold=True, wrap=False),
+            _TextSpec("concept-bottom-text", [822, 396, 114, 40], self._node_label(items[3]), 12, "$text", "[center, middle]", bold=True, wrap=False),
             _TextSpec(
                 "concept-takeaway-text",
                 [92, 564, 1100, 40],
@@ -281,12 +330,7 @@ class PptdSemanticPageRenderer:
         metrics = self._metric_items(slide)
         rows = self._table_rows(slide.bullets)
         if not rows:
-            rows = [
-                ("维度", "GBN", "SR"),
-                ("重传范围", "从丢失帧开始批量重传", "只重传出错帧"),
-                ("接收缓存", "通常不缓存乱序帧", "缓存乱序帧"),
-                ("适用场景", "实现简单、误码率低", "链路质量波动更友好"),
-            ]
+            rows = self._metric_summary_rows(metrics)
         shapes: list[_ShapeSpec] = [self._top_band()]
         texts: list[_TextSpec] = [
             self._title_text(self._short_label(slide.title, max_len=34)),
@@ -572,10 +616,35 @@ class PptdSemanticPageRenderer:
 
     def _metric_items(self, slide: PptdSlideContent) -> list[str]:
         groups = self._content_groups(slide.bullets)
+        if len(groups) == 1 and groups[0][0] == "要点":
+            return self._display_items(slide, count=3)
         if groups:
             flattened = [f"{name}：{items[0]}" if items else name for name, items in groups]
             return self._pad_items(flattened, count=3)
         return self._display_items(slide, count=3)
+
+    def _metric_summary_rows(self, metrics: list[str]) -> list[tuple[str, str, str]]:
+        rows: list[tuple[str, str, str]] = [("指标", "含义", "课堂判断")]
+        for item in metrics[:3]:
+            head, desc = self._split_item(item)
+            rows.append(
+                (
+                    self._short_label(head, max_len=16),
+                    self._short_label(desc if desc != head else item, max_len=24),
+                    self._metric_judgment(item),
+                )
+            )
+        return rows
+
+    def _metric_judgment(self, item: str) -> str:
+        text = self._plain_text(item)
+        if any(token in text for token in ("≈", "%", "低", "高")):
+            return "用于判断效率瓶颈"
+        if any(token in text for token in ("窗口", "W", "w")):
+            return "用于确定窗口规模"
+        if any(token in text for token in ("延迟", "RTT", "传播")):
+            return "用于估算链路时延影响"
+        return "用于量化协议效果"
 
     def _table_rows(self, bullets: list[str]) -> list[tuple[str, ...]]:
         rows: list[tuple[str, ...]] = []
@@ -608,7 +677,7 @@ class PptdSemanticPageRenderer:
         return [(name, items) for name, items in groups if name or items]
 
     def _display_items(self, slide: PptdSlideContent, *, count: int) -> list[str]:
-        items = [self._plain_text(item) for item in slide.bullets if str(item).strip()]
+        items = [self._clean_bullet(item) for item in slide.bullets if str(item).strip()]
         if not items:
             items = [f"围绕“{slide.title}”建立关键概念。"]
         return self._pad_items(items, count=count)
@@ -629,7 +698,7 @@ class PptdSemanticPageRenderer:
             desc = plain.replace(match.group(0), "", 1).strip(" ：:-，,") or plain
             return number, unit, self._short_label(desc, max_len=30)
         head, desc = self._split_item(plain)
-        return fallback.zfill(2), head, self._short_label(desc, max_len=30)
+        return fallback.zfill(2), self._short_label(head, max_len=6), self._short_label(desc, max_len=30)
 
     def _join_brief(self, items: list[str], *, max_len: int) -> str:
         cleaned = []
@@ -672,9 +741,9 @@ class PptdSemanticPageRenderer:
     def _clean_phrase(self, value: str) -> str:
         return self._plain_text(value).strip(" ：:，,、；;。.!！?？")
 
-    def _node_label(self, value: str) -> str:
+    def _node_label(self, value: str, *, max_len: int = 8) -> str:
         head, _desc = self._split_item(value)
-        return self._short_label(head, max_len=8)
+        return self._short_label(head, max_len=max_len)
 
     def _teaching_step_desc(self, head: str, desc: str) -> str:
         clean_head = self._plain_text(head)

@@ -101,6 +101,75 @@ def test_pptd_outline_normalizer_preserves_existing_grouped_comparison() -> None
     assert node.bullets == ["GBN：", "批量重传未确认帧", "SR：", "只重传出错帧"]
 
 
+def test_pptd_outline_normalizer_groups_chinese_protocol_comparison() -> None:
+    outline = OutlineDocument(
+        version=1,
+        summary="协议课",
+        nodes=[
+            OutlineNode(title="封面", page_type=SlidePageType.COVER),
+            OutlineNode(title="目录", page_type=SlidePageType.TOC),
+            OutlineNode(
+                title="回退N帧与选择重传：机制对比",
+                bullets=[
+                    "回退N帧：接收端只按序接收，出错后从丢失帧开始重传",
+                    "选择重传：接收端可缓存乱序帧，只重传丢失或出错的帧",
+                    "取舍：回退N帧实现简单，选择重传缓存压力更大",
+                ],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-showcase",
+            ),
+            OutlineNode(title="总结", page_type=SlidePageType.SUMMARY),
+        ],
+    )
+
+    fitted = _OutlineNormalizer()._fit_outline(
+        outline,
+        topic="数据链路层",
+        target_slide_count=4,
+        template_style="education courseware",
+    )
+
+    node = fitted.nodes[2]
+    assert node.layout_hint == "content-comparison"
+    assert node.bullets[0] == "GBN："
+    assert node.bullets[1].startswith("接收端只按序接收")
+    assert "SR：" in node.bullets
+    assert any(item.startswith("接收端可缓存乱序帧") for item in node.bullets)
+    assert "..." not in " ".join(node.bullets)
+
+
+def test_pptd_outline_normalizer_maps_window_metrics_to_stat_callout() -> None:
+    outline = OutlineDocument(
+        version=1,
+        summary="性能课",
+        nodes=[
+            OutlineNode(title="封面", page_type=SlidePageType.COVER),
+            OutlineNode(title="目录", page_type=SlidePageType.TOC),
+            OutlineNode(
+                title="窗口大小与信道利用率",
+                bullets=[
+                    "窗口大小：决定流水线中可同时在途的帧数",
+                    "带宽时延积：估算链路中可容纳的数据量",
+                    "吞吐量：受窗口大小、RTT与误码率共同影响",
+                ],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-showcase",
+            ),
+            OutlineNode(title="总结", page_type=SlidePageType.SUMMARY),
+        ],
+    )
+
+    fitted = _OutlineNormalizer()._fit_outline(
+        outline,
+        topic="数据链路层",
+        target_slide_count=4,
+        template_style="education courseware",
+    )
+
+    node = fitted.nodes[2]
+    assert node.layout_hint == "content-stat-callout"
+
+
 def test_pptd_outline_normalizer_keeps_strong_content_pages_out_of_section_slots() -> None:
     outline = OutlineDocument(
         version=1,
@@ -253,3 +322,69 @@ def test_pptd_outline_normalizer_keeps_explicit_toc_for_larger_deck() -> None:
     node = fitted.nodes[1]
     assert node.page_type == SlidePageType.TOC
     assert node.layout_hint.startswith("toc-")
+
+
+def test_pptd_outline_normalizer_treats_course_overview_as_toc() -> None:
+    outline = OutlineDocument(
+        version=1,
+        summary="数据链路层课程",
+        nodes=[
+            OutlineNode(title="封面", page_type=SlidePageType.COVER),
+            OutlineNode(
+                title="课程内容导览",
+                bullets=[
+                    "1. 数据链路层功能与成帧方法",
+                    "2. 差错检测原理与CRC校验",
+                    "3. 停止等待ARQ协议",
+                    "4. 滑动窗口协议基本思想",
+                ],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-stat-callout",
+            ),
+            OutlineNode(title="成帧", bullets=["界定帧边界"], page_type=SlidePageType.CONTENT),
+            OutlineNode(title="总结", page_type=SlidePageType.SUMMARY),
+        ],
+    )
+
+    fitted = _OutlineNormalizer()._fit_outline(
+        outline,
+        topic="数据链路层",
+        target_slide_count=4,
+        template_style="education courseware",
+    )
+
+    node = fitted.nodes[1]
+    assert node.page_type == SlidePageType.TOC
+    assert node.layout_hint.startswith("toc-")
+
+
+def test_pptd_outline_normalizer_removes_random_comparison_layout_without_signal() -> None:
+    outline = OutlineDocument(
+        version=1,
+        summary="协议实例",
+        nodes=[
+            OutlineNode(title="封面", page_type=SlidePageType.COVER),
+            OutlineNode(title="目录", page_type=SlidePageType.TOC),
+            OutlineNode(
+                title="数据链路层协议实例：PPP",
+                bullets=[
+                    "点对点协议(PPP)：用于拨号、专线等点对点链路",
+                    "帧格式：标志、地址、控制、协议、数据、FCS",
+                    "功能：链路控制、网络控制、认证",
+                ],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-comparison",
+            ),
+            OutlineNode(title="总结", page_type=SlidePageType.SUMMARY),
+        ],
+    )
+
+    fitted = _OutlineNormalizer()._fit_outline(
+        outline,
+        topic="数据链路层",
+        target_slide_count=4,
+        template_style="education courseware",
+    )
+
+    node = fitted.nodes[2]
+    assert node.layout_hint == "content-icon-rows"

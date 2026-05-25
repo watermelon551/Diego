@@ -183,6 +183,7 @@ class PptdSkillTemplateDeck:
         replacements = {
             "page-title": self._p("学习路径导航"),
             "toc-title-cn": self._p("<strong>学习路径</strong>", escaped=False),
+            "toc-title": self._p("<strong>目录</strong>", escaped=False),
             "toc-title-en": self._p("Learning Roadmap"),
         }
         for idx in range(1, 5):
@@ -191,6 +192,17 @@ class PptdSkillTemplateDeck:
             replacements[f"module{idx}-desc"] = self._p("围绕本模块建立关键概念、触发条件与应用判断。")
             replacements[f"title{idx}"] = self._p(f"<strong>{self._plain(item)}</strong>", escaped=False)
             replacements[f"desc{idx}"] = self._p("建立概念、识别条件、迁移到真实问题。")
+        for idx in range(1, 7):
+            item = items[idx - 1] if idx <= len(items) else f"模块 {idx}"
+            replacements[f"toc-item-{idx}-num"] = self._p(
+                f'<span style="font-size:34px;"><strong>{idx:02d}</strong></span>',
+                escaped=False,
+            )
+            replacements[f"toc-item-{idx}-title"] = self._p(
+                f"<strong>{self._plain(self._short_label(item, max_len=22))}</strong>",
+                escaped=False,
+            )
+            replacements[f"toc-item-{idx}-en"] = self._p("Course Module")
         return self._replace_many(text, replacements)
 
     def _render_section(self, text: str, slide: PptdSlideContent) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,11 @@ def repair_pptd_warning_layout(*, pptd_path: Path, checker_output: str) -> bool:
     page_height = _number(size[1], 720) if isinstance(size, list) and len(size) > 1 else 720
     if not isinstance(pages, list):
         return False
+    backup_dir = pptd_path.parent / ".warning_repair_backup"
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    _backup_project_files(pptd_path=pptd_path, pages=pages, backup_dir=backup_dir)
     changed = False
     for page_ref in pages:
         page_path = pptd_path.parent / str(page_ref)
@@ -63,6 +69,38 @@ def repair_pptd_warning_layout(*, pptd_path: Path, checker_output: str) -> bool:
             _write_yaml(page_path, page)
             changed = True
     return changed
+
+
+def restore_pptd_warning_repair_backup(*, pptd_path: Path) -> bool:
+    backup_dir = pptd_path.parent / ".warning_repair_backup"
+    manifest_path = backup_dir / "manifest.txt"
+    if not manifest_path.is_file():
+        return False
+    for rel in manifest_path.read_text(encoding="utf-8").splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
+        src = backup_dir / rel
+        dst = pptd_path.parent / rel
+        if src.is_file():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+    return True
+
+
+def _backup_project_files(*, pptd_path: Path, pages: list[Any], backup_dir: Path) -> None:
+    rel_paths = [pptd_path.name]
+    rel_paths.extend(str(page_ref) for page_ref in pages)
+    manifest: list[str] = []
+    for rel in rel_paths:
+        src = pptd_path.parent / rel
+        if not src.is_file():
+            continue
+        dst = backup_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        manifest.append(rel)
+    (backup_dir / "manifest.txt").write_text("\n".join(manifest), encoding="utf-8")
 
 
 def _repair_text_element(

@@ -9,7 +9,10 @@ from typing import Any
 from service.pptd_runtime import PptdRuntimeAdapter
 
 from .pptd_layout import PptdDeckWriter
-from .pptd_warning_repair import repair_pptd_warning_layout
+from .pptd_warning_repair import (
+    repair_pptd_warning_layout,
+    restore_pptd_warning_repair_backup,
+)
 from ..results import ScratchCompileResult
 
 
@@ -69,9 +72,19 @@ class CompilePptdRuntimeMixin:
             if repaired:
                 first_check = check
                 check = adapter.check(pptd_path)
+                restored = False
+                if (
+                    first_check.warning_count is not None
+                    and check.warning_count is not None
+                    and check.warning_count > first_check.warning_count
+                ):
+                    restored = restore_pptd_warning_repair_backup(pptd_path=pptd_path)
+                    if restored:
+                        check = first_check
                 repair_details = {
                     "attempted": True,
                     "changed": True,
+                    "restored": restored,
                     "initial_stdout": first_check.stdout,
                     "initial_stderr": first_check.stderr,
                     "initial_error_count": first_check.error_count,

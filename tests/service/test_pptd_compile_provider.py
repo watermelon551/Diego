@@ -81,6 +81,42 @@ def test_pptd_template_selection_does_not_treat_single_gbn_or_sr_page_as_compari
     assert comparison_pages[0] == "content2.page"
 
 
+def test_pptd_skill_template_replaces_academic_toc_item_placeholders() -> None:
+    deck = PptdSkillTemplateDeck()
+    template = "\n".join(
+        [
+            "pageType: toc",
+            "elements:",
+            "  - elementId: toc-item-1-num",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>Learning Roadmap</p>",
+            "  - elementId: toc-item-1-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p><strong>Old Title</strong></p>",
+            "",
+        ]
+    )
+    rendered = deck._render_toc(
+        template,
+        PptdSlideContent(
+            index=1,
+            total=10,
+            title="课程内容目录",
+            bullets=["数据链路层功能与成帧"],
+            page_type="toc",
+            layout_hint="toc-list",
+        ),
+    )
+
+    assert '<p><span style="font-size:34px;"><strong>01</strong></span></p>' in rendered
+    assert "数据链路层功能与成帧" in rendered
+    assert "Learning Roadmap</p>" not in rendered
+
+
 def test_pptd_template_selection_maps_icon_concept_hint_to_concept_page() -> None:
     deck = PptdSkillTemplateDeck()
 
@@ -610,12 +646,13 @@ def test_compile_provider_pptd_repairs_check_warnings_once_before_convert(tmp_pa
 
     assert result.ok is True
     assert result.error_details == {
-        "repair": {
-            "attempted": True,
-            "changed": True,
-            "initial_stdout": (
-                "Checking presentation.pptd\n"
-                "TextOverflowWarning: text box overflow\n"
+            "repair": {
+                "attempted": True,
+                "changed": True,
+                "restored": False,
+                "initial_stdout": (
+                    "Checking presentation.pptd\n"
+                    "TextOverflowWarning: text box overflow\n"
                 "Summary: 0 errors, 1 warning"
             ),
             "initial_stderr": "",
@@ -1599,6 +1636,201 @@ def test_pptd_semantic_renderer_does_not_split_ascii_acronyms_in_short_labels() 
 
     assert label == "奇偶校验、校验和"
     assert not label.endswith("、C")
+
+
+def test_pptd_semantic_renderer_respects_layout_hint_over_template_name() -> None:
+    renderer = PptdSemanticPageRenderer()
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=6,
+            total=10,
+            title="协议对比：回退N帧与选择重传",
+            bullets=[
+                "GBN：",
+                "批量重传未确认帧",
+                "SR：",
+                "只重传出错帧",
+            ],
+            layout_hint="content-comparison",
+        ),
+        template_page_name="discussion.page",
+    )
+
+    assert "# sourceTemplate: discussion.page" in page
+    assert "comparison-left-card" in page
+    assert "concept-definition-card" not in page
+
+
+def test_pptd_semantic_renderer_uses_metric_signal_over_template_name() -> None:
+    renderer = PptdSemanticPageRenderer()
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=7,
+            total=10,
+            title="性能指标：窗口大小与信道利用率",
+            bullets=[
+                "信道利用率 U = 发送时间 / (发送时间 + 往返延迟)",
+                "滑动窗口: U = min(1, WT / (1 + 2a))",
+                "例：a=2.5时，WT=5可达U≈71%",
+            ],
+        ),
+        template_page_name="content3.page",
+    )
+
+    assert "# sourceTemplate: content3.page" in page
+    assert "metric-card-1" in page
+    assert "process-step-title-1" not in page
+
+
+def test_pptd_semantic_renderer_does_not_promote_formula_only_content_to_metric() -> None:
+    renderer = PptdSemanticPageRenderer()
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=4,
+            total=10,
+            title="停止等待ARQ协议",
+            bullets=[
+                "机制：发送一帧，等待ACK，超时重传",
+                "性能瓶颈：信道利用率低，如U≈1/541",
+            ],
+        ),
+        template_page_name="content1.page",
+    )
+
+    assert "concept-definition-card" in page
+    assert "metric-card-1" not in page
+
+
+def test_pptd_semantic_renderer_protocol_title_overrides_metric_hint() -> None:
+    renderer = PptdSemanticPageRenderer()
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=4,
+            total=10,
+            title="停止等待ARQ协议",
+            bullets=[
+                "基本思想：发送一帧，等待确认（ACK）",
+                "核心缺陷：信道利用率低，如示例中1/541",
+            ],
+            layout_hint="content-stat-callout",
+        ),
+        template_page_name="content4.page",
+    )
+
+    assert "concept-definition-card" in page
+    assert "metric-card-1" not in page
+
+
+def test_pptd_semantic_renderer_lets_metric_title_override_process_hint() -> None:
+    renderer = PptdSemanticPageRenderer()
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=7,
+            total=10,
+            title="性能量化：窗口大小与信道利用率",
+            bullets=[
+                "信道利用率公式：U = (W_S * T_frame) / (T_frame + 2*T_prop)",
+                "W_S=1时退化为停止等待协议",
+            ],
+            layout_hint="content-process",
+        ),
+        template_page_name="content3.page",
+    )
+
+    assert "metric-card-1" in page
+    assert "process-step-title-1" not in page
+
+
+def test_pptd_semantic_renderer_lets_metric_title_override_comparison_hint() -> None:
+    renderer = PptdSemanticPageRenderer()
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=7,
+            total=10,
+            title="窗口大小与信道利用率量化",
+            bullets=[
+                "信道利用率 U = (帧发送时间 Tf) / (Tf + 往返时间 RTT)",
+                "示例：Tf=1ms, RTT=540ms",
+            ],
+            layout_hint="content-comparison",
+        ),
+        template_page_name="content2.page",
+    )
+
+    assert "metric-card-1" in page
+    assert "comparison-left-card" not in page
+
+
+def test_pptd_semantic_renderer_uses_distinct_metric_bullets() -> None:
+    renderer = PptdSemanticPageRenderer()
+    slide = PptdSlideContent(
+        index=7,
+        total=10,
+        title="窗口大小与信道利用率",
+        bullets=[
+            "利用率公式：U = W / (1 + 2a)，a=传播时延/发送时延",
+            "停止等待(U=1/541≈0.2%)与滑动窗口对比",
+            "窗口大小W的选择：需满足 W ≤ 1+2a",
+        ],
+    )
+
+    metrics = renderer._metric_items(slide)
+    page = renderer.page_yaml(slide=slide, template_page_name="data_analysis.page")
+
+    assert metrics[0] != metrics[1]
+    assert "GBN" not in page
+    assert "SR" not in page
+    assert "metric-table-1-0" in page
+
+
+def test_pptd_semantic_renderer_keeps_protocol_case_as_concept() -> None:
+    renderer = PptdSemanticPageRenderer()
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=8,
+            total=10,
+            title="协议实例：PPP与PPPoE",
+            bullets=[
+                "PPP（点对点协议）：拨号上网、专线连接",
+                "PPPoE：在以太网上封装PPP，用于宽带接入",
+            ],
+            layout_hint="content-stat-callout",
+        ),
+        template_page_name="content4.page",
+    )
+
+    assert "concept-definition-card" in page
+    assert "metric-card-1" not in page
+
+
+def test_pptd_semantic_renderer_shortens_metric_units() -> None:
+    renderer = PptdSemanticPageRenderer()
+
+    number, unit, desc = renderer._metric_parts(
+        "点对点协议 (PPP)：用途：拨号上网、专线连接等点对点链路",
+        fallback="1",
+    )
+
+    assert number == "01"
+    assert unit == "点对点协议"
+    assert len(unit) <= 6
+    assert "拨号上网" in desc
+
+
+def test_pptd_semantic_renderer_cleans_nested_bullet_markers() -> None:
+    renderer = PptdSemanticPageRenderer()
+
+    items = renderer._display_items(
+        PptdSlideContent(
+            index=5,
+            total=10,
+            title="滑动窗口协议",
+            bullets=["  • 发送窗口 W_s：允许连续发送的未确认帧数量"],
+        ),
+        count=1,
+    )
+
+    assert items == ["发送窗口 W_s：允许连续发送的未确认帧数量"]
 
 
 def test_pptd_concept_takeaway_uses_short_complete_judgment(tmp_path: Path) -> None:
