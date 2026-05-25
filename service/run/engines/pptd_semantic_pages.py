@@ -40,17 +40,31 @@ class PptdSemanticPageRenderer:
         "content_bullets.page",
         "content-bullets.page",
         "bullets.page",
+        "concept.page",
+        "framework.page",
+        "content5.page",
+        "content-cards.page",
+        "content-concepts.page",
+        "content_grid.page",
+        "methodology.page",
+        "discussion.page",
+        "strategic_framework.page",
         "content2.page",
         "comparison.page",
         "two_column.page",
         "content_two_col.page",
         "market_comparison.page",
+        "three_column_analysis.page",
+        "matrix_analysis.page",
         "content3.page",
         "process.page",
         "content-process.page",
         "process_flow.page",
         "process_timeline.page",
         "timeline.page",
+        "content-timeline.page",
+        "milestone_roadmap.page",
+        "action_plan.page",
         "content4.page",
         "content-data.page",
         "content_data.page",
@@ -68,6 +82,15 @@ class PptdSemanticPageRenderer:
             "content_bullets.page",
             "content-bullets.page",
             "bullets.page",
+            "concept.page",
+            "framework.page",
+            "content5.page",
+            "content-cards.page",
+            "content-concepts.page",
+            "content_grid.page",
+            "methodology.page",
+            "discussion.page",
+            "strategic_framework.page",
         }:
             return self._concept_page(slide=slide, template_page_name=template_page_name)
         if template_page_name in {
@@ -76,6 +99,8 @@ class PptdSemanticPageRenderer:
             "two_column.page",
             "content_two_col.page",
             "market_comparison.page",
+            "three_column_analysis.page",
+            "matrix_analysis.page",
         }:
             return self._comparison_page(slide=slide, template_page_name=template_page_name)
         if template_page_name in {
@@ -85,6 +110,9 @@ class PptdSemanticPageRenderer:
             "process_flow.page",
             "process_timeline.page",
             "timeline.page",
+            "content-timeline.page",
+            "milestone_roadmap.page",
+            "action_plan.page",
         }:
             return self._process_page(slide=slide, template_page_name=template_page_name)
         return self._metrics_page(slide=slide, template_page_name=template_page_name)
@@ -109,6 +137,7 @@ class PptdSemanticPageRenderer:
             self._title_text(self._short_label(slide.title, max_len=34)),
             self._badge_text("概念图解"),
             self._page_no_text(slide),
+            *self._source_note_text(slide),
             _TextSpec("concept-definition-label", [88, 146, 360, 26], "先给一句可复述的定义", 18, "$primary", bold=True, wrap=False),
             _TextSpec("concept-definition-title", [88, 188, 360, 38], concept, 24, "$text", bold=True),
             _TextSpec("concept-definition-desc", [88, 236, 360, 58], concept_desc, 15, "#64748b", line_height=1.1),
@@ -162,6 +191,7 @@ class PptdSemanticPageRenderer:
             self._title_text(title),
             self._badge_text("对比分析"),
             self._page_no_text(slide),
+            *self._source_note_text(slide),
             _TextSpec("comparison-left-title", [88, 156, 460, 44], left_title, 28, "$primary", bold=True, wrap=False),
             _TextSpec("comparison-left-desc", [88, 208, 460, 68], left_desc, 18, "$text", line_height=1.2),
             _TextSpec("comparison-right-title", [716, 156, 460, 44], right_title, 28, "$accent", bold=True, wrap=False),
@@ -198,6 +228,7 @@ class PptdSemanticPageRenderer:
             self._title_text(self._short_label(slide.title, max_len=34)),
             self._badge_text("流程推演"),
             self._page_no_text(slide),
+            *self._source_note_text(slide),
             _TextSpec(
                 "process-question",
                 [96, 100, 1088, 36],
@@ -261,6 +292,7 @@ class PptdSemanticPageRenderer:
             self._title_text(self._short_label(slide.title, max_len=34)),
             self._badge_text("量化观察"),
             self._page_no_text(slide),
+            *self._source_note_text(slide),
         ]
         for idx, item in enumerate(metrics[:3], start=1):
             number, unit, desc = self._metric_parts(item, fallback=str(idx))
@@ -333,6 +365,23 @@ class PptdSemanticPageRenderer:
 
     def _page_no_text(self, slide: PptdSlideContent) -> _TextSpec:
         return _TextSpec("page-number", [1148, 18, 88, 32], f"{slide.page_no:02d} / {slide.total:02d}", 13, "#ffffff", "[right, middle]", wrap=False)
+
+    def _source_note_text(self, slide: PptdSlideContent) -> list[_TextSpec]:
+        note = self._short_label(str(getattr(slide, "source_note", "") or ""), max_len=56)
+        if not note:
+            return []
+        return [
+            _TextSpec(
+                "source-note",
+                [52, 674, 760, 22],
+                f"资料依据：{note}",
+                11,
+                "#64748b",
+                "[left, middle]",
+                line_height=1.1,
+                wrap=False,
+            )
+        ]
 
     def _shape_lines(self, spec: _ShapeSpec) -> list[str]:
         lines = [

@@ -68,7 +68,13 @@ class PptdPageYamlRenderer:
                 *self._text("insight-label", [908, 158, 246, 30], "学习抓手", font_size=17, color="$primary"),
                 *self._text("insight-body", [908, 204, 236, 310], self._insight_text(), font_size=18, color="$text", line_height=1.35),
                 *self._card_elements(slide),
-                *self._text("footer", [96, 642, 1040, 26], f"{slide.page_no:02d} / {slide.total:02d}", font_size=16, color="$muted"),
+                *self._text(
+                    "footer",
+                    [96, 642, 1040, 26],
+                    self._footer_text(slide),
+                    font_size=16,
+                    color="$muted",
+                ),
                 "",
             ]
         )
@@ -121,6 +127,13 @@ class PptdPageYamlRenderer:
         if len(items) <= 5:
             return items
         return [*items[:4], "；".join(items[4:])]
+
+    def _footer_text(self, slide: PptdSlideContent) -> str:
+        footer = f"{slide.page_no:02d} / {slide.total:02d}"
+        note = str(getattr(slide, "source_note", "") or "").strip()
+        if note:
+            footer = f"{footer} · 资料依据：{self._escape(note[:56])}"
+        return footer
 
     def _shape(self, element_id: str, bounds: list[int], color: str, *, shadow: bool = False) -> list[str]:
         lines = [

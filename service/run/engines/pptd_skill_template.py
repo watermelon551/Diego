@@ -28,6 +28,7 @@ class PptdSkillTemplateDeck:
         skill_dir: Path,
         template_style: str = "",
         template_id: str | None = None,
+        source_notes: list[str] | None = None,
     ) -> bool:
         self.template_name = self._resolve_template_name(
             skill_dir=skill_dir,
@@ -48,7 +49,12 @@ class PptdSkillTemplateDeck:
         total = max(1, slide_count, len(nodes))
         page_paths: list[str] = []
         for index in range(total):
-            slide = self._slide_content(index=index, total=total, nodes=nodes)
+            slide = self._slide_content(
+                index=index,
+                total=total,
+                nodes=nodes,
+                source_notes=source_notes,
+            )
             template_page = pages_dir / self._template_page_name(slide=slide)
             if not template_page.is_file():
                 return False
@@ -143,7 +149,7 @@ class PptdSkillTemplateDeck:
             "main-title": self._p(slide.title),
             "subtitle": self._p(subtitle),
             "highlight-text": self._p(highlight),
-            "footer-info": self._p("NeoSpectra · PPTD Courseware"),
+            "footer-info": self._p(self._footer_label(slide, fallback="NeoSpectra · PPTD Courseware")),
             "cover-title": self._p(
                 f'<span style="font-size:{title_size}px;"><strong>{self._plain(slide.title)}</strong></span>',
                 escaped=False,
@@ -371,7 +377,7 @@ class PptdSkillTemplateDeck:
             "thank-you": self._p(slide.title),
             "subtitle": self._p("复盘、迁移、应用"),
             "action-text": "\n".join(self._p(f"• {item}") for item in items[:4]),
-            "footer": self._p("NeoSpectra · Generated Courseware"),
+            "footer": self._p(self._footer_label(slide, fallback="NeoSpectra · Generated Courseware")),
             "summary-title": self._p(slide.title),
             "thanks-text": self._p(slide.title),
             "thanks-sub": self._p("继续把概念迁移到真实问题"),
@@ -473,7 +479,14 @@ class PptdSkillTemplateDeck:
             return numbered[min(index, len(numbered) - 1)]
         return ["concept.page", "process.page", "framework.page"][(index - 1) % 3]
 
-    def _slide_content(self, *, index: int, total: int, nodes: list[Any]) -> PptdSlideContent:
+    def _slide_content(
+        self,
+        *,
+        index: int,
+        total: int,
+        nodes: list[Any],
+        source_notes: list[str] | None = None,
+    ) -> PptdSlideContent:
         node = nodes[index] if index < len(nodes) else None
         title = str(getattr(node, "title", "") or f"Slide {index + 1}")
         bullets = [str(item) for item in list(getattr(node, "bullets", []) or [])[:12]]
@@ -490,6 +503,11 @@ class PptdSkillTemplateDeck:
             bullets=bullets,
             page_type=page_type,
             layout_hint=layout_hint,
+            source_note=(
+                source_notes[index]
+                if source_notes is not None and index < len(source_notes)
+                else ""
+            ),
         )
 
     def _preferred_content_pages(self, *, slide: PptdSlideContent) -> list[str]:
@@ -737,6 +755,8 @@ class PptdSkillTemplateDeck:
         items = self._display_items(slide, count=5)
         if lowered in {"subject-label", "subject-tag-text"}:
             return self._p("课程")
+        if "footer" in lowered or "source" in lowered:
+            return self._p(self._footer_label(slide, fallback="NeoSpectra · PPTD Courseware"))
         if "page-num" in lowered or lowered.endswith("-num") or lowered in {"num", "chapter-number"}:
             return self._p(str(slide.page_no))
         if lowered == "formula-label":
@@ -758,6 +778,12 @@ class PptdSkillTemplateDeck:
     def _sanitize_rendered_page(self, text: str) -> str:
         text = self._remove_text_element_wrap_keys(text)
         return self._replace_bounds(text, element_id="formula-text", bounds=[230, 582, 850, 52])
+
+    def _footer_label(self, slide: PptdSlideContent, *, fallback: str) -> str:
+        note = str(getattr(slide, "source_note", "") or "").strip()
+        if note:
+            return f"资料依据：{self._short_label(note, max_len=56)}"
+        return fallback
 
     def _remove_text_element_wrap_keys(self, text: str) -> str:
         lines = text.splitlines()

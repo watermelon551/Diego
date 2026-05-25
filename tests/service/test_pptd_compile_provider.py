@@ -22,7 +22,9 @@ from service.run.engines import CompileEngine
 from service.run.engines.pptd_contracts import PptdSlideContent
 from service.run.engines.pptd_layout import PptdDeckWriter
 from service.run.engines.pptd_preview import PptdProjectPreviewRenderer
+from service.run.engines.pptd_source_notes import pptd_source_notes_from_report
 from service.run.engines.pptd_skill_template import PptdSkillTemplateDeck
+from service.run.flows.scratch_flow import ScratchFlowService
 from service.run.slide_scene.pptd_scene import (
     apply_pptd_scene_operations,
     build_pptd_slide_scene,
@@ -171,6 +173,62 @@ class _Store:
 
     async def get_run(self, run_id: str) -> RunRecord | None:
         return self.run if run_id == self.run.run_id else None
+
+    async def update_run(self, run_id: str, apply) -> None:
+        assert run_id == self.run.run_id
+        apply(self.run)
+
+
+class _ScratchOrchestrator:
+    def __init__(self, run: RunRecord) -> None:
+        self.store = _Store(run)
+        self.events: list[tuple[str, EventType, dict[str, object]]] = []
+
+    async def _publish(self, run_id: str, event_type: EventType, payload: dict[str, object]) -> None:
+        self.events.append((run_id, event_type, payload))
+
+
+def test_pptd_outline_materialization_projects_source_notes_to_citations(tmp_path: Path) -> None:
+    run = RunRecord(
+        run_id="r-source-citations",
+        trace_id="t-source-citations",
+        status=RunStatus.SLIDES_GENERATING,
+        input=CreateRunRequest(
+            topic="数据链路层",
+            project_id="p-source-citations",
+            target_slide_count=2,
+            generation_mode=GenerationMode.SCRATCH,
+        ),
+        artifact_dir=str(tmp_path / "artifacts" / "r-source-citations"),
+        outline=OutlineDocument(
+            version=1,
+            summary="source citations",
+            nodes=[
+                OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+                OutlineNode(title="差错检测", bullets=["CRC", "校验和"]),
+            ],
+        ),
+        research_report={
+            "page_focus": [
+                "ch2_物理层_v2.pdf P121: 比特传输服务",
+                "ch3_数据链路层_v2.pdf P6: 差错检测编码",
+            ]
+        },
+    )
+    orch = _ScratchOrchestrator(run)
+
+    asyncio.run(
+        ScratchFlowService(orch)._materialize_pptd_outline_slides(
+            run_id=run.run_id,
+            run=run,
+        )
+    )
+
+    assert [slide.citations for slide in run.slides] == [
+        ["ch2_物理层_v2.pdf P121"],
+        ["ch3_数据链路层_v2.pdf P6"],
+    ]
+    assert [event[2]["preview_format"] for event in orch.events] == ["pptd", "pptd"]
 
 
 def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -> None:
@@ -488,6 +546,94 @@ def test_pptd_writer_prefers_external_skill_template_when_available(tmp_path: Pa
     assert "Vendor footer" not in cover_text
     assert "Template Based" in cover_text
     assert "NeoSpectra" in cover_text
+
+
+def test_pptd_source_notes_from_research_report_are_written_to_pages(tmp_path: Path) -> None:
+    nodes = [
+        OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+        OutlineNode(
+            title="差错检测用于发现链路传输错误",
+            bullets=["CRC把比特串映射为校验余数", "接收端用同一规则复算并判断帧是否损坏"],
+            page_type=SlidePageType.CONTENT,
+        ),
+    ]
+    notes = pptd_source_notes_from_report(
+        {
+            "page_focus": [
+                "ch2_物理层_v2.pdf P121: 物理层提供比特传输服务",
+                "ch3_数据链路层_v2.pdf P6: CRC 与校验和用于差错检测",
+            ]
+        },
+        slide_count=2,
+    )
+    pptd_path = tmp_path / "artifacts" / "r-source-notes" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="数据链路层",
+        nodes=nodes,
+        slide_count=2,
+        theme={"primary": "#123456"},
+        source_notes=notes,
+    )
+
+    content_page = (pptd_path.parent / "pages" / "slide-02.page").read_text(encoding="utf-8")
+    preview = PptdProjectPreviewRenderer().preview_manifest(pptd_path=pptd_path)
+    content_svg = base64.b64decode(preview["pages"][1]["svg_data_url"].split(",", 1)[1]).decode("utf-8")
+
+    assert notes == ["ch2_物理层_v2.pdf P121", "ch3_数据链路层_v2.pdf P6"]
+    assert "资料依据：ch3_数据链路层_v2.pdf P6" in content_page
+    assert "资料依据：ch3_数据链路层_v2.pdf P6" in content_svg
+
+
+def test_pptd_skill_content_pages_use_semantic_renderer_to_avoid_template_placeholders(tmp_path: Path) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-1" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-1.pptd").write_text(
+        "\n".join(['title: "Template"', "size: [1280, 720]", "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old methodology title",
+            "  - elementId: arch-placeholder",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        [Figure 2: MolGNN模型架构图]",
+            "",
+        ]
+    )
+    for page_name in ("cover.page", "methodology.page", "final.page"):
+        (pages_dir / page_name).write_text(page_template, encoding="utf-8")
+    pptd_path = tmp_path / "artifacts" / "r-semantic-methodology" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="数据链路层",
+        nodes=[
+            OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+            OutlineNode(title="成帧机制", bullets=["帧边界", "差错影响", "同步恢复"]),
+            OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+        ],
+        slide_count=3,
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        source_notes=["", "ch3_数据链路层_v2.pdf P9", ""],
+    )
+
+    content_page = (pptd_path.parent / "pages" / "slide-02.page").read_text(encoding="utf-8")
+    assert "Old methodology title" not in content_page
+    assert "MolGNN" not in content_page
+    assert "sourceTemplate: methodology.page" in content_page
+    assert "资料依据：ch3_数据链路层_v2.pdf P9" in content_page
 
 
 def test_pptd_writer_selects_skill_template_family_from_run_style(tmp_path: Path) -> None:

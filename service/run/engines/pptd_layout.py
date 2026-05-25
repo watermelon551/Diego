@@ -7,6 +7,7 @@ from .pptd_contracts import PptdSlideContent
 from .pptd_page_yaml import PptdPageYamlRenderer
 from .pptd_preview import PptdPreviewRenderer, PptdProjectPreviewRenderer
 from .pptd_skill_template import PptdSkillTemplateDeck
+from .pptd_source_notes import pptd_source_notes_from_report
 
 
 class PptdDeckWriter:
@@ -21,6 +22,7 @@ class PptdDeckWriter:
         skill_dir: Path | None = None,
         template_style: str = "",
         template_id: str | None = None,
+        source_notes: list[str] | None = None,
     ) -> None:
         self._write_planning_docs(
             pptd_dir=pptd_path.parent,
@@ -38,6 +40,7 @@ class PptdDeckWriter:
             skill_dir=skill_dir,
             template_style=template_style,
             template_id=template_id,
+            source_notes=source_notes,
         ):
             return
         pages_dir = pptd_path.parent / "pages"
@@ -46,7 +49,12 @@ class PptdDeckWriter:
         page_paths: list[str] = []
         renderer = PptdPageYamlRenderer()
         for index in range(total):
-            slide = self._slide_content(index=index, total=total, nodes=nodes)
+            slide = self._slide_content(
+                index=index,
+                total=total,
+                nodes=nodes,
+                source_notes=source_notes,
+            )
             page_name = f"slide-{index + 1:02d}.page"
             page_paths.append(f"pages/{page_name}")
             (pages_dir / page_name).write_text(
@@ -64,6 +72,7 @@ class PptdDeckWriter:
         nodes: list[Any],
         slide_count: int,
         theme: dict[str, Any],
+        source_notes: list[str] | None = None,
     ) -> dict[str, Any]:
         total = max(1, slide_count, len(nodes))
         renderer = PptdPreviewRenderer()
@@ -73,7 +82,12 @@ class PptdDeckWriter:
                 "slide_id": f"slide-{index + 1:02d}",
                 "format": "svg",
                 "svg_data_url": renderer.svg_data_url(
-                    slide=self._slide_content(index=index, total=total, nodes=nodes),
+                    slide=self._slide_content(
+                        index=index,
+                        total=total,
+                        nodes=nodes,
+                        source_notes=source_notes,
+                    ),
                     theme=theme,
                 ),
                 "width": 1280,
@@ -134,7 +148,22 @@ class PptdDeckWriter:
             ]
         )
 
-    def _slide_content(self, *, index: int, total: int, nodes: list[Any]) -> PptdSlideContent:
+    def source_notes_for_run(self, *, run: Any, slide_count: int) -> list[str]:
+        report = (
+            getattr(run, "research_report", {})
+            if isinstance(getattr(run, "research_report", {}), dict)
+            else {}
+        )
+        return pptd_source_notes_from_report(report, slide_count=slide_count)
+
+    def _slide_content(
+        self,
+        *,
+        index: int,
+        total: int,
+        nodes: list[Any],
+        source_notes: list[str] | None = None,
+    ) -> PptdSlideContent:
         node = nodes[index] if index < len(nodes) else None
         title = str(getattr(node, "title", "") or f"Slide {index + 1}")
         bullets = [str(item) for item in list(getattr(node, "bullets", []) or [])[:6]]
@@ -151,6 +180,11 @@ class PptdDeckWriter:
             bullets=bullets,
             page_type=page_type,
             layout_hint=layout_hint,
+            source_note=(
+                source_notes[index]
+                if source_notes is not None and index < len(source_notes)
+                else ""
+            ),
         )
 
     def _write_planning_docs(

@@ -151,18 +151,21 @@ class SlideRegenerationPptdMixin:
         self, *, run: RunRecord, pptd_path: Path, nodes: list[OutlineNode]
     ) -> None:
         design = self.orch._resolve_run_design(run)
-        PptdDeckWriter().write_project(
+        writer = PptdDeckWriter()
+        slide_count = max(
+            len(nodes),
+            int(getattr(run.input, "target_slide_count", 0) or 0),
+        )
+        writer.write_project(
             pptd_path=pptd_path,
             title=str(getattr(run.input, "topic", "") or "Presentation"),
             nodes=nodes,
-            slide_count=max(
-                len(nodes),
-                int(getattr(run.input, "target_slide_count", 0) or 0),
-            ),
+            slide_count=slide_count,
             theme=design.theme,
             skill_dir=Path(str(getattr(self.orch.settings, "pptd_skill_dir", "") or "")),
             template_style=str(getattr(run.input, "template_style", "") or ""),
             template_id=str(getattr(run.input, "template_id", "") or "") or None,
+            source_notes=writer.source_notes_for_run(run=run, slide_count=slide_count),
         )
 
     async def _regenerated_pptd_outline_node(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...models import EventType, SlideArtifact, VisualPolicy
+from ..engines.pptd_layout import PptdDeckWriter
 from .scratch_compile_mixin import ScratchCompileMixin
 from .scratch_slide_batch_mixin import ScratchSlideBatchMixin
 
@@ -90,23 +91,39 @@ class ScratchFlowService(ScratchSlideBatchMixin, ScratchCompileMixin):
     async def _materialize_pptd_outline_slides(self, *, run_id: str, run: Any) -> None:
         orch = self.orch
         outline_nodes = list(getattr(getattr(run, "outline", None), "nodes", []) or [])
+        source_notes = PptdDeckWriter().source_notes_for_run(
+            run=run,
+            slide_count=len(outline_nodes),
+        )
 
         def apply_outline_slides(record: Any) -> None:
             existing_by_no = {
                 int(getattr(slide, "slide_no", 0) or 0): slide
                 for slide in list(getattr(record, "slides", []) or [])
             }
-            record.slides = [
-                existing_by_no.get(index)
-                or SlideArtifact(
-                    slide_no=index,
-                    js_path=None,
-                    js_code="",
-                    status="pptd_outline_ready",
-                    citations=[],
+            slides: list[SlideArtifact] = []
+            for index, _node in enumerate(outline_nodes, start=1):
+                existing = existing_by_no.get(index)
+                note = source_notes[index - 1] if index - 1 < len(source_notes) else ""
+                citations = list(getattr(existing, "citations", []) or [])
+                if not citations and note:
+                    citations = [note]
+                slides.append(
+                    existing
+                    or SlideArtifact(
+                        slide_no=index,
+                        js_path=None,
+                        js_code="",
+                        status="pptd_outline_ready",
+                        citations=citations,
+                    )
                 )
-                for index, _node in enumerate(outline_nodes, start=1)
-            ]
+                if (
+                    existing is not None
+                    and list(getattr(existing, "citations", []) or []) != citations
+                ):
+                    slides[-1] = existing.model_copy(update={"citations": citations})
+            record.slides = slides
 
         await orch.store.update_run(run_id, apply_outline_slides)
         for index, node in enumerate(outline_nodes, start=1):

@@ -11,6 +11,7 @@ class PptdSlideContent:
     bullets: list[str]
     page_type: str = "content"
     layout_hint: str = ""
+    source_note: str = ""
 
     @property
     def page_no(self) -> int:
