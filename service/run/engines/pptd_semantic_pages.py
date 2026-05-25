@@ -148,6 +148,7 @@ class PptdSemanticPageRenderer:
 
     def _comparison_page(self, *, slide: PptdSlideContent, template_page_name: str) -> str:
         left_title, left_desc, left_items, right_title, right_desc, right_items = self._two_panel_groups(slide)
+        summary_items = self._cross_comparison_items(slide.bullets) or [left_items[-1], right_items[-1]]
         title = self._short_label(slide.title, max_len=34)
         shapes: list[_ShapeSpec] = [
             self._top_band(),
@@ -168,7 +169,7 @@ class PptdSemanticPageRenderer:
             _TextSpec(
                 "comparison-summary-text",
                 [124, 606, 1032, 48],
-                f"课堂判断：{self._join_brief([left_items[-1], right_items[-1]], max_len=40)}",
+                self._classroom_judgment(summary_items),
                 18,
                 "$text",
                 "[center, middle]",
@@ -392,6 +393,9 @@ class PptdSemanticPageRenderer:
         if len(groups) >= 2:
             left_name, left_items = groups[0]
             right_name, right_items = groups[1]
+            if self._is_protocol_pair(left_name, right_name):
+                left_items = self._panel_specific_items(left_items, "gbn")
+                right_items = self._panel_specific_items(right_items, "sr")
             return (
                 self._short_label(left_name, max_len=14),
                 self._short_label(left_items[0] if left_items else left_name, max_len=46),
@@ -450,6 +454,49 @@ class PptdSemanticPageRenderer:
                     collected[name].append(desc)
                     break
         return [(name, items) for name, items in collected.items() if items]
+
+    def _is_protocol_pair(self, left_name: str, right_name: str) -> bool:
+        names = {self._protocol_key(left_name), self._protocol_key(right_name)}
+        return names == {"gbn", "sr"}
+
+    def _protocol_key(self, value: str) -> str:
+        normalized = self._plain_text(value).lower()
+        if "gbn" in normalized or "回退n" in normalized or "后退n" in normalized:
+            return "gbn"
+        if self._has_sr_token(normalized) or "选择重传" in normalized:
+            return "sr"
+        return normalized.strip()
+
+    def _panel_specific_items(self, items: list[str], protocol: str) -> list[str]:
+        del protocol
+        filtered = [
+            item
+            for item in items
+            if not self._mentions_both_protocols(item)
+        ]
+        return filtered or items
+
+    def _cross_comparison_items(self, bullets: list[str]) -> list[str]:
+        return [
+            self._clean_bullet(item)
+            for item in bullets
+            if self._mentions_both_protocols(item)
+        ][:2]
+
+    def _classroom_judgment(self, items: list[str]) -> str:
+        text = self._join_brief(items, max_len=40).strip()
+        if text.startswith(("课堂判断：", "课堂判断:")):
+            return text
+        return f"课堂判断：{text}"
+
+    def _mentions_both_protocols(self, value: str) -> bool:
+        text = self._plain_text(value).lower()
+        has_gbn = "gbn" in text or "回退n" in text or "后退n" in text
+        has_sr = self._has_sr_token(text) or "选择重传" in text
+        return has_gbn and has_sr
+
+    def _has_sr_token(self, text: str) -> bool:
+        return bool(re.search(r"(?<![a-z0-9])sr(?![a-z0-9])", text))
 
     def _process_items(self, slide: PptdSlideContent) -> list[str]:
         groups = self._content_groups(slide.bullets)

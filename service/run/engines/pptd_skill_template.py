@@ -591,6 +591,9 @@ class PptdSkillTemplateDeck:
         if len(groups) >= 2:
             left_name, left_items = groups[0]
             right_name, right_items = groups[1]
+            if self._is_protocol_pair(left_name, right_name):
+                left_items = self._panel_specific_items(left_items)
+                right_items = self._panel_specific_items(right_items)
             return (
                 self._short_label(left_name, max_len=12),
                 self._short_label(left_items[0] if left_items else left_name, max_len=42),
@@ -647,6 +650,31 @@ class PptdSkillTemplateDeck:
         if current_name or current_items:
             groups.append((current_name or "要点", current_items))
         return [(name, items) for name, items in groups if name or items]
+
+    def _is_protocol_pair(self, left_name: str, right_name: str) -> bool:
+        names = {self._protocol_key(left_name), self._protocol_key(right_name)}
+        return names == {"gbn", "sr"}
+
+    def _protocol_key(self, value: str) -> str:
+        normalized = str(value or "").lower()
+        if "gbn" in normalized or "回退n" in normalized or "后退n" in normalized:
+            return "gbn"
+        if self._has_sr_token(normalized) or "选择重传" in normalized:
+            return "sr"
+        return normalized.strip()
+
+    def _panel_specific_items(self, items: list[str]) -> list[str]:
+        filtered = [item for item in items if not self._mentions_both_protocols(item)]
+        return filtered or items
+
+    def _mentions_both_protocols(self, value: str) -> bool:
+        text = str(value or "").lower()
+        has_gbn = "gbn" in text or "回退n" in text or "后退n" in text
+        has_sr = self._has_sr_token(text) or "选择重传" in text
+        return has_gbn and has_sr
+
+    def _has_sr_token(self, text: str) -> bool:
+        return bool(re.search(r"(?<![a-z0-9])sr(?![a-z0-9])", text))
 
     def _clean_bullet(self, value: str) -> str:
         text = str(value or "").strip()

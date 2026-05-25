@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -837,6 +838,80 @@ def test_pptd_semantic_comparison_splits_inline_gbn_sr_bullets(tmp_path: Path) -
     assert "<strong>SR</strong>" in comparison_page
     assert "接收窗口与独立确认机制" in comparison_page
     assert comparison_page.count("高误码率与高带宽延迟积网络") == 0
+
+
+def test_pptd_semantic_comparison_keeps_cross_protocol_notes_in_summary(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-3" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-3.pptd").write_text(
+        "\n".join(['title: "Template"', "size: [1280, 720]", "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old placeholder",
+            "",
+        ]
+    )
+    for page_name in ("cover.page", "toc.page", "content2.page", "final.page"):
+        (pages_dir / page_name).write_text(page_template, encoding="utf-8")
+    nodes = [
+        OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+        OutlineNode(title="目录", bullets=["对比"], page_type=SlidePageType.TOC),
+        OutlineNode(
+            title="GBN与SR协议对比：错误恢复策略的根本差异",
+            bullets=[
+                "GBN：",
+                "发送窗口>1，接收窗口=1；出错时重传所有后续帧",
+                "SR：",
+                "发送窗口>1，接收窗口>1；仅重传出错的帧",
+                "确认方式：GBN用累计确认；SR用单独确认",
+                "实现复杂度：GBN接收方简单，发送方缓冲少；SR接收方复杂，需缓存乱序帧",
+            ],
+            layout_hint="content-comparison",
+        ),
+        OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+    ]
+    pptd_path = tmp_path / "artifacts" / "r-grouped-compare" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=nodes,
+        slide_count=len(nodes),
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        template_style="education courseware",
+    )
+
+    comparison_page = (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
+    right_bullets = "\n".join(
+        re.findall(
+            r"elementId: comparison-right-bullet-[123].*?(?=\n  - elementId:|\Z)",
+            comparison_page,
+            flags=re.S,
+        )
+    )
+    summary_block = re.search(
+        r"elementId: comparison-summary-text.*?(?=\n  - elementId:|\Z)",
+        comparison_page,
+        flags=re.S,
+    )
+    assert summary_block is not None
+    assert "确认方式" in summary_block.group(0)
+    assert "实现复杂度" in summary_block.group(0)
+    assert "课堂判断：课堂判断" not in summary_block.group(0)
+    assert "确认方式" not in right_bullets
+    assert "实现复杂度" not in right_bullets
 
 
 def test_pptd_writer_uses_direct_semantic_pages_for_core_content(tmp_path: Path) -> None:
