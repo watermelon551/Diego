@@ -109,18 +109,6 @@ class CompileEngine(
             or compile_path.suffix == ".pptd"
             or (slides_dir / "pptd" / "presentation.pptd").is_file()
         ):
-            return await self._build_pptd_compile_bundle(
-                run=run,
-                slides_dir=slides_dir,
-                theme=theme,
-            )
-        self._ensure_compile_script(
-            slides_dir=slides_dir,
-            slide_count=slide_count,
-            theme=theme,
-        )
-        return await self._build_scratch_compile_bundle(
-            run=run,
-            slides_dir=slides_dir,
-            theme=theme,
-        )
+            return await self._build_pptd_compile_bundle(run=run, slides_dir=slides_dir, theme=theme)
+        self._ensure_compile_script(slides_dir=slides_dir, slide_count=slide_count, theme=theme)
+        return await self._build_scratch_compile_bundle(run=run, slides_dir=slides_dir, theme=theme)

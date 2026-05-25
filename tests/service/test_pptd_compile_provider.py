@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,9 +99,17 @@ def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -
     assert result.pptx_path == slides_dir / "output" / "presentation.pptx"
     assert (slides_dir / "pptd" / "presentation.pptd").is_file()
     assert (slides_dir / "pptd" / "pages" / "slide-01.page").is_file()
-    assert "Data Link Layer" in (slides_dir / "pptd" / "pages" / "slide-01.page").read_text(
+    cover_text = (slides_dir / "pptd" / "pages" / "slide-01.page").read_text(
         encoding="utf-8"
     )
+    content_text = (slides_dir / "pptd" / "pages" / "slide-02.page").read_text(
+        encoding="utf-8"
+    )
+    assert "Data Link Layer" in cover_text
+    assert "elementType: shape" in content_text
+    assert "shapeName: roundRect" in content_text
+    assert "point-1-card" in content_text
+    assert "ACK" in content_text
     assert len(calls) == 2
     assert "check.sh" in " ".join(calls[0])
     assert "convert.sh" in " ".join(calls[1])
@@ -216,3 +226,13 @@ def test_compile_provider_pptd_builds_pagevra_bundle_without_legacy_scene_entryp
     assert "slides/pptd/presentation.pptd" in paths
     assert "slides/pptd/pages/slide-01.page" in paths
     assert "slides/input/presentation.pptx" in paths
+    preview_seed = next(
+        item
+        for item in bundle["files"]
+        if item["path"] == "slides/preview_seed.json"
+    )
+    preview = json.loads(base64.b64decode(preview_seed["content_base64"]))
+    svg_data_url = preview["pages"][0]["svg_data_url"]
+    svg = base64.b64decode(svg_data_url.split(",", 1)[1]).decode("utf-8")
+    assert "课程课件 / Courseware" in svg
+    assert "<rect width=\"360\" height=\"720\"" in svg
