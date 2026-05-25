@@ -358,6 +358,42 @@ def test_pptd_outline_normalizer_treats_course_overview_as_toc() -> None:
     assert node.layout_hint.startswith("toc-")
 
 
+def test_pptd_outline_normalizer_treats_chapter_goals_as_toc_even_with_metrics() -> None:
+    outline = OutlineDocument(
+        version=1,
+        summary="数据链路层课程",
+        nodes=[
+            OutlineNode(title="封面", page_type=SlidePageType.COVER),
+            OutlineNode(
+                title="本章内容与目标",
+                bullets=[
+                    "掌握成帧方法、差错检测与CRC",
+                    "理解停止等待ARQ协议原理与性能瓶颈",
+                    "掌握滑动窗口协议思想及GBN/SR机制",
+                    "分析窗口大小与信道利用率等性能指标",
+                ],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-stat-callout",
+            ),
+            OutlineNode(title="成帧", bullets=["界定帧边界"], page_type=SlidePageType.CONTENT),
+            OutlineNode(title="差错检测", bullets=["CRC"], page_type=SlidePageType.CONTENT),
+            OutlineNode(title="ARQ", bullets=["ACK", "重传"], page_type=SlidePageType.CONTENT),
+            OutlineNode(title="总结", page_type=SlidePageType.SUMMARY),
+        ],
+    )
+
+    fitted = _OutlineNormalizer()._fit_outline(
+        outline,
+        topic="数据链路层",
+        target_slide_count=6,
+        template_style="education courseware",
+    )
+
+    node = fitted.nodes[1]
+    assert node.page_type == SlidePageType.TOC
+    assert node.layout_hint.startswith("toc-")
+
+
 def test_pptd_outline_normalizer_removes_random_comparison_layout_without_signal() -> None:
     outline = OutlineDocument(
         version=1,

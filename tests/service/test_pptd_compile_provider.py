@@ -1721,6 +1721,25 @@ def test_pptd_semantic_renderer_protocol_title_overrides_metric_hint() -> None:
     assert "metric-card-1" not in page
 
 
+def test_pptd_semantic_renderer_does_not_promote_performance_bottleneck_to_metric() -> None:
+    renderer = PptdSemanticPageRenderer()
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=5,
+            total=10,
+            title="性能瓶颈与滑动窗口思想",
+            bullets=[
+                "停等协议问题：大量时间浪费在等待确认",
+                "核心思想：允许发送方连续发送多个帧",
+            ],
+        ),
+        template_page_name="content3.page",
+    )
+
+    assert "metric-card-1" not in page
+    assert "concept-definition-card" in page
+
+
 def test_pptd_semantic_renderer_lets_metric_title_override_process_hint() -> None:
     renderer = PptdSemanticPageRenderer()
     page = renderer.page_yaml(
@@ -1781,6 +1800,100 @@ def test_pptd_semantic_renderer_uses_distinct_metric_bullets() -> None:
     assert "GBN" not in page
     assert "SR" not in page
     assert "metric-table-1-0" in page
+
+
+def test_pptd_semantic_renderer_preserves_formula_metric_cards() -> None:
+    renderer = PptdSemanticPageRenderer()
+
+    number, unit, desc = renderer._metric_parts(
+        "利用率公式：U = W / (1 + 2a)，a=传播时延/发送时延",
+        fallback="1",
+    )
+
+    assert number == "U"
+    assert unit == "公式"
+    assert desc == "U = W / (1 + 2a)，a=传播时延/发送时延"
+    assert "U = W / ，" not in desc
+
+
+def test_pptd_semantic_renderer_preserves_min_formula_metric_cards() -> None:
+    renderer = PptdSemanticPageRenderer()
+
+    number, unit, desc = renderer._metric_parts(
+        "滑动窗口: U = min(1, WT / (1 + 2a))",
+        fallback="2",
+    )
+
+    assert number == "U"
+    assert unit == "公式"
+    assert "min(1, WT / (1 + 2a))" in desc
+
+
+def test_pptd_semantic_renderer_preserves_formula_metric_table_cells() -> None:
+    renderer = PptdSemanticPageRenderer()
+
+    rows = renderer._metric_summary_rows(
+        [
+            "信道利用率 U = WT / (1 + 2a)，a = 传播时延/发送时延",
+            "停等协议 U = 1/(1+2a)，效率极低",
+            "增大窗口WT可提高U，直至U≈100%",
+            "滑动窗口(WS=10)：利用率显著提升，可近100%",
+        ]
+    )
+    formula = renderer._metric_table_cell(
+        "U ≈ 1/(1+2a)，其中 a = 传播时延/发送时延",
+        col=1,
+        is_header=False,
+    )
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=8,
+            total=10,
+            title="窗口大小与信道利用率",
+            bullets=[
+                "信道利用率 U = (发送时间) / (发送时间 + 传播时延 + 确认时延)",
+                "停止等待：U ≈ 1/(1+2a)，其中 a = 传播时延/发送时延",
+                "滑动窗口：U = min(1, WT / (1 + 2a))",
+            ],
+            layout_hint="content-stat-callout",
+        ),
+        template_page_name="data_analysis.page",
+    )
+
+    assert rows[1][0] == "信道利用率"
+    assert rows[1][1].startswith("U = WT / (1 + 2a)")
+    assert "U = WT / ，" not in rows[1][1]
+    assert rows[2][:2] == ("停等协议", "U = 1/(1+2a)，效率极低")
+    assert "U =" not in rows[2][0]
+    assert renderer._formula_metric_row("滑动窗口(WS=10)：利用率显著提升，可近100%") is None
+    assert formula.startswith("U ≈ 1/(1+2a)")
+    assert "U ≈ 1/，" not in formula
+    assert "U ≈ 1/，" not in page
+    assert "wrap: false" in page
+
+
+def test_pptd_semantic_renderer_uses_grouped_metric_extras_before_padding() -> None:
+    renderer = PptdSemanticPageRenderer()
+    slide = PptdSlideContent(
+        index=8,
+        total=10,
+        title="窗口大小与信道利用率指标",
+        bullets=[
+            "GBN：",
+            "GBN窗口限制: Ws ≤ 2^n - 1",
+            "SR：",
+            "SR窗口限制: Ws ≤ 2^(n-1)",
+            "窗口效率公式: U = min(Ws, 1+2a) / (1+2a)",
+        ],
+        layout_hint="content-stat-callout",
+    )
+
+    metrics = renderer._metric_items(slide)
+
+    assert len(metrics) == 3
+    assert metrics[0].startswith("GBN：")
+    assert metrics[1].startswith("SR：")
+    assert metrics[2].startswith("窗口效率公式")
 
 
 def test_pptd_semantic_renderer_keeps_protocol_case_as_concept() -> None:

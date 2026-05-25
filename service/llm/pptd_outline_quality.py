@@ -119,6 +119,10 @@ def has_toc_signal(node: OutlineNode) -> bool:
             "目录",
             "大纲",
             "导览",
+            "本章内容",
+            "内容与目标",
+            "学习目标",
+            "课程目标",
             "学习路径",
             "课程结构",
             "课程内容",
@@ -174,7 +178,7 @@ def _has_metric_signal(text: str, node: OutlineNode) -> bool:
         keyword in text
         for keyword in (
             "指标",
-            "性能",
+            "性能指标",
             "量化",
             "利用率",
             "吞吐",

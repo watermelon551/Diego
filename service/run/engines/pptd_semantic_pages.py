@@ -146,7 +146,7 @@ class PptdSemanticPageRenderer:
             token in text
             for token in (
                 "指标",
-                "性能",
+                "量化",
                 "利用率",
                 "窗口大小",
                 "吞吐",
@@ -356,17 +356,19 @@ class PptdSemanticPageRenderer:
         row_y = [358, 420, 482, 544]
         for idx, y in enumerate(row_y[: len(rows)]):
             fill = "#f1f5f9" if idx == 0 else "#ffffff"
-            shapes.append(_ShapeSpec(f"metric-row-bg-{idx}", [90, y - 12, 1100, 52], fill, "rect"))
+            shapes.append(_ShapeSpec(f"metric-row-bg-{idx}", [90, y - 12, 1100, 56], fill, "rect"))
             for col, value in enumerate(rows[idx][:3]):
                 texts.append(
                     _TextSpec(
                         f"metric-table-{idx}-{col}",
-                        [col_x[col], y, col_w[col], 28],
-                        value,
-                        18 if idx else 17,
+                        [col_x[col], y, col_w[col], 34],
+                        self._metric_table_cell(value, col=col, is_header=idx == 0),
+                        16 if idx else 15,
                         "$text" if idx else "#64748b",
                         "[left, middle]",
                         bold=idx == 0,
+                        line_height=1.12,
+                        wrap=False,
                     )
                 )
         return self._page(
@@ -619,22 +621,74 @@ class PptdSemanticPageRenderer:
         if len(groups) == 1 and groups[0][0] == "要点":
             return self._display_items(slide, count=3)
         if groups:
-            flattened = [f"{name}：{items[0]}" if items else name for name, items in groups]
-            return self._pad_items(flattened, count=3)
+            flattened: list[str] = []
+            extras: list[str] = []
+            for name, items in groups:
+                flattened.append(f"{name}：{items[0]}" if items else name)
+                extras.extend(
+                    item
+                    for item in items[1:]
+                    if self._has_metric_signal(item.lower()) or self._has_formula_operator(item)
+                )
+            return self._pad_items([*flattened, *extras], count=3)
         return self._display_items(slide, count=3)
 
     def _metric_summary_rows(self, metrics: list[str]) -> list[tuple[str, str, str]]:
         rows: list[tuple[str, str, str]] = [("指标", "含义", "课堂判断")]
         for item in metrics[:3]:
+            formula_row = self._formula_metric_row(item)
+            if formula_row:
+                rows.append(formula_row)
+                continue
             head, desc = self._split_item(item)
+            desc_text = desc if desc != head else item
+            if self._has_formula_operator(desc_text):
+                compact_desc = self._short_formula(desc_text, max_len=30)
+            else:
+                compact_desc = self._short_label(desc_text, max_len=24)
             rows.append(
                 (
                     self._short_label(head, max_len=16),
-                    self._short_label(desc if desc != head else item, max_len=24),
+                    compact_desc,
                     self._metric_judgment(item),
                 )
             )
         return rows
+
+    def _formula_metric_row(self, item: str) -> tuple[str, str, str] | None:
+        plain = self._plain_text(item)
+        formula = self._formula_text(plain)
+        if not formula:
+            return None
+        label = self._formula_metric_label(plain)
+        if not label:
+            label = "公式"
+        return (
+            self._short_label(label, max_len=16),
+            self._short_formula(formula, max_len=30),
+            self._metric_judgment(item),
+        )
+
+    def _formula_metric_label(self, plain: str) -> str:
+        for sep in ("：", ":"):
+            if sep in plain:
+                prefix, suffix = plain.split(sep, 1)
+                if self._has_formula_operator(suffix):
+                    return re.sub(r"[（(][^）)]{1,24}[）)]", "", prefix).strip(" ：:-，,、；;。")
+        operator_match = re.search(r"\s*[=≈≤≥]\s*", plain)
+        before_formula = plain[: operator_match.start()] if operator_match else plain
+        symbol_match = re.search(r"([A-Za-z][A-Za-z0-9_]*)\s*$", before_formula)
+        if symbol_match:
+            before_formula = before_formula[: symbol_match.start()]
+        return before_formula.strip(" ：:-，,、；;。")
+
+    def _metric_table_cell(self, value: str, *, col: int, is_header: bool) -> str:
+        text = self._plain_text(value)
+        if is_header:
+            return self._short_label(text, max_len=(10 if col == 0 else 14))
+        if "=" in text or any(mark in text for mark in ("≈", "/", "min(")):
+            return self._short_formula(text, max_len=(28 if col == 1 else 24))
+        return self._short_label(text, max_len=(14 if col == 0 else 22 if col == 1 else 24))
 
     def _metric_judgment(self, item: str) -> str:
         text = self._plain_text(item)
@@ -691,6 +745,9 @@ class PptdSemanticPageRenderer:
 
     def _metric_parts(self, item: str, *, fallback: str) -> tuple[str, str, str]:
         plain = self._plain_text(item)
+        formula_parts = self._formula_metric_parts(plain)
+        if formula_parts:
+            return formula_parts
         match = re.search(r"([0-9]+(?:\.[0-9]+)?)(\s*%|倍|帧|bit|ms|s|Mbps)?", plain)
         if match:
             number = match.group(1)
@@ -699,6 +756,50 @@ class PptdSemanticPageRenderer:
             return number, unit, self._short_label(desc, max_len=30)
         head, desc = self._split_item(plain)
         return fallback.zfill(2), self._short_label(head, max_len=6), self._short_label(desc, max_len=30)
+
+    def _formula_metric_parts(self, plain: str) -> tuple[str, str, str] | None:
+        if not self._has_formula_operator(plain):
+            return None
+        formula = self._formula_text(plain)
+        if not formula:
+            return None
+        symbol_match = re.match(r"\s*([A-Za-z][A-Za-z0-9_]*)\s*[=≈≤≥]", formula)
+        number = symbol_match.group(1) if symbol_match else "公式"
+        return self._short_formula(number, max_len=4), "公式", self._short_formula(formula, max_len=34)
+
+    def _has_formula_operator(self, value: str) -> bool:
+        return any(operator in value for operator in ("=", "≈", "≤", "≥"))
+
+    def _formula_text(self, plain: str) -> str:
+        text = re.sub(r"\s+", " ", str(plain or "").strip())
+        if "：" in text:
+            prefix, suffix = text.split("：", 1)
+            if self._has_formula_operator(suffix) and ("公式" in prefix or len(prefix) <= 14):
+                text = suffix.strip()
+            elif self._has_formula_operator(prefix) and not self._has_formula_operator(suffix):
+                return ""
+        elif ":" in text:
+            prefix, suffix = text.split(":", 1)
+            if self._has_formula_operator(suffix) and ("formula" in prefix.lower() or "公式" in prefix or len(prefix) <= 18):
+                text = suffix.strip()
+            elif self._has_formula_operator(prefix) and not self._has_formula_operator(suffix):
+                return ""
+        operator_match = re.search(r"\s*([=≈≤≥])\s*", text)
+        if not operator_match:
+            return ""
+        operator = operator_match.group(1)
+        before = text[: operator_match.start()]
+        after = text[operator_match.end() :]
+        symbol_match = re.search(r"([A-Za-z][A-Za-z0-9_]*)\s*$", before)
+        if symbol_match:
+            text = f"{symbol_match.group(1)} {operator} {after.strip()}"
+        return self._clean_phrase(text)
+
+    def _short_formula(self, value: str, *, max_len: int) -> str:
+        text = self._plain_text(value).strip()
+        if len(text) <= max_len:
+            return text
+        return text[:max_len].strip(" ：:，,、；;。.!！?？")
 
     def _join_brief(self, items: list[str], *, max_len: int) -> str:
         cleaned = []
