@@ -233,10 +233,12 @@ def test_compile_provider_pptd_builds_pagevra_bundle_without_legacy_scene_entryp
         if item["path"] == "slides/preview_seed.json"
     )
     preview = json.loads(base64.b64decode(preview_seed["content_base64"]))
+    assert preview["source"] == "pptd_project"
     svg_data_url = preview["pages"][0]["svg_data_url"]
     svg = base64.b64decode(svg_data_url.split(",", 1)[1]).decode("utf-8")
-    assert "NeoSpectra · PPTD Courseware" in svg
-    assert "结构化路径 · 启发式引导" in svg
+    assert "Data Link Layer" in svg
+    assert "Framing" in svg
+    assert "01 / 01" in svg
 
 
 def test_pptd_writer_prefers_external_skill_template_when_available(tmp_path: Path) -> None:

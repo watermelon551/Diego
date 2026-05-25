@@ -16,6 +16,7 @@ dependencies = [
   "asyncpg>=0.30.0",
   "python-multipart>=0.0.9",
   "markitdown[pptx]>=0.1.1",
+  "PyYAML>=6.0.0",
 ]
 
 [project.optional-dependencies]
@@ -30,4 +31,3 @@ exclude = ["tests*", "refrences*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-

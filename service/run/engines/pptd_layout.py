@@ -5,7 +5,7 @@ from typing import Any
 
 from .pptd_contracts import PptdSlideContent
 from .pptd_page_yaml import PptdPageYamlRenderer
-from .pptd_preview import PptdPreviewRenderer
+from .pptd_preview import PptdPreviewRenderer, PptdProjectPreviewRenderer
 from .pptd_skill_template import PptdSkillTemplateDeck
 
 
@@ -75,6 +75,9 @@ class PptdDeckWriter:
             "page_count": len(pages),
             "pages": pages,
         }
+
+    def preview_manifest_from_project(self, *, pptd_path: Path) -> dict[str, Any]:
+        return PptdProjectPreviewRenderer().preview_manifest(pptd_path=pptd_path)
 
     def deck_yaml(
         self, *, title: str, page_paths: list[str], theme: dict[str, Any]

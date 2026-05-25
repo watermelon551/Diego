@@ -238,6 +238,11 @@ class CompilePptdRuntimeMixin:
     def _pptd_preview_manifest_from_run(
         self, *, run: Any, theme: dict[str, Any]
     ) -> dict[str, Any]:
+        pptd_path = Path(str(getattr(run, "artifact_dir", "") or "")) / "slides" / "pptd" / "presentation.pptd"
+        if pptd_path.is_file():
+            manifest = PptdDeckWriter().preview_manifest_from_project(pptd_path=pptd_path)
+            if manifest.get("pages"):
+                return manifest
         nodes = list(getattr(getattr(run, "outline", None), "nodes", []) or [])
         return PptdDeckWriter().preview_manifest(
             nodes=nodes,
