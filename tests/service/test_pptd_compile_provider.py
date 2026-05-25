@@ -105,6 +105,48 @@ def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -
     assert "convert.sh" in " ".join(calls[1])
 
 
+def test_compile_provider_pptd_normalizes_theme_colors_for_runtime_check(
+    tmp_path: Path,
+) -> None:
+    run = RunRecord(
+        run_id="r-pptd-color",
+        trace_id="t-pptd-color",
+        status=RunStatus.COMPILING,
+        input=CreateRunRequest(
+            topic="Color Check",
+            project_id="p-pptd-color",
+            target_slide_count=1,
+            generation_mode=GenerationMode.SCRATCH,
+        ),
+        artifact_dir=str(tmp_path / "artifacts" / "r-pptd-color"),
+        outline=OutlineDocument(
+            version=1,
+            summary="color normalization",
+            nodes=[OutlineNode(title="Color Check", bullets=["No bare hex"])],
+        ),
+        slides=[SlideArtifact(slide_no=1, js_code="", status="ready")],
+    )
+    runtime = SimpleNamespace(
+        settings=make_settings(compile_provider="pptd"),
+        store=_Store(run),
+        subprocess=SimpleNamespace(run=lambda *args, **kwargs: None),
+    )
+    engine = CompileEngine(runtime)
+    pptd_path = tmp_path / "artifacts" / "r-pptd-color" / "slides" / "pptd" / "presentation.pptd"
+
+    engine._write_pptd_project(
+        pptd_path=pptd_path,
+        run=run,
+        slide_count=1,
+        theme={"primary": "1A1A1A", "background": "ffffff", "text": "111827"},
+    )
+
+    deck_text = pptd_path.read_text(encoding="utf-8")
+    assert 'primary: "#1A1A1A"' in deck_text
+    assert 'background: "#ffffff"' in deck_text
+    assert 'text: "#111827"' in deck_text
+
+
 def test_compile_provider_pptd_builds_pagevra_bundle_without_legacy_scene_entrypoint(
     tmp_path: Path,
 ) -> None:

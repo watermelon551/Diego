@@ -141,9 +141,9 @@ class CompilePptdRuntimeMixin:
     def _pptd_deck_yaml(
         self, *, title: str, page_paths: list[str], theme: dict[str, Any]
     ) -> str:
-        primary = str(theme.get("primary") or theme.get("accent") or "#2563eb")
-        background = str(theme.get("background") or "#ffffff")
-        text = str(theme.get("text") or "#111827")
+        primary = self._pptd_color(theme.get("primary") or theme.get("accent"), "#2563eb")
+        background = self._pptd_color(theme.get("background"), "#ffffff")
+        text = self._pptd_color(theme.get("text"), "#111827")
         pages = "\n".join(f"  - {path}" for path in page_paths)
         return "\n".join(
             [
@@ -208,6 +208,15 @@ class CompilePptdRuntimeMixin:
     def _block_text(self, value: str, *, indent: int) -> str:
         prefix = " " * indent
         return "\n".join(f"{prefix}{line}" for line in value.splitlines() or [""])
+
+    def _pptd_color(self, value: Any, fallback: str) -> str:
+        color = str(value or "").strip() or fallback
+        if color.startswith("#"):
+            return color
+        lowered = color.lower()
+        if len(lowered) in {3, 6} and all(char in "0123456789abcdef" for char in lowered):
+            return f"#{color}"
+        return fallback
 
     async def _build_pptd_compile_bundle(
         self,
@@ -359,9 +368,9 @@ class CompilePptdRuntimeMixin:
         total: int,
         theme: dict[str, Any],
     ) -> str:
-        primary = html.escape(str(theme.get("primary") or theme.get("accent") or "#2563eb"))
-        background = html.escape(str(theme.get("background") or theme.get("bg") or "#ffffff"))
-        text_color = html.escape(str(theme.get("text") or "#111827"))
+        primary = html.escape(self._pptd_color(theme.get("primary") or theme.get("accent"), "#2563eb"))
+        background = html.escape(self._pptd_color(theme.get("background") or theme.get("bg"), "#ffffff"))
+        text_color = html.escape(self._pptd_color(theme.get("text"), "#111827"))
         title_xml = html.escape(title)
         bullet_lines = "\n".join(
             f'<text x="112" y="{304 + idx * 46}" font-size="26" fill="{text_color}">• {html.escape(item)}</text>'
