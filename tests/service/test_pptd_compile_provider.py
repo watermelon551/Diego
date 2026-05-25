@@ -788,7 +788,7 @@ def test_pptd_writer_uses_direct_semantic_pages_for_core_content(tmp_path: Path)
         OutlineNode(title="目录", bullets=["流程", "指标"], page_type=SlidePageType.TOC),
         OutlineNode(
             title="滑动窗口流程",
-            bullets=["发送窗口推进", "ACK 确认", "超时重传", "窗口右移"],
+            bullets=["发送窗口推进", "ACK 确认", "超时重传", "U = (F/R) / (F/R + 2τ)"],
         ),
         OutlineNode(
             title="GBN vs SR 对比",
@@ -820,6 +820,7 @@ def test_pptd_writer_uses_direct_semantic_pages_for_core_content(tmp_path: Path)
 
     assert "Old placeholder" not in process_page
     assert "process-card-1" in process_page
+    assert "用该公式估算效率" in process_page
     assert "sourceTemplate: content3.page" in process_page
     assert "comparison-left-card" in comparison_page
     assert "sourceTemplate: content2.page" in comparison_page

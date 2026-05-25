@@ -530,6 +530,10 @@ class PptdSemanticPageRenderer:
     def _teaching_step_desc(self, head: str, desc: str) -> str:
         clean_head = self._plain_text(head)
         clean_desc = self._plain_text(desc)
+        cjk_count = sum(1 for char in clean_desc if "\u4e00" <= char <= "\u9fff")
+        formula_like = any(mark in clean_desc for mark in ("=", "/", "τ", "^", "<", ">")) and cjk_count < 6
+        if formula_like:
+            return "用该公式估算效率，结合发送时延和传播时延说明适用条件。"
         if len(clean_desc) < 18 or clean_desc == clean_head:
             return f"观察{clean_head}前后的状态变化，并说明触发条件。"
         return clean_desc
