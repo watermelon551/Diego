@@ -138,7 +138,20 @@ class PptdDeckWriter:
         node = nodes[index] if index < len(nodes) else None
         title = str(getattr(node, "title", "") or f"Slide {index + 1}")
         bullets = [str(item) for item in list(getattr(node, "bullets", []) or [])[:6]]
-        return PptdSlideContent(index=index, total=total, title=title, bullets=bullets)
+        page_type = str(
+            getattr(getattr(node, "page_type", ""), "value", "")
+            or getattr(node, "page_type", "")
+            or "content"
+        )
+        layout_hint = str(getattr(node, "layout_hint", "") or "")
+        return PptdSlideContent(
+            index=index,
+            total=total,
+            title=title,
+            bullets=bullets,
+            page_type=page_type,
+            layout_hint=layout_hint,
+        )
 
     def _write_planning_docs(
         self,

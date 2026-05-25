@@ -15,6 +15,7 @@ from service.models import (
     RunRecord,
     RunStatus,
     SlideArtifact,
+    SlidePageType,
 )
 from service.run.engines import CompileEngine
 from service.run.engines.pptd_layout import PptdDeckWriter
@@ -449,6 +450,104 @@ def test_pptd_writer_selects_skill_template_family_from_run_style(tmp_path: Path
     assert "第一章" in content_text
     assert "成帧边界" in content_text
     assert "Keep logo text" in content_text
+
+
+def test_pptd_writer_uses_outline_semantics_to_choose_template_pages(tmp_path: Path) -> None:
+    template_dir = (
+        tmp_path
+        / "pptx-skill"
+        / "guideline"
+        / "design"
+        / "template"
+        / "education-3"
+    )
+    pages_dir = template_dir / "pages"
+    pages_dir.mkdir(parents=True)
+    (template_dir / "education-3.pptd").write_text(
+        "\n".join(
+            [
+                "title: education-3",
+                "size: [1280, 720]",
+                "theme:",
+                "  colors:",
+                '    primary: "#1C4D5F"',
+                "pages:",
+                "  - pages/cover.page",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old page title",
+            "  - elementId: template-kind",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        {kind}",
+            "  - elementId: bullet1-text",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old bullet",
+            "",
+        ]
+    )
+    for page_name in (
+        "cover.page",
+        "toc.page",
+        "section.page",
+        "content1.page",
+        "content2.page",
+        "content3.page",
+        "content4.page",
+        "content5.page",
+        "final.page",
+    ):
+        (pages_dir / page_name).write_text(
+            page_template.format(kind=page_name),
+            encoding="utf-8",
+        )
+    nodes = [
+        OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+        OutlineNode(title="目录", bullets=["成帧", "差错检测"], page_type=SlidePageType.TOC),
+        OutlineNode(title="流量控制章节", bullets=["反馈", "速率"], page_type=SlidePageType.SECTION),
+        OutlineNode(title="GBN vs SR 对比", bullets=["GBN 批量重传", "SR 选择重传"]),
+        OutlineNode(
+            title="流量控制机制",
+            bullets=["发送方与接收方速率匹配", "避免缓存溢出"],
+            layout_hint="content-two-column",
+        ),
+        OutlineNode(title="滑动窗口流程", bullets=["发送窗口推进", "ACK 确认", "超时重传"]),
+        OutlineNode(title="效率指标", bullets=["利用率提升 80%", "延迟降低 30%"]),
+        OutlineNode(title="机制协同框架", bullets=["成帧", "检错", "流控", "重传"]),
+        OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+    ]
+    pptd_path = tmp_path / "artifacts" / "r-semantic" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=nodes,
+        slide_count=len(nodes),
+        theme={"primary": "#123456"},
+        skill_dir=tmp_path / "pptx-skill",
+        template_style="education courseware",
+    )
+
+    assert "section.page" in (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
+    assert "content2.page" in (pptd_path.parent / "pages" / "slide-04.page").read_text(encoding="utf-8")
+    assert "content2.page" in (pptd_path.parent / "pages" / "slide-05.page").read_text(encoding="utf-8")
+    assert "content3.page" in (pptd_path.parent / "pages" / "slide-06.page").read_text(encoding="utf-8")
+    assert "content4.page" in (pptd_path.parent / "pages" / "slide-07.page").read_text(encoding="utf-8")
+    assert "content5.page" in (pptd_path.parent / "pages" / "slide-08.page").read_text(encoding="utf-8")
 
 
 def test_pptd_project_preview_renders_custom_paths_and_inline_text_styles(tmp_path: Path) -> None:

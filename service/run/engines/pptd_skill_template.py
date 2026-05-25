@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import re
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +47,7 @@ class PptdSkillTemplateDeck:
         page_paths: list[str] = []
         for index in range(total):
             slide = self._slide_content(index=index, total=total, nodes=nodes)
-            template_page = pages_dir / self._template_page_name(index=index, total=total)
+            template_page = pages_dir / self._template_page_name(slide=slide)
             if not template_page.is_file():
                 return False
             page_name = f"slide-{index + 1:02d}.page"
@@ -92,11 +93,30 @@ class PptdSkillTemplateDeck:
         return "\n".join(rendered) + "\n"
 
     def _render_page(self, text: str, *, slide: PptdSlideContent) -> str:
-        kind = self._template_page_name(index=slide.index, total=slide.total)
+        kind = self._template_page_name(slide=slide)
         if kind == "cover.page":
             return self._render_cover(text, slide)
         if kind == "toc.page":
             return self._render_toc(text, slide)
+        if kind in {"section.page", "chapter.page", "chapter1.page", "chapter2.page"}:
+            return self._render_section(text, slide)
+        if kind in {"content1.page", "content_bullets.page", "content-bullets.page", "bullets.page"}:
+            return self._render_bullet_list(text, slide)
+        if kind in {"content2.page", "comparison.page", "two_column.page", "content_two_col.page"}:
+            return self._render_two_panel(text, slide)
+        if kind in {
+            "content3.page",
+            "process.page",
+            "content-process.page",
+            "process_flow.page",
+            "process_timeline.page",
+            "timeline.page",
+        }:
+            return self._render_process_case(text, slide)
+        if kind in {"content4.page", "content-data.page", "content_data.page", "data_highlight.page"}:
+            return self._render_data_cards(text, slide)
+        if kind in {"content5.page", "framework.page", "content-concepts.page", "content_grid.page"}:
+            return self._render_concept_map(text, slide)
         if kind == "process.page":
             return self._render_process(text, slide)
         if kind == "framework.page":
@@ -162,6 +182,131 @@ class PptdSkillTemplateDeck:
             replacements[f"title{idx}"] = self._p(f"<strong>{self._plain(item)}</strong>", escaped=False)
             replacements[f"desc{idx}"] = self._p("建立概念、识别条件、迁移到真实问题。")
         return self._replace_many(text, replacements)
+
+    def _render_section(self, text: str, slide: PptdSlideContent) -> str:
+        items = self._display_items(slide, count=3)
+        replacements = {
+            "section-title": self._p(f"<strong>{self._plain(slide.title)}</strong>", escaped=False),
+            "section-desc": self._p(self._join_brief(items, max_len=62)),
+            "chapter-badge-text": self._p(f"SECTION {slide.page_no:02d}"),
+            "ch-num": self._p(f"CHAPTER {slide.page_no:02d}"),
+            "ch-title": self._p(f"<strong>{self._plain(slide.title)}</strong>", escaped=False),
+            "ch-subtitle": self._p(self._join_brief(items, max_len=48)),
+            "preview-label": self._p("本节要点"),
+        }
+        for idx in range(1, 4):
+            replacements[f"preview-item{idx}"] = self._p(self._short_label(items[idx - 1], max_len=26))
+        return self._generic_fill_text_blocks(
+            self._replace_many(text, replacements),
+            slide=slide,
+            skip=set(replacements),
+        )
+
+    def _render_bullet_list(self, text: str, slide: PptdSlideContent) -> str:
+        items = self._display_items(slide, count=5)
+        replacements = {
+            "page-title": self._p(slide.title),
+            "subject-tag-text": self._p("<strong>机制拆解</strong>", escaped=False),
+            "note-text": self._p(f"<strong>课堂提示：</strong>{self._plain(self._join_brief(items[:2], max_len=52))}", escaped=False),
+            "formula-label": self._p("抓手"),
+            "formula-text": self._p(self._short_label(items[0], max_len=30)),
+        }
+        for idx, item in enumerate(items[:5], start=1):
+            replacements[f"bullet{idx}-text"] = self._p(self._bullet_line(item, idx=idx), escaped=False)
+        return self._generic_fill_text_blocks(
+            self._replace_many(text, replacements),
+            slide=slide,
+            skip=set(replacements),
+        )
+
+    def _render_two_panel(self, text: str, slide: PptdSlideContent) -> str:
+        items = self._display_items(slide, count=6)
+        left = items[:3]
+        right = items[3:6] if len(items) > 3 else items[:3]
+        left_head, left_desc = self._split_item(left[0])
+        right_head, right_desc = self._split_item(right[0])
+        replacements = {
+            "page-title": self._p(slide.title),
+            "subject-tag-text": self._p("<strong>对比分析</strong>", escaped=False),
+            "left-title-label": self._p(f"<strong>{self._plain(left_head)}</strong>", escaped=False),
+            "right-title-label": self._p(f"<strong>{self._plain(right_head)}</strong>", escaped=False),
+            "left-definition": self._p(left_desc),
+            "right-definition": self._p(right_desc),
+            "left-feat-label": self._p("关键特征"),
+            "right-feat-label": self._p("关键特征"),
+            "left-apply-label": self._p("适用判断"),
+            "right-apply-label": self._p("适用判断"),
+            "left-apply-text": self._p(self._short_label(left[-1], max_len=34)),
+            "right-apply-text": self._p(self._short_label(right[-1], max_len=34)),
+            "left-example-text": self._p(f"例：{self._short_label(left[0], max_len=28)}"),
+            "right-example-text": self._p(f"例：{self._short_label(right[0], max_len=28)}"),
+        }
+        for idx in range(1, 4):
+            replacements[f"left-feat{idx}"] = self._p(self._short_label(left[min(idx - 1, len(left) - 1)], max_len=32))
+            replacements[f"right-feat{idx}"] = self._p(self._short_label(right[min(idx - 1, len(right) - 1)], max_len=32))
+        return self._generic_fill_text_blocks(
+            self._replace_many(text, replacements),
+            slide=slide,
+            skip=set(replacements),
+        )
+
+    def _render_process_case(self, text: str, slide: PptdSlideContent) -> str:
+        items = self._display_items(slide, count=4)
+        replacements = {
+            "page-title": self._p(slide.title),
+            "example-tag-text": self._p("<strong>流程推演</strong>", escaped=False),
+            "question-label": self._p("问题"),
+            "question-text": self._p(f"这个机制如何一步步解决“{self._short_label(slide.title, max_len=18)}”？"),
+            "answer-title": self._p("结论"),
+            "answer-text": self._p(self._join_brief(items, max_len=58)),
+            "answer-tip": self._p("用状态变化复述，而不是背定义。"),
+        }
+        for idx in range(1, 4):
+            head, desc = self._split_item(items[min(idx - 1, len(items) - 1)])
+            replacements[f"step{idx}-label"] = self._p(f"STEP {idx}")
+            replacements[f"step{idx}-text"] = self._p(f"<strong>{self._plain(head)}</strong><br/>{self._plain(desc)}", escaped=False)
+        return self._generic_fill_text_blocks(
+            self._replace_many(text, replacements),
+            slide=slide,
+            skip=set(replacements),
+        )
+
+    def _render_data_cards(self, text: str, slide: PptdSlideContent) -> str:
+        items = self._display_items(slide, count=3)
+        replacements = {
+            "page-title": self._p(slide.title),
+            "data-tag-text": self._p("<strong>量化观察</strong>", escaped=False),
+            "chart-title": self._p("机制效果示意"),
+        }
+        for idx, item in enumerate(items[:3], start=1):
+            number, unit, desc = self._metric_parts(item, fallback=str(idx))
+            replacements[f"card{idx}-number"] = self._p(number)
+            replacements[f"card{idx}-unit"] = self._p(unit)
+            replacements[f"card{idx}-desc"] = self._p(desc)
+        return self._generic_fill_text_blocks(
+            self._replace_many(text, replacements),
+            slide=slide,
+            skip=set(replacements),
+        )
+
+    def _render_concept_map(self, text: str, slide: PptdSlideContent) -> str:
+        items = self._display_items(slide, count=4)
+        positions = ("lu", "ru", "ld", "rd")
+        replacements = {
+            "page-title": self._p(slide.title),
+            "concept-tag-text": self._p("<strong>概念网络</strong>", escaped=False),
+            "center-node-text": self._p(f"<strong>{self._short_label(slide.title, max_len=10)}</strong>", escaped=False),
+            "think-text": self._p(f"把四个节点连成一句话：{self._plain(self._join_brief(items, max_len=46))}"),
+        }
+        for pos, item in zip(positions, items):
+            head, desc = self._split_item(item)
+            replacements[f"sub-{pos}-text"] = self._p(f"<strong>{self._plain(head)}</strong>", escaped=False)
+            replacements[f"sub-{pos}-desc"] = self._p(desc)
+        return self._generic_fill_text_blocks(
+            self._replace_many(text, replacements),
+            slide=slide,
+            skip=set(replacements),
+        )
 
     def _render_concept(self, text: str, slide: PptdSlideContent) -> str:
         items = self._display_items(slide, count=4)
@@ -254,15 +399,22 @@ class PptdSkillTemplateDeck:
         block = [f"        {line}" for line in value.splitlines() or [""]]
         return "\n".join([*lines[: text_idx + 1], *block, *lines[end:]]) + "\n"
 
-    def _template_page_name(self, *, index: int, total: int) -> str:
+    def _template_page_name(self, *, slide: PptdSlideContent) -> str:
         available = self._available_page_names()
-        if index == 0:
+        index = slide.index
+        total = slide.total
+        page_type = slide.page_type.lower()
+        if index == 0 or page_type == "cover":
             return self._first_existing(["cover.page", "page1.page"], available) or "cover.page"
-        if index == total - 1:
+        if index == total - 1 or page_type in {"summary", "final"}:
             return (
                 self._first_existing(["final.page", "ending.page", "conclusion.page", "page11.page"], available)
                 or "final.page"
             )
+        if page_type in {"section", "chapter"}:
+            section = self._first_existing(["section.page", "chapter.page", "chapter1.page", "chapter2.page"], available)
+            if section:
+                return section
         if index == 1 and total >= 5:
             toc = self._first_existing(["toc.page", "page2.page"], available)
             if toc:
@@ -301,6 +453,10 @@ class PptdSkillTemplateDeck:
             if item in available
         ]
         if content_pages:
+            preferred = self._preferred_content_pages(slide=slide)
+            selected = self._first_existing(preferred, set(content_pages))
+            if selected:
+                return selected
             return content_pages[(index - 1) % len(content_pages)]
         numbered = sorted(item for item in available if item.startswith("page") and item.endswith(".page"))
         if numbered:
@@ -311,7 +467,42 @@ class PptdSkillTemplateDeck:
         node = nodes[index] if index < len(nodes) else None
         title = str(getattr(node, "title", "") or f"Slide {index + 1}")
         bullets = [str(item) for item in list(getattr(node, "bullets", []) or [])[:6]]
-        return PptdSlideContent(index=index, total=total, title=title, bullets=bullets)
+        page_type = str(
+            getattr(getattr(node, "page_type", ""), "value", "")
+            or getattr(node, "page_type", "")
+            or "content"
+        )
+        layout_hint = str(getattr(node, "layout_hint", "") or "")
+        return PptdSlideContent(
+            index=index,
+            total=total,
+            title=title,
+            bullets=bullets,
+            page_type=page_type,
+            layout_hint=layout_hint,
+        )
+
+    def _preferred_content_pages(self, *, slide: PptdSlideContent) -> list[str]:
+        hint = slide.layout_hint.lower()
+        if any(token in hint for token in ("two-column", "two_col", "showcase", "comparison", "compare")):
+            return ["content2.page", "comparison.page", "two_column.page", "market_comparison.page"]
+        if any(token in hint for token in ("timeline", "process", "flow", "step")):
+            return ["content3.page", "process.page", "content-process.page", "process_timeline.page", "timeline.page"]
+        if any(token in hint for token in ("data", "chart", "metric", "kpi")):
+            return ["content4.page", "content-data.page", "data_highlight.page", "content_chart.page"]
+        if any(token in hint for token in ("framework", "concept", "map", "grid")):
+            return ["content5.page", "framework.page", "content-concepts.page", "content_grid.page"]
+
+        signal = " ".join([slide.title, *slide.bullets]).lower()
+        if any(token in signal for token in (" vs ", "gbn", "sr", "对比", "比较", "差异", "优劣", "versus")):
+            return ["content2.page", "comparison.page", "two_column.page", "market_comparison.page"]
+        if any(token in signal for token in ("框架", "结构", "关系", "协同", "概念", "framework", "concept", "map")):
+            return ["content5.page", "framework.page", "content-concepts.page", "content_grid.page"]
+        if any(token in signal for token in ("流程", "步骤", "机制", "过程", "滑动窗口", "确认", "重传", "timeline", "process", "flow")):
+            return ["content3.page", "process.page", "content-process.page", "process_timeline.page", "timeline.page"]
+        if any(token in signal for token in ("数据", "指标", "效率", "利用率", "%", "chart", "data", "metric", "ratio")):
+            return ["content4.page", "content-data.page", "data_highlight.page", "content_chart.page"]
+        return ["content1.page", "content_bullets.page", "content-bullets.page", "bullets.page"]
 
     def _display_items(self, slide: PptdSlideContent, *, count: int) -> list[str]:
         items = [self._plain(item) for item in slide.bullets if str(item).strip()]
@@ -332,6 +523,21 @@ class PptdSkillTemplateDeck:
                 head, desc = item.split(sep, 1)
                 return self._short_label(head, max_len=12), self._plain(desc)[:42]
         return self._short_label(item, max_len=12), self._plain(item)[:42]
+
+    def _join_brief(self, items: list[str], *, max_len: int) -> str:
+        text = "；".join(self._plain(item) for item in items if item)
+        return text if len(text) <= max_len else f"{text[:max_len - 1]}…"
+
+    def _metric_parts(self, item: str, *, fallback: str) -> tuple[str, str, str]:
+        plain = self._plain(item)
+        match = re.search(r"([0-9]+(?:\\.[0-9]+)?)(\\s*%|倍|帧|bit|ms|s)?", plain)
+        if match:
+            number = match.group(1)
+            unit = (match.group(2) or "").strip() or "指标"
+            desc = plain.replace(match.group(0), "", 1).strip(" ：:-，,") or plain
+            return number, unit, self._short_label(desc, max_len=34)
+        head, desc = self._split_item(plain)
+        return fallback.zfill(2), head, self._short_label(desc, max_len=34)
 
     def _short_label(self, value: str, *, max_len: int) -> str:
         plain = self._plain(value)
