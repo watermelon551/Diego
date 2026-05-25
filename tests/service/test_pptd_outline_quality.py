@@ -13,6 +13,9 @@ class _OutlineNormalizer(LLMOutlineDocumentNormalizationMixin):
 
 def test_pptd_outline_guidance_describes_page_plan_bullets() -> None:
     assert "PPTD page plan" in PPTD_OUTLINE_QUALITY_GUIDANCE
+    assert "knowledge point or conclusion" in PPTD_OUTLINE_QUALITY_GUIDANCE
+    assert "one main topic per page" in PPTD_OUTLINE_QUALITY_GUIDANCE
+    assert "visual explanation" in PPTD_OUTLINE_QUALITY_GUIDANCE
     assert "content-comparison" in PPTD_OUTLINE_QUALITY_GUIDANCE
     assert "GBN:" in PPTD_OUTLINE_QUALITY_GUIDANCE
     assert "content-timeline" in PPTD_OUTLINE_QUALITY_GUIDANCE

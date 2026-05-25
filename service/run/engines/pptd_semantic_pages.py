@@ -36,6 +36,10 @@ class PptdSemanticPageRenderer:
     """Writes high-signal PPTD pages instead of filling fragile template placeholders."""
 
     semantic_templates = {
+        "content1.page",
+        "content_bullets.page",
+        "content-bullets.page",
+        "bullets.page",
         "content2.page",
         "comparison.page",
         "two_column.page",
@@ -60,6 +64,13 @@ class PptdSemanticPageRenderer:
 
     def page_yaml(self, *, slide: PptdSlideContent, template_page_name: str) -> str:
         if template_page_name in {
+            "content1.page",
+            "content_bullets.page",
+            "content-bullets.page",
+            "bullets.page",
+        }:
+            return self._concept_page(slide=slide, template_page_name=template_page_name)
+        if template_page_name in {
             "content2.page",
             "comparison.page",
             "two_column.page",
@@ -77,6 +88,63 @@ class PptdSemanticPageRenderer:
         }:
             return self._process_page(slide=slide, template_page_name=template_page_name)
         return self._metrics_page(slide=slide, template_page_name=template_page_name)
+
+    def _concept_page(self, *, slide: PptdSlideContent, template_page_name: str) -> str:
+        items = self._display_items(slide, count=5)
+        concept, concept_desc = self._split_item(items[0])
+        shapes: list[_ShapeSpec] = [
+            self._top_band(),
+            _ShapeSpec("concept-definition-card", [58, 118, 430, 188], "#ffffff", border_color="#dbe4ee", border_width=1),
+            _ShapeSpec("concept-diagram-area", [536, 118, 686, 378], "#f8fafc", border_color="#dbe4ee", border_width=1),
+            _ShapeSpec("concept-takeaway-card", [58, 538, 1164, 92], "#ecfdf5", border_color="#bbf7d0", border_width=1),
+            _ShapeSpec("concept-core-node", [790, 218, 178, 104], "$primary", "roundRect"),
+            _ShapeSpec("concept-left-node", [594, 236, 142, 68], "#ffffff", "roundRect", border_color="#dbe4ee", border_width=1),
+            _ShapeSpec("concept-right-node", [1020, 236, 142, 68], "#ffffff", "roundRect", border_color="#dbe4ee", border_width=1),
+            _ShapeSpec("concept-bottom-node", [808, 382, 142, 68], "#ffffff", "roundRect", border_color="#dbe4ee", border_width=1),
+            _ShapeSpec("concept-left-link", [736, 270, 54, 0], "#64748b", "straightConnector1", border_color="#64748b", border_width=3),
+            _ShapeSpec("concept-right-link", [968, 270, 52, 0], "#64748b", "straightConnector1", border_color="#64748b", border_width=3),
+            _ShapeSpec("concept-bottom-link", [879, 322, 0, 60], "#64748b", "straightConnector1", border_color="#64748b", border_width=3),
+        ]
+        texts: list[_TextSpec] = [
+            self._title_text(self._short_label(slide.title, max_len=34)),
+            self._badge_text("概念图解"),
+            self._page_no_text(slide),
+            _TextSpec("concept-definition-label", [88, 146, 360, 26], "先给一句可复述的定义", 18, "$primary", bold=True, wrap=False),
+            _TextSpec("concept-definition-title", [88, 188, 360, 38], concept, 24, "$text", bold=True),
+            _TextSpec("concept-definition-desc", [88, 236, 360, 46], concept_desc, 17, "#64748b", line_height=1.16),
+            _TextSpec("concept-core-text", [812, 244, 134, 52], self._short_label(slide.title, max_len=6), 18, "#ffffff", "[center, middle]", bold=True, wrap=False),
+            _TextSpec("concept-left-text", [608, 250, 114, 40], self._node_label(items[1]), 15, "$text", "[center, middle]", bold=True, wrap=False),
+            _TextSpec("concept-right-text", [1034, 250, 114, 40], self._node_label(items[2]), 15, "$text", "[center, middle]", bold=True, wrap=False),
+            _TextSpec("concept-bottom-text", [822, 396, 114, 40], self._node_label(items[3]), 15, "$text", "[center, middle]", bold=True, wrap=False),
+            _TextSpec(
+                "concept-takeaway-text",
+                [92, 564, 1100, 40],
+                f"课堂判断：{self._join_brief(items[1:5], max_len=48)}",
+                18,
+                "$text",
+                "[center, middle]",
+                bold=True,
+            ),
+        ]
+        for idx, item in enumerate(items[1:4], start=1):
+            y = 334 + (idx - 1) * 54
+            shapes.append(_ShapeSpec(f"concept-point-dot-{idx}", [78, y + 8, 16, 16], "$accent", "ellipse"))
+            texts.append(
+                _TextSpec(
+                    f"concept-point-{idx}",
+                    [112, y, 386, 40],
+                    self._short_label(item, max_len=28),
+                    17,
+                    "$text",
+                    line_height=1.14,
+                )
+            )
+        return self._page(
+            page_type="content",
+            source_template=template_page_name,
+            shapes=shapes,
+            texts=texts,
+        )
 
     def _comparison_page(self, *, slide: PptdSlideContent, template_page_name: str) -> str:
         left_title, left_desc, left_items, right_title, right_desc, right_items = self._two_panel_groups(slide)
@@ -163,7 +231,7 @@ class PptdSemanticPageRenderer:
                 [
                     _TextSpec(f"process-step-label-{idx}", [x + 24, 205, 74, 20], f"STEP {idx}", 14, "#ffffff", "[center, middle]", bold=True, wrap=False),
                     _TextSpec(f"process-step-title-{idx}", [x + 24, 254, card_width - 48, 64], head, 24, "$text", bold=True),
-                    _TextSpec(f"process-step-desc-{idx}", [x + 24, 336, card_width - 48, 116], desc, 16, "#64748b", line_height=1.18),
+                    _TextSpec(f"process-step-desc-{idx}", [x + 24, 336, card_width - 48, 72], self._teaching_step_desc(head, desc), 16, "#64748b", line_height=1.18),
                 ]
             )
             if idx < 4:
@@ -454,6 +522,17 @@ class PptdSemanticPageRenderer:
     def _join_brief(self, items: list[str], *, max_len: int) -> str:
         text = "；".join(self._plain_text(item) for item in items if item)
         return self._short_label(text, max_len=max_len)
+
+    def _node_label(self, value: str) -> str:
+        head, _desc = self._split_item(value)
+        return self._short_label(head, max_len=6)
+
+    def _teaching_step_desc(self, head: str, desc: str) -> str:
+        clean_head = self._plain_text(head)
+        clean_desc = self._plain_text(desc)
+        if len(clean_desc) < 18 or clean_desc == clean_head:
+            return f"观察{clean_head}前后的状态变化，并说明触发条件。"
+        return clean_desc
 
     def _pad_items(self, items: list[str], *, count: int) -> list[str]:
         cleaned = [self._plain_text(item) for item in items if str(item).strip()]

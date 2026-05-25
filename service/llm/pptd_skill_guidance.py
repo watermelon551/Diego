@@ -22,16 +22,21 @@ PPTD visual quality constraints:
 - Do not use empty decorative placeholders as substitutes for real visual structure.
 - For courseware and academic/report decks, favor calm professional layouts with clear diagrams, tables, timelines, and comparison structures.
 - For PPTD elements, plan enough room for Chinese text: line height is closer to fontSize x 1.3 than the declared lineHeight alone.
+- For education/courseware decks, content pages should use white or light backgrounds for projector readability; reserve dark backgrounds for cover, section, or emphasis pages.
+- Treat diagrams, flowcharts, comparison tables, and case cards as comprehension tools, not decoration.
 """.strip()
 
 
 PPTD_OUTLINE_QUALITY_GUIDANCE = """
 PPTD outline quality constraints:
 - Page titles should be presentation-ready, short, and concrete.
+- For education/courseware decks, each page title should state the knowledge point or conclusion, not only name a chapter.
+- Keep one main topic per page. If a page contains two unrelated topics, split or reframe it as a comparison/process page.
 - Content bullets should be directly usable on slides: 3-6 bullets for dense content pages, fewer bullets for cover/section/final pages.
 - Include page_type and layout_hint that match the page's communicative job.
 - Prefer information architecture over decorative wording: definitions, mechanisms, examples, comparisons, risks, processes, and conclusions.
 - If the deck is educational, include learning objectives, key concepts, mechanism explanation, examples/practice, and summary.
+- For abstract concepts, plan a visual explanation: mechanism diagram, shape-based flow, comparison matrix, or case card. Do not leave the page as a pure text list.
 - If the deck is a report, include context, problem, evidence, analysis, decision, risks, and next actions.
 - Treat bullets as a PPTD page plan, not prose paragraphs. Each bullet should be short enough to become one visible text block.
 - For content-comparison pages, structure bullets with explicit group labels such as "GBN:" and "SR:" or "方案A:" and "方案B:", followed by 2-3 concrete points per group and one judgment/selection point.

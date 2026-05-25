@@ -494,11 +494,12 @@ def test_pptd_writer_selects_skill_template_family_from_run_style(tmp_path: Path
     assert "Old page title" not in content_text
     assert "Old bullet one" not in content_text
     assert "    wrap: false" not in content_text
-    assert "      - 230" in content_text
+    assert "sourceTemplate: content1.page" in content_text
+    assert "concept-definition-card" in content_text
     assert "Old formula" not in content_text
     assert "第一章" in content_text
     assert "成帧边界" in content_text
-    assert "Keep logo text" in content_text
+    assert "Keep logo text" not in content_text
 
 
 def test_pptd_writer_uses_outline_semantics_to_choose_template_pages(tmp_path: Path) -> None:
@@ -828,6 +829,67 @@ def test_pptd_writer_uses_direct_semantic_pages_for_core_content(tmp_path: Path)
     assert "&amp;gt;" not in "\n".join([process_page, comparison_page, metric_page])
     assert "批量" in metric_svg
     assert "选择" in metric_svg
+
+
+def test_pptd_writer_renders_default_content_as_concept_diagram(tmp_path: Path) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-3" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-3.pptd").write_text(
+        "\n".join(['title: "Template"', "size: [1280, 720]", "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old placeholder",
+            "",
+        ]
+    )
+    for page_name in ("cover.page", "toc.page", "content1.page", "final.page"):
+        (pages_dir / page_name).write_text(page_template, encoding="utf-8")
+
+    nodes = [
+        OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+        OutlineNode(title="目录", bullets=["概念"], page_type=SlidePageType.TOC),
+        OutlineNode(
+            title="差错控制让链路层交付更可靠",
+            bullets=[
+                "差错控制：发现或纠正传输中的比特错误",
+                "检错码用于判断帧是否损坏",
+                "纠错码可在部分场景直接恢复数据",
+                "ARQ把检测结果转成重传动作",
+            ],
+        ),
+        OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+    ]
+    pptd_path = tmp_path / "artifacts" / "r-concept-direct" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=nodes,
+        slide_count=len(nodes),
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        template_style="education courseware",
+    )
+
+    concept_page = (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
+    preview = PptdProjectPreviewRenderer().preview_manifest(pptd_path=pptd_path)
+    concept_svg = base64.b64decode(preview["pages"][2]["svg_data_url"].split(",", 1)[1]).decode("utf-8")
+
+    assert "Old placeholder" not in concept_page
+    assert "sourceTemplate: content1.page" in concept_page
+    assert "concept-core-node" in concept_page
+    assert "concept-definition-card" in concept_page
+    assert "概念图解" in concept_svg
+    assert "差错控制" in concept_svg
 
 
 def test_pptd_project_preview_renders_custom_paths_and_inline_text_styles(tmp_path: Path) -> None:
