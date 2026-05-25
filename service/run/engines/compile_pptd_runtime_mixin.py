@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import html
+import json
 from pathlib import Path
 from typing import Any
 
@@ -205,3 +208,175 @@ class CompilePptdRuntimeMixin:
     def _block_text(self, value: str, *, indent: int) -> str:
         prefix = " " * indent
         return "\n".join(f"{prefix}{line}" for line in value.splitlines() or [""])
+
+    async def _build_pptd_compile_bundle(
+        self,
+        *,
+        run: Any,
+        slides_dir: Path,
+        theme: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        pptd_path = slides_dir / "pptd" / "presentation.pptd"
+        pptx_path = slides_dir / "output" / "presentation.pptx"
+        slide_count = len(getattr(run, "slides", []) or [])
+        if not pptd_path.is_file():
+            self._write_pptd_project(
+                pptd_path=pptd_path,
+                run=run,
+                slide_count=slide_count,
+                theme=theme or {},
+            )
+        if not pptx_path.is_file():
+            raise ValueError(f"pptd output artifact is missing: {pptx_path}")
+
+        script_path = slides_dir / "compile_pptd_bundle.js"
+        preview_seed_path = slides_dir / "preview_seed.json"
+        input_pptx_path = slides_dir / "input" / "presentation.pptx"
+        input_pptx_path.parent.mkdir(parents=True, exist_ok=True)
+        input_pptx_path.write_bytes(pptx_path.read_bytes())
+        script_path.write_text(self._pptd_bundle_script(), encoding="utf-8")
+        preview_seed_path.write_text(
+            json.dumps(
+                self._pptd_preview_manifest_from_run(run=run, theme=theme or {}),
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        files: list[dict[str, str]] = [
+            self._bundle_file_entry(script_path, slides_dir=slides_dir),
+            self._bundle_file_entry(preview_seed_path, slides_dir=slides_dir),
+            self._bundle_file_entry(pptd_path, slides_dir=slides_dir),
+        ]
+        for page_path in sorted((slides_dir / "pptd" / "pages").glob("*.page")):
+            files.append(self._bundle_file_entry(page_path, slides_dir=slides_dir))
+        assets = [self._bundle_file_entry(input_pptx_path, slides_dir=slides_dir)]
+        return {
+            "provider": "diego",
+            "provider_run_id": str(run.run_id),
+            "provider_trace_id": str(run.trace_id),
+            "mode": "scratch",
+            "entrypoint": "slides/compile_pptd_bundle.js",
+            "working_dir_manifest": {
+                "dirs": ["slides", "slides/input", "slides/output", "slides/pptd"],
+            },
+            "files": files,
+            "assets": assets,
+            "compile_options": {
+                "command": ["node", "compile_pptd_bundle.js"],
+                "cwd": "slides",
+                "output_artifacts": [
+                    {
+                        "kind": "pptx",
+                        "path": "slides/output/presentation.pptx",
+                        "media_type": (
+                            "application/vnd.openxmlformats-officedocument."
+                            "presentationml.presentation"
+                        ),
+                    }
+                ],
+                "preview_manifest_path": "slides/output/preview.json",
+                "result_manifest_path": "slides/output/result.json",
+            },
+            "metadata": {
+                "artifact_dir": str(run.artifact_dir),
+                "theme_source": "diego",
+                "compile_context": {
+                    "model": "pptd",
+                },
+            },
+        }
+
+    def _bundle_file_entry(self, path: Path, *, slides_dir: Path) -> dict[str, str]:
+        return {
+            "path": f"slides/{path.relative_to(slides_dir).as_posix()}",
+            "content_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+        }
+
+    def _pptd_bundle_script(self) -> str:
+        return "\n".join(
+            [
+                "const fs = require('fs');",
+                "const path = require('path');",
+                "fs.mkdirSync('output', { recursive: true });",
+                "fs.copyFileSync(path.join('input', 'presentation.pptx'), path.join('output', 'presentation.pptx'));",
+                "const preview = JSON.parse(fs.readFileSync('preview_seed.json', 'utf-8'));",
+                "fs.writeFileSync(path.join('output', 'preview.json'), JSON.stringify(preview));",
+                "fs.writeFileSync(path.join('output', 'result.json'), JSON.stringify({",
+                "  schema_version: 'pagevra.result_manifest.v1',",
+                "  primary_artifact_kind: 'pptx',",
+                "  artifact_kinds: ['pptx'],",
+                "  artifacts: [{",
+                "    kind: 'pptx',",
+                "    path: 'slides/output/presentation.pptx',",
+                "    media_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'",
+                "  }],",
+                "  preview: { page_count: preview.pages.length },",
+                "  metadata: { model: 'pptd' }",
+                "}));",
+                "",
+            ]
+        )
+
+    def _pptd_preview_manifest_from_run(
+        self, *, run: Any, theme: dict[str, Any]
+    ) -> dict[str, Any]:
+        nodes = list(getattr(getattr(run, "outline", None), "nodes", []) or [])
+        total = max(1, len(nodes), len(getattr(run, "slides", []) or []))
+        pages = []
+        for index in range(total):
+            node = nodes[index] if index < len(nodes) else None
+            title = str(getattr(node, "title", "") or f"Slide {index + 1}")
+            bullets = [str(item) for item in list(getattr(node, "bullets", []) or [])[:5]]
+            pages.append(
+                {
+                    "index": index,
+                    "slide_id": f"slide-{index + 1:02d}",
+                    "format": "svg",
+                    "svg_data_url": self._pptd_preview_svg_data_url(
+                        title=title,
+                        bullets=bullets,
+                        page_no=index + 1,
+                        total=total,
+                        theme=theme,
+                    ),
+                    "width": 1280,
+                    "height": 720,
+                }
+            )
+        return {
+            "schema_version": "pagevra.preview_manifest.v1",
+            "page_count": len(pages),
+            "pages": pages,
+        }
+
+    def _pptd_preview_svg_data_url(
+        self,
+        *,
+        title: str,
+        bullets: list[str],
+        page_no: int,
+        total: int,
+        theme: dict[str, Any],
+    ) -> str:
+        primary = html.escape(str(theme.get("primary") or theme.get("accent") or "#2563eb"))
+        background = html.escape(str(theme.get("background") or theme.get("bg") or "#ffffff"))
+        text_color = html.escape(str(theme.get("text") or "#111827"))
+        title_xml = html.escape(title)
+        bullet_lines = "\n".join(
+            f'<text x="112" y="{304 + idx * 46}" font-size="26" fill="{text_color}">• {html.escape(item)}</text>'
+            for idx, item in enumerate(bullets or [f"Page {page_no} of {total}"])
+        )
+        svg = "\n".join(
+            [
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">',
+                f'<rect width="1280" height="720" fill="{background}"/>',
+                f'<rect x="0" y="0" width="1280" height="14" fill="{primary}"/>',
+                f'<text x="96" y="188" font-size="54" font-family="Arial, sans-serif" font-weight="700" fill="{primary}">{title_xml}</text>',
+                bullet_lines,
+                f'<text x="112" y="650" font-size="20" fill="{text_color}" opacity="0.55">{page_no:02d} / {total:02d}</text>',
+                "</svg>",
+            ]
+        )
+        encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+        return f"data:image/svg+xml;base64,{encoded}"

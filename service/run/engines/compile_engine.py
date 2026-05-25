@@ -98,6 +98,22 @@ class CompileEngine(
         if callable(resolver):
             theme = dict(getattr(resolver(run), "theme", {}) or {})
         self._restore_scratch_slides_from_run(run=run, slides_dir=slides_dir)
+        compile_provider = str(getattr(run, "compile_provider", "") or "").strip().lower()
+        requested_provider = str(
+            getattr(run, "compile_requested_provider", "") or ""
+        ).strip().lower()
+        compile_path = Path(str(getattr(run, "compile_js_path", "") or ""))
+        if (
+            compile_provider == "pptd"
+            or requested_provider == "pptd"
+            or compile_path.suffix == ".pptd"
+            or (slides_dir / "pptd" / "presentation.pptd").is_file()
+        ):
+            return await self._build_pptd_compile_bundle(
+                run=run,
+                slides_dir=slides_dir,
+                theme=theme,
+            )
         self._ensure_compile_script(
             slides_dir=slides_dir,
             slide_count=slide_count,
