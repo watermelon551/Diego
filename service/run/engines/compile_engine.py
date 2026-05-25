@@ -7,6 +7,7 @@ import httpx
 
 from .compile_local_runtime_mixin import CompileLocalRuntimeMixin
 from .compile_pagevra_runtime_mixin import CompilePagevraRuntimeMixin
+from .compile_pptd_runtime_mixin import CompilePptdRuntimeMixin
 from .compile_script_bundle_mixin import CompileScriptBundleMixin
 from ..results import ScratchCompileResult
 
@@ -15,6 +16,7 @@ class CompileEngine(
     CompileScriptBundleMixin,
     CompileLocalRuntimeMixin,
     CompilePagevraRuntimeMixin,
+    CompilePptdRuntimeMixin,
 ):
     result_type = ScratchCompileResult
 
@@ -33,6 +35,19 @@ class CompileEngine(
         requested_provider = str(
             getattr(self.runtime.settings, "compile_provider", "none") or "none"
         ).strip().lower()
+        if requested_provider == "pptd":
+            pptd_result = await self._compile_scratch_via_pptd(
+                run_id=run_id,
+                slides_dir=slides_dir,
+                slide_count=slide_count,
+                theme=theme,
+            )
+            return ScratchCompileResult(
+                **{
+                    **pptd_result.__dict__,
+                    "requested_provider": pptd_result.requested_provider or "pptd",
+                }
+            )
         compile_js = self._ensure_compile_script(
             slides_dir=slides_dir,
             slide_count=slide_count,
@@ -67,7 +82,6 @@ class CompileEngine(
                     "requested_provider": pagevra_result.requested_provider or "pagevra",
                 }
             )
-
         raise ValueError(f"unsupported compile provider: {requested_provider}")
 
     async def build_compile_bundle(self, run_id: str) -> dict[str, Any]:

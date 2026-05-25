@@ -51,6 +51,10 @@ class Settings:
     slide_generation_timeout_sec: float = 900.0
     qa_finalize_timeout_sec: float = 300.0
     compile_provider: str = "none"
+    pptd_skill_dir: str = ""
+    pptd_runner_image: str = "debian:bookworm-slim"
+    pptd_runner_platform: str = "linux/amd64"
+    pptd_runner_timeout_sec: float = 120.0
     pagevra_base_url: str = ""
     pagevra_preview_enabled: bool = False
     pagevra_preview_timeout_sec: float = 30.0
@@ -114,8 +118,11 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     if generation_engine not in {"agentic_v2", "legacy"}:
         raise ValueError(f"invalid GENERATION_ENGINE={generation_engine!r}")
     compile_provider = os.getenv("COMPILE_PROVIDER", "none").strip().lower()
-    if compile_provider not in {"none", "local", "pagevra"}:
+    if compile_provider not in {"none", "local", "pagevra", "pptd"}:
         raise ValueError(f"invalid COMPILE_PROVIDER={compile_provider!r}")
+    pptd_runner_timeout_sec = _env_float("PPTD_RUNNER_TIMEOUT_SEC", 120.0)
+    if pptd_runner_timeout_sec <= 0:
+        raise ValueError("PPTD_RUNNER_TIMEOUT_SEC must be > 0")
     pagevra_compile_timeout_sec = _env_float("PAGEVRA_COMPILE_TIMEOUT_SEC", 180.0)
     if pagevra_compile_timeout_sec <= 0:
         raise ValueError("PAGEVRA_COMPILE_TIMEOUT_SEC must be > 0")
@@ -196,6 +203,10 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         slide_generation_timeout_sec=slide_generation_timeout_sec,
         qa_finalize_timeout_sec=qa_finalize_timeout_sec,
         compile_provider=compile_provider,
+        pptd_skill_dir=os.getenv("PPTD_SKILL_DIR", "").strip(),
+        pptd_runner_image=os.getenv("PPTD_RUNNER_IMAGE", "debian:bookworm-slim").strip(),
+        pptd_runner_platform=os.getenv("PPTD_RUNNER_PLATFORM", "linux/amd64").strip(),
+        pptd_runner_timeout_sec=pptd_runner_timeout_sec,
         pagevra_base_url=os.getenv("PAGEVRA_BASE_URL", "").strip().rstrip("/"),
         pagevra_preview_enabled=_env_bool("PAGEVRA_PREVIEW_ENABLED", False),
         pagevra_preview_timeout_sec=pagevra_preview_timeout_sec,

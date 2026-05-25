@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import shlex
+import subprocess
+from dataclasses import dataclass
+from os.path import commonpath
+from pathlib import Path
+from typing import Callable, Sequence
+
+
+RunSubprocess = Callable[..., subprocess.CompletedProcess[str]]
+
+
+@dataclass(frozen=True)
+class PptdRuntimeResult:
+    ok: bool
+    reason: str
+    return_code: int | None
+    stdout: str = ""
+    stderr: str = ""
+    output_path: Path | None = None
+
+
+class PptdRuntimeAdapter:
+    def __init__(
+        self,
+        *,
+        skill_dir: Path,
+        runner_image: str,
+        run_subprocess: RunSubprocess = subprocess.run,
+        platform: str = "linux/amd64",
+        timeout_sec: float = 120.0,
+    ) -> None:
+        self.skill_dir = Path(skill_dir)
+        self.runner_image = runner_image
+        self.run_subprocess = run_subprocess
+        self.platform = platform
+        self.timeout_sec = timeout_sec
+
+    def check(self, pptd_path: Path) -> PptdRuntimeResult:
+        pptd_path = Path(pptd_path)
+        work_dir = self._work_root([pptd_path])
+        result = self._run(
+            ["bash", "scripts/check.sh", self._work_path(pptd_path, work_dir)],
+            work_dir=work_dir,
+        )
+        if not result.ok:
+            return result
+        if result.return_code != 0:
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_check_failed",
+                return_code=result.return_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        return result
+
+    def convert(self, pptd_path: Path, *, output_path: Path) -> PptdRuntimeResult:
+        pptd_path = Path(pptd_path)
+        output_path = Path(output_path)
+        work_dir = self._work_root([pptd_path, output_path])
+        result = self._run(
+            [
+                "bash",
+                "scripts/convert.sh",
+                self._work_path(pptd_path, work_dir),
+                "-o",
+                self._work_path(output_path, work_dir),
+            ],
+            work_dir=work_dir,
+        )
+        if not result.ok:
+            return result
+        if result.return_code != 0:
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_convert_failed",
+                return_code=result.return_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                output_path=output_path,
+            )
+        if not output_path.exists():
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_convert_output_missing",
+                return_code=result.return_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                output_path=output_path,
+            )
+        return PptdRuntimeResult(
+            ok=True,
+            reason="",
+            return_code=result.return_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            output_path=output_path,
+        )
+
+    def _run(self, runtime_args: Sequence[str], *, work_dir: Path) -> PptdRuntimeResult:
+        command = self._docker_command(runtime_args, work_dir=work_dir)
+        try:
+            completed = self.run_subprocess(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout_sec,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_runner_unavailable",
+                return_code=None,
+                stderr=str(exc),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return PptdRuntimeResult(
+                ok=False,
+                reason="pptd_runner_timeout",
+                return_code=None,
+                stdout=str(exc.stdout or ""),
+                stderr=str(exc.stderr or ""),
+            )
+        return PptdRuntimeResult(
+            ok=True,
+            reason="",
+            return_code=completed.returncode,
+            stdout=completed.stdout or "",
+            stderr=completed.stderr or "",
+        )
+
+    def _docker_command(self, runtime_args: Sequence[str], *, work_dir: Path) -> list[str]:
+        script = " && ".join(
+            [
+                "cp -a /opt/pptx-skill /tmp/pptx-skill",
+                "find /tmp/pptx-skill/scripts/runtime -maxdepth 1 -type f -name '*pptd' -exec chmod +x {} \\;",
+                "cd /tmp/pptx-skill",
+                " ".join(shlex.quote(part) for part in runtime_args),
+            ]
+        )
+        return [
+            "docker",
+            "run",
+            "--rm",
+            "--platform",
+            self.platform,
+            "-v",
+            f"{self.skill_dir}:/opt/pptx-skill:ro",
+            "-v",
+            f"{work_dir}:/work",
+            "-w",
+            "/tmp",
+            self.runner_image,
+            "bash",
+            "-lc",
+            script,
+        ]
+
+    def _work_path(self, path: Path, work_dir: Path) -> str:
+        relative = Path(path).resolve().relative_to(work_dir.resolve()).as_posix()
+        return f"/work/{relative}"
+
+    def _work_root(self, paths: Sequence[Path]) -> Path:
+        return Path(commonpath([str(Path(path).resolve().parent) for path in paths]))

@@ -19,6 +19,7 @@ class ScratchCompileResult:
     fallback_from: str | None = None
     requested_provider: str | None = None
     job_id: str | None = None
+    error_details: dict[str, Any] | None = None
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
