@@ -75,11 +75,14 @@ class RunPreviewRuntimeMixin:
         if slide is None:
             raise ValueError(not_ready_message)
         slide_js_path = Path(str(getattr(slide, "js_path", "") or "").strip())
-        if (
-            not str(slide_js_path)
-            or not slide_js_path.exists()
-            or not slide_js_path.is_file()
-        ):
+        if not str(slide_js_path):
+            raise FileNotFoundError("slide js artifact missing")
+        if not slide_js_path.exists() or not slide_js_path.is_file():
+            inline_js_code = str(getattr(slide, "js_code", "") or "")
+            if inline_js_code.strip():
+                slide_js_path.parent.mkdir(parents=True, exist_ok=True)
+                slide_js_path.write_text(inline_js_code, encoding="utf-8")
+        if not slide_js_path.exists() or not slide_js_path.is_file():
             raise FileNotFoundError("slide js artifact missing")
         return slide, slide_js_path
 

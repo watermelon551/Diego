@@ -96,6 +96,55 @@ def test_slide_preview_endpoint_returns_html_when_slide_ready(
     assert payload["svg_data_url"] == "data:image/svg+xml;base64,scene-preview"
 
 
+def test_slide_scene_endpoint_rehydrates_missing_slide_js_from_run_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "service.run.slide_preview.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    monkeypatch.setattr(
+        "service.run.engines.compile_engine.httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeScenePreviewClient(),
+    )
+    client = make_client(
+        tmp_path,
+        pagevra_preview_enabled=True,
+        pagevra_base_url="http://pagevra.test",
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Scene Rehydrate",
+            "project_id": "p-scene-rehydrate",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    wait_status(client, run_id, {"SUCCEEDED"})
+
+    run_detail = client.get(f"/v1/ppt/runs/{run_id}").json()
+    slide_record = next(item for item in run_detail["slides"] if item["slide_no"] == 1)
+    slide_js_path = Path(slide_record["js_path"])
+    assert slide_js_path.is_file()
+    slide_js_path.unlink()
+
+    resp = client.get(f"/v1/ppt/runs/{run_id}/slides/1/scene")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["readonly"] is False
+    assert payload["nodes"]
+    assert slide_js_path.is_file()
+    assert slide_js_path.read_text(encoding="utf-8") == slide_record["js_code"]
+
+
 def test_slide_preview_endpoint_returns_conflict_when_slide_not_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
