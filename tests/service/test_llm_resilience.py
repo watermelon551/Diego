@@ -121,9 +121,11 @@ def test_content_primitives_use_llm_json_for_structure_expansion() -> None:
         def __init__(self) -> None:
             super().__init__(base_url="https://api.example.com/v1", api_key="k", model="m")
             self.last_messages = None
+            self.last_max_tokens = None
 
         async def _chat_text(self, **kwargs):
             self.last_messages = kwargs["messages"]
+            self.last_max_tokens = kwargs.get("max_tokens")
             return json.dumps(
                 {
                     "units": [
@@ -164,6 +166,7 @@ def test_content_primitives_use_llm_json_for_structure_expansion() -> None:
     assert result.revision_targets == ["node-1"]
     assert client.last_messages is not None
     assert "selected_node_path" in client.last_messages[1]["content"]
+    assert client.last_max_tokens == 2780
 
 
 def test_content_primitives_use_llm_json_for_item_generation() -> None:
@@ -171,9 +174,11 @@ def test_content_primitives_use_llm_json_for_item_generation() -> None:
         def __init__(self) -> None:
             super().__init__(base_url="https://api.example.com/v1", api_key="k", model="m")
             self.last_messages = None
+            self.last_max_tokens = None
 
         async def _chat_text(self, **kwargs):
             self.last_messages = kwargs["messages"]
+            self.last_max_tokens = kwargs.get("max_tokens")
             return json.dumps(
                 {
                     "items": [
@@ -218,6 +223,62 @@ def test_content_primitives_use_llm_json_for_item_generation() -> None:
     assert result.items[0].expected_response == "探测可用带宽"
     assert client.last_messages is not None
     assert "current_question_id" in client.last_messages[1]["content"]
+    assert client.last_max_tokens == 1000
+
+
+def test_content_primitives_repair_malformed_structure_json() -> None:
+    class RepairingContentPrimitiveClient(llm_client_mod.OpenAICompatibleLLMClient):
+        def __init__(self) -> None:
+            super().__init__(
+                base_url="https://api.example.com/v1",
+                api_key="k",
+                model="m",
+                json_repair_retry=1,
+            )
+            self.calls = 0
+
+        async def _chat_text(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return '{"units":[{"unit_id":"node-1","title":"坏 JSON" "summary":"少逗号"}],"anchors":[],"source_refs":[],"revision_targets":[],"warnings":[]}'
+            return json.dumps(
+                {
+                    "units": [
+                        {
+                            "unit_id": "node-1",
+                            "title": "拥塞窗口变化",
+                            "summary": "围绕窗口增长和收缩组织节点。",
+                            "key_points": ["慢启动"],
+                            "source_refs": [],
+                            "anchor_ref": "root",
+                            "revision_target": "node-1",
+                        }
+                    ],
+                    "anchors": ["root"],
+                    "source_refs": [],
+                    "revision_targets": ["node-1"],
+                    "warnings": [],
+                },
+                ensure_ascii=False,
+            )
+
+    client = RepairingContentPrimitiveClient()
+    result = asyncio.run(
+        client.generate_structure_expansion(
+            generation_goal="展开 TCP 拥塞控制",
+            project_id="project-1",
+            source_scope={"mode": "project_all"},
+            evidence_refs=[],
+            anchor_context=StructureExpansionAnchorContext(anchor_label="root"),
+            constraints={"max_units": 4},
+            requested_output_shape="units",
+            rag_source_ids=[],
+            rag_context_snippets=[],
+        )
+    )
+
+    assert client.calls == 2
+    assert result.units[0].title == "拥塞窗口变化"
 
 
 def test_longform_section_normalizes_object_bullet_items() -> None:

@@ -28,6 +28,7 @@ class LLMContentPrimitivesMixin:
         rag_source_ids: list[str],
         rag_context_snippets: list[dict[str, Any]],
     ) -> StructureExpansionResult:
+        max_units = self._content_positive_int(constraints.get("max_units"), fallback=8)
         system_prompt = (
             "You are Diego's generic structure-expansion primitive. "
             "Expand source-grounded ideas into reusable structure units for an upstream host. "
@@ -54,10 +55,14 @@ class LLMContentPrimitivesMixin:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=self.slide_temperature,
+            max_tokens=self._structure_expansion_max_tokens(max_units),
             response_format=self._structure_expansion_response_format(),
             allow_response_format_fallback=True,
         )
-        parsed = _extract_json_object(text)
+        parsed = await self._content_primitive_json_payload(
+            text=text,
+            expected_keys=["units", "anchors", "source_refs", "revision_targets", "warnings"],
+        )
         try:
             return StructureExpansionResult.model_validate(
                 self._normalize_structure_expansion_payload(parsed)
@@ -81,6 +86,7 @@ class LLMContentPrimitivesMixin:
         rag_source_ids: list[str],
         rag_context_snippets: list[dict[str, Any]],
     ) -> ItemGenerationResult:
+        max_items = self._content_positive_int(constraints.get("max_items"), fallback=1)
         system_prompt = (
             "You are Diego's generic item-generation primitive. "
             "Generate source-grounded assessment or interaction items for an upstream host. "
@@ -107,10 +113,14 @@ class LLMContentPrimitivesMixin:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=self.slide_temperature,
+            max_tokens=self._item_generation_max_tokens(max_items),
             response_format=self._item_generation_response_format(),
             allow_response_format_fallback=True,
         )
-        parsed = _extract_json_object(text)
+        parsed = await self._content_primitive_json_payload(
+            text=text,
+            expected_keys=["items", "source_refs", "revision_targets", "warnings"],
+        )
         try:
             return ItemGenerationResult.model_validate(
                 self._normalize_item_generation_payload(parsed)
@@ -121,6 +131,37 @@ class LLMContentPrimitivesMixin:
                 details=[str(error.get("loc")) for error in exc.errors()],
                 raw_response=text,
             ) from exc
+
+    def _content_positive_int(self, value: Any, *, fallback: int) -> int:
+        if isinstance(value, bool):
+            return fallback
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, str) and value.isdigit():
+            parsed = int(value)
+            return parsed if parsed > 0 else fallback
+        return fallback
+
+    def _structure_expansion_max_tokens(self, max_units: int) -> int:
+        return min(3600, max(1400, max_units * 260 + 700))
+
+    def _item_generation_max_tokens(self, max_items: int) -> int:
+        return min(2200, max(1000, max_items * 300 + 700))
+
+    async def _content_primitive_json_payload(
+        self,
+        *,
+        text: str,
+        expected_keys: list[str],
+    ) -> dict[str, Any]:
+        try:
+            return _extract_json_object(text)
+        except Exception:
+            return await self._extract_json_object_with_repair(
+                text=text,
+                expected_keys=expected_keys,
+                temperature=self.slide_temperature,
+            )
 
     def _normalize_structure_expansion_payload(self, parsed: dict[str, Any]) -> dict[str, Any]:
         units: list[dict[str, Any]] = []

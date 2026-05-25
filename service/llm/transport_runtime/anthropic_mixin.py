@@ -7,7 +7,11 @@ import httpx
 
 class LLMAnthropicTransportMixin:
     async def _anthropic_text(
-        self, *, messages: list[dict[str, str]], temperature: float
+        self,
+        *,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int | None = None,
     ) -> str:
         system = ""
         converted_messages: list[dict[str, str]] = []
@@ -20,7 +24,7 @@ class LLMAnthropicTransportMixin:
                 )
         payload: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": 4000,
+            "max_tokens": max_tokens if isinstance(max_tokens, int) and max_tokens > 0 else 4000,
             "messages": converted_messages,
             "temperature": temperature,
         }

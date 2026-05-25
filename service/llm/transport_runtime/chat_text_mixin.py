@@ -13,17 +13,24 @@ class LLMOpenAIChatTextMixin:
         *,
         messages: list[dict[str, str]],
         temperature: float,
+        max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
         allow_response_format_fallback: bool = False,
     ) -> str:
         if self.api_style == "anthropic_messages":
-            return await self._anthropic_text(messages=messages, temperature=temperature)
+            return await self._anthropic_text(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
             "stream": False,
         }
+        if isinstance(max_tokens, int) and max_tokens > 0:
+            payload["max_tokens"] = max_tokens
         if response_format and self.outline_structured_output:
             payload["response_format"] = response_format
         headers = {"Authorization": f"Bearer {self.api_key}"}
