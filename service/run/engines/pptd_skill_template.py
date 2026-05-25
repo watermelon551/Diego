@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .pptd_contracts import PptdSlideContent
+from .pptd_semantic_pages import PptdSemanticPageRenderer
 
 
 class PptdSkillTemplateDeck:
@@ -14,6 +15,7 @@ class PptdSkillTemplateDeck:
     def __init__(self, template_name: str | None = None) -> None:
         if template_name:
             self.template_name = template_name
+        self._semantic_renderer = PptdSemanticPageRenderer()
 
     def write_project(
         self,
@@ -94,6 +96,8 @@ class PptdSkillTemplateDeck:
 
     def _render_page(self, text: str, *, slide: PptdSlideContent) -> str:
         kind = self._template_page_name(slide=slide)
+        if self._semantic_renderer.can_render(template_page_name=kind):
+            return self._semantic_renderer.page_yaml(slide=slide, template_page_name=kind)
         if kind == "cover.page":
             return self._render_cover(text, slide)
         if kind == "toc.page":
@@ -186,11 +190,17 @@ class PptdSkillTemplateDeck:
     def _render_section(self, text: str, slide: PptdSlideContent) -> str:
         items = self._display_items(slide, count=3)
         replacements = {
-            "section-title": self._p(f"<strong>{self._plain(slide.title)}</strong>", escaped=False),
+            "section-title": self._p(
+                f'<span style="font-size:42px;"><strong>{self._plain(slide.title)}</strong></span>',
+                escaped=False,
+            ),
             "section-desc": self._p(self._join_brief(items, max_len=62)),
-            "chapter-badge-text": self._p(f"SECTION {slide.page_no:02d}"),
-            "ch-num": self._p(f"CHAPTER {slide.page_no:02d}"),
-            "ch-title": self._p(f"<strong>{self._plain(slide.title)}</strong>", escaped=False),
+            "chapter-badge-text": self._p(f"{slide.page_no:02d}"),
+            "ch-num": self._p(f"{slide.page_no:02d}"),
+            "ch-title": self._p(
+                f'<span style="font-size:42px;"><strong>{self._plain(slide.title)}</strong></span>',
+                escaped=False,
+            ),
             "ch-subtitle": self._p(self._join_brief(items, max_len=48)),
             "preview-label": self._p("本节要点"),
         }

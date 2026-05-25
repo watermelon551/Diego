@@ -639,8 +639,146 @@ def test_pptd_writer_prefers_content_semantics_over_broad_layout_hints(tmp_path:
     assert "content4.page" in (pptd_path.parent / "pages" / "slide-04.page").read_text(encoding="utf-8")
     comparison_page = (pptd_path.parent / "pages" / "slide-05.page").read_text(encoding="utf-8")
     assert "content2.page" in comparison_page
+    assert "comparison-left-title" in comparison_page
+    assert "comparison-right-title" in comparison_page
+    assert "GBN" in comparison_page
+    assert "SR" in comparison_page
+
+
+def test_pptd_semantic_comparison_splits_inline_gbn_sr_bullets(tmp_path: Path) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-3" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-3.pptd").write_text(
+        "\n".join(['title: "Template"', "size: [1280, 720]", "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old placeholder",
+            "",
+        ]
+    )
+    for page_name in ("cover.page", "toc.page", "content2.page", "final.page"):
+        (pages_dir / page_name).write_text(page_template, encoding="utf-8")
+    nodes = [
+        OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+        OutlineNode(title="目录", bullets=["对比"], page_type=SlidePageType.TOC),
+        OutlineNode(
+            title="GBN与SR协议：机制与对比",
+            bullets=[
+                "GBN(回退N帧)：发送窗口与累积确认机制",
+                "SR(选择重传)：接收窗口与独立确认机制",
+                "性能对比：吞吐量、信道利用率、缓冲区需求",
+            ],
+            layout_hint="content-comparison",
+        ),
+        OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+    ]
+    pptd_path = tmp_path / "artifacts" / "r-inline-compare" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=nodes,
+        slide_count=len(nodes),
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        template_style="education courseware",
+    )
+
+    comparison_page = (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
+    assert "comparison-left-title" in comparison_page
+    assert "comparison-right-title" in comparison_page
     assert "<strong>GBN</strong>" in comparison_page
     assert "<strong>SR</strong>" in comparison_page
+    assert "接收窗口与独立确认机制" in comparison_page
+    assert comparison_page.count("高误码率与高带宽延迟积网络") == 0
+
+
+def test_pptd_writer_uses_direct_semantic_pages_for_core_content(tmp_path: Path) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-3" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-3.pptd").write_text(
+        "\n".join(['title: "Template"', "size: [1280, 720]", "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old placeholder",
+            "",
+        ]
+    )
+    for page_name in (
+        "cover.page",
+        "toc.page",
+        "content1.page",
+        "content2.page",
+        "content3.page",
+        "content4.page",
+        "final.page",
+    ):
+        (pages_dir / page_name).write_text(page_template, encoding="utf-8")
+
+    nodes = [
+        OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+        OutlineNode(title="目录", bullets=["流程", "指标"], page_type=SlidePageType.TOC),
+        OutlineNode(
+            title="滑动窗口流程",
+            bullets=["发送窗口推进", "ACK 确认", "超时重传", "窗口右移"],
+        ),
+        OutlineNode(
+            title="GBN vs SR 对比",
+            bullets=["GBN：", "重传所有未确认帧", "接收窗口为 1", "SR：", "只重传出错帧", "缓存乱序帧"],
+        ),
+        OutlineNode(
+            title="关键指标与协议性能对比",
+            bullets=["信道利用率提升 80%", "吞吐量受窗口大小影响", "| 特性 | GBN | SR |", "| 重传 | 批量 | 选择 |"],
+        ),
+        OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+    ]
+    pptd_path = tmp_path / "artifacts" / "r-semantic-direct" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=nodes,
+        slide_count=len(nodes),
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        template_style="education courseware",
+    )
+
+    process_page = (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
+    comparison_page = (pptd_path.parent / "pages" / "slide-04.page").read_text(encoding="utf-8")
+    metric_page = (pptd_path.parent / "pages" / "slide-05.page").read_text(encoding="utf-8")
+    preview = PptdProjectPreviewRenderer().preview_manifest(pptd_path=pptd_path)
+    metric_svg = base64.b64decode(preview["pages"][4]["svg_data_url"].split(",", 1)[1]).decode("utf-8")
+
+    assert "Old placeholder" not in process_page
+    assert "process-card-1" in process_page
+    assert "sourceTemplate: content3.page" in process_page
+    assert "comparison-left-card" in comparison_page
+    assert "sourceTemplate: content2.page" in comparison_page
+    assert "metric-card-1" in metric_page
+    assert "metric-table-1-1" in metric_page
+    assert "sourceTemplate: content4.page" in metric_page
+    assert "&amp;gt;" not in "\n".join([process_page, comparison_page, metric_page])
+    assert "批量" in metric_svg
+    assert "选择" in metric_svg
 
 
 def test_pptd_project_preview_renders_custom_paths_and_inline_text_styles(tmp_path: Path) -> None:
