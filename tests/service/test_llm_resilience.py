@@ -1,6 +1,26 @@
 from tests.support.service_flow_shared import *  # noqa: F401,F403
 from service.models import LongFormPlan, LongFormPlanSection, StructureExpansionAnchorContext
 
+
+class CountingRequirementsLLM(MockLLMClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.research_calls = 0
+        self.design_calls = 0
+        self.outline_calls = 0
+
+    async def generate_research_brief(self, **kwargs):
+        self.research_calls += 1
+        return await super().generate_research_brief(**kwargs)
+
+    async def generate_design_intent(self, **kwargs):
+        self.design_calls += 1
+        return await super().generate_design_intent(**kwargs)
+
+    async def generate_outline(self, **kwargs):
+        self.outline_calls += 1
+        return await super().generate_outline(**kwargs)
+
 def test_outline_format_error_should_trigger_repair_and_succeed(tmp_path: Path) -> None:
     client = make_client(tmp_path, llm_client=MalformedOutlineThenRepairLLM())
     run_id = client.post(
@@ -56,6 +76,60 @@ def test_outline_critique_can_be_disabled_for_fast_pptd_path(tmp_path: Path) -> 
     detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
     assert detail["outline"] is not None
     assert llm.critique_calls == 0
+
+
+def test_pptd_fast_requirements_skip_serial_planning_llm_calls(tmp_path: Path) -> None:
+    llm = CountingRequirementsLLM()
+    client = make_client(
+        tmp_path,
+        llm_client=llm,
+        compile_provider="pptd",
+        pptd_fast_requirements_enabled=True,
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "PPTD Fast Requirements",
+            "project_id": "p-fast-requirements",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    assert detail["outline"] is not None
+    assert detail["research_report"]["requirements_mode"] == "pptd_fast_deterministic"
+    assert llm.research_calls == 0
+    assert llm.design_calls == 0
+    assert llm.outline_calls == 1
+
+
+def test_non_pptd_requirements_keep_existing_planning_llm_calls(tmp_path: Path) -> None:
+    llm = CountingRequirementsLLM()
+    client = make_client(
+        tmp_path,
+        llm_client=llm,
+        compile_provider="none",
+        pptd_fast_requirements_enabled=True,
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "Legacy Requirements",
+            "project_id": "p-legacy-requirements",
+            "rag_source_ids": [],
+            "template_style": "default",
+            "target_slide_count": 3,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    assert detail["outline"] is not None
+    assert detail["research_report"].get("requirements_mode") != "pptd_fast_deterministic"
+    assert llm.research_calls == 1
+    assert llm.design_calls == 1
+    assert llm.outline_calls == 1
 
 def test_outline_timeout_retry_then_success(tmp_path: Path) -> None:
     client = make_client(tmp_path, llm_client=TimeoutThenSuccessOutlineLLM(fail_times=2))

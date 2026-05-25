@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ...models import EventType, RunRecord
@@ -82,38 +83,51 @@ class OutlineRequirementsMixin:
             )
             raise OutlineFlowStopped(error_code)
 
-        try:
-            base_research = await orch._call_outline_with_timeout_retry(
-                run_id=run_id,
-                phase="requirements.analyze",
-                action=lambda: orch.llm_client.generate_research_brief(
-                    topic=run.input.topic,
-                    project_id=run.input.project_id,
-                    rag_source_ids=run.input.rag_source_ids,
-                    rag_context_snippets=rag_context_snippets,
-                    template_style=requested_template_style,
-                    target_slide_count=run.input.target_slide_count,
-                ),
-            )
-        except Exception:
-            base_research = orch._fallback_research_brief(
+        if self._pptd_fast_requirements_enabled():
+            base_research = self._build_pptd_fast_research_brief(
                 topic=run.input.topic,
                 template_style=requested_template_style,
                 target_slide_count=run.input.target_slide_count,
+                rag_context_snippets=rag_context_snippets,
             )
-        try:
-            design_intent = await orch._call_outline_with_timeout_retry(
-                run_id=run_id,
-                phase="requirements.design_intent",
-                action=lambda: orch.llm_client.generate_design_intent(
+            design_intent = self._build_pptd_fast_design_intent(
+                topic=run.input.topic,
+                template_style=requested_template_style,
+                has_rag=bool(rag_context_snippets),
+            )
+        else:
+            try:
+                base_research = await orch._call_outline_with_timeout_retry(
+                    run_id=run_id,
+                    phase="requirements.analyze",
+                    action=lambda: orch.llm_client.generate_research_brief(
+                        topic=run.input.topic,
+                        project_id=run.input.project_id,
+                        rag_source_ids=run.input.rag_source_ids,
+                        rag_context_snippets=rag_context_snippets,
+                        template_style=requested_template_style,
+                        target_slide_count=run.input.target_slide_count,
+                    ),
+                )
+            except Exception:
+                base_research = orch._fallback_research_brief(
                     topic=run.input.topic,
                     template_style=requested_template_style,
                     target_slide_count=run.input.target_slide_count,
-                    research_brief=base_research,
-                ),
-            )
-        except Exception:
-            design_intent = {}
+                )
+            try:
+                design_intent = await orch._call_outline_with_timeout_retry(
+                    run_id=run_id,
+                    phase="requirements.design_intent",
+                    action=lambda: orch.llm_client.generate_design_intent(
+                        topic=run.input.topic,
+                        template_style=requested_template_style,
+                        target_slide_count=run.input.target_slide_count,
+                        research_brief=base_research,
+                    ),
+                )
+            except Exception:
+                design_intent = {}
         requirements_report = orch._compose_requirements_report(
             run=run,
             research_brief=base_research,
@@ -124,6 +138,8 @@ class OutlineRequirementsMixin:
         requirements_report = orch._apply_style_preset_to_requirements(
             run=run, report=requirements_report
         )
+        if self._pptd_fast_requirements_enabled():
+            requirements_report["requirements_mode"] = "pptd_fast_deterministic"
         effective_template_style = (
             str(requirements_report.get("effective_template_style", "")).strip()
             or run.input.template_style
@@ -149,3 +165,100 @@ class OutlineRequirementsMixin:
             requirements_report,
             effective_template_style,
         )
+
+    def _pptd_fast_requirements_enabled(self) -> bool:
+        settings = self.orch.settings
+        return (
+            bool(getattr(settings, "pptd_fast_requirements_enabled", True))
+            and str(getattr(settings, "compile_provider", "") or "").lower() == "pptd"
+        )
+
+    def _build_pptd_fast_research_brief(
+        self,
+        *,
+        topic: str,
+        template_style: str,
+        target_slide_count: int,
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        has_rag = bool(rag_context_snippets)
+        page_focus = self._page_focus_from_rag(
+            topic=topic,
+            target_slide_count=target_slide_count,
+            rag_context_snippets=rag_context_snippets,
+        )
+        return {
+            "audience": "learners and reviewers",
+            "purpose": f"explain {topic} through a source-grounded PPTD deck",
+            "tone": "professional, evidence-grounded",
+            "narrative_arc": (
+                "source context -> key concepts -> mechanisms -> comparison -> synthesis"
+                if has_rag
+                else "context -> key concepts -> mechanisms -> examples -> synthesis"
+            ),
+            "page_focus": page_focus,
+            "design_notes": [
+                f"Use {template_style or 'auto'} as a style hint, not a legacy template.",
+                "Use PPTD-native structure: diagrams, tables, timelines, and comparison pages.",
+                "Keep classroom/report pages light-background and projector-readable.",
+                "When sources exist, keep claims traceable to retrieved snippets.",
+            ],
+            "style_intent": "PPTD-first course/report deck with clear visual explanation",
+            "effective_template_style": template_style,
+            "requirements_mode": "pptd_fast_deterministic",
+        }
+
+    def _build_pptd_fast_design_intent(
+        self, *, topic: str, template_style: str, has_rag: bool
+    ) -> dict[str, Any]:
+        return {
+            "palette_name": "PPTD Professional Light",
+            "style_recipe": "soft",
+            "title_font": "Source Han Sans",
+            "body_font": "Source Han Sans",
+            "visual_strategy": (
+                "source-grounded diagrams and comparison structures"
+                if has_rag
+                else "concept diagrams, tables, and step-by-step explanations"
+            ),
+            "density": "medium",
+            "rationale": (
+                f"Use a neutral PPTD-first design for {topic}; "
+                f"treat {template_style or 'auto'} as a style hint."
+            ),
+        }
+
+    def _page_focus_from_rag(
+        self,
+        *,
+        topic: str,
+        target_slide_count: int,
+        rag_context_snippets: list[dict[str, Any]],
+    ) -> list[str]:
+        focus: list[str] = []
+        for snippet in rag_context_snippets:
+            excerpt = self._compact_excerpt(str(snippet.get("excerpt", "")))
+            if not excerpt:
+                continue
+            filename = str(snippet.get("filename", "")).strip()
+            page = snippet.get("page_number")
+            source = filename
+            if page not in (None, ""):
+                source = f"{source} P{page}" if source else f"P{page}"
+            prefix = f"{source}: " if source else ""
+            focus.append(f"{prefix}{excerpt}")
+            if len(focus) >= target_slide_count:
+                break
+        if focus:
+            return focus[:target_slide_count]
+        return [
+            f"{topic}: build concrete slide {idx} around one knowledge point"
+            for idx in range(1, target_slide_count + 1)
+        ]
+
+    def _compact_excerpt(self, text: str) -> str:
+        cleaned = re.sub(r"<details>.*?</details>", " ", text, flags=re.S)
+        cleaned = re.sub(r"```.*?```", " ", cleaned, flags=re.S)
+        cleaned = re.sub(r"#+", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned[:180]

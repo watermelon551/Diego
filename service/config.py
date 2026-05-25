@@ -31,6 +31,7 @@ class Settings:
     outline_timeout_backoff_sec: float = 1.0
     outline_structured_output: bool = True
     outline_critique_enabled: bool = True
+    pptd_fast_requirements_enabled: bool = False
     llm_request_concurrency: int = 6
     slide_candidate_workers: int = 3
     llm_timeout_jitter_sec: float = 0.2
@@ -188,6 +189,9 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         outline_timeout_backoff_sec=outline_timeout_backoff_sec,
         outline_structured_output=_env_bool("OUTLINE_STRUCTURED_OUTPUT", True),
         outline_critique_enabled=_env_bool("OUTLINE_CRITIQUE_ENABLED", True),
+        pptd_fast_requirements_enabled=_env_bool(
+            "PPTD_FAST_REQUIREMENTS_ENABLED", True
+        ),
         llm_request_concurrency=_env_int("LLM_REQUEST_CONCURRENCY", 6),
         slide_candidate_workers=_env_int("SLIDE_CANDIDATE_WORKERS", 3),
         llm_timeout_jitter_sec=llm_timeout_jitter_sec,
