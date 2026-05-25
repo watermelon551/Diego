@@ -17,6 +17,7 @@ from service.models import (
     SlideArtifact,
 )
 from service.run.engines import CompileEngine
+from service.run.engines.pptd_layout import PptdDeckWriter
 
 from tests.support.runtime_helpers import make_settings
 
@@ -234,5 +235,93 @@ def test_compile_provider_pptd_builds_pagevra_bundle_without_legacy_scene_entryp
     preview = json.loads(base64.b64decode(preview_seed["content_base64"]))
     svg_data_url = preview["pages"][0]["svg_data_url"]
     svg = base64.b64decode(svg_data_url.split(",", 1)[1]).decode("utf-8")
-    assert "课程课件 / Courseware" in svg
-    assert "<rect width=\"360\" height=\"720\"" in svg
+    assert "NeoSpectra · PPTD Courseware" in svg
+    assert "结构化路径 · 启发式引导" in svg
+
+
+def test_pptd_writer_prefers_external_skill_template_when_available(tmp_path: Path) -> None:
+    template_dir = (
+        tmp_path
+        / "pptx-skill"
+        / "guideline"
+        / "design"
+        / "template"
+        / "education-1"
+    )
+    pages_dir = template_dir / "pages"
+    pages_dir.mkdir(parents=True)
+    (template_dir / "education-1.pptd").write_text(
+        "\n".join(
+            [
+                "title: Legacy Vendor Template",
+                "size: [1280, 720]",
+                "theme:",
+                "  colors:",
+                '    primary: "#1C4D5F"',
+                '    accent: "#E07A5F"',
+                '    background: "#F5F5F0"',
+                "pages:",
+                "  - pages/cover.page",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: cover",
+            "elements:",
+            "  - elementId: main-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old title",
+            "  - elementId: footer-info",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Vendor footer",
+            "",
+        ]
+    )
+    for name in ("cover.page", "concept.page", "final.page"):
+        (pages_dir / name).write_text(page_template, encoding="utf-8")
+
+    run = RunRecord(
+        run_id="r-template",
+        trace_id="t-template",
+        status=RunStatus.COMPILING,
+        input=CreateRunRequest(
+            topic="Template Based",
+            project_id="p-template",
+            target_slide_count=3,
+            generation_mode=GenerationMode.SCRATCH,
+        ),
+        artifact_dir=str(tmp_path / "artifacts" / "r-template"),
+        outline=OutlineDocument(
+            version=1,
+            summary="template preference",
+            nodes=[OutlineNode(title="Template Based", bullets=["Use external template"])],
+        ),
+        slides=[SlideArtifact(slide_no=1, js_code="", status="ready")],
+    )
+    pptd_path = tmp_path / "artifacts" / "r-template" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title=run.input.topic,
+        nodes=list(run.outline.nodes),
+        slide_count=3,
+        theme={"primary": "#123456"},
+        skill_dir=tmp_path / "pptx-skill",
+    )
+
+    deck_text = pptd_path.read_text(encoding="utf-8")
+    cover_text = (pptd_path.parent / "pages" / "slide-01.page").read_text(encoding="utf-8")
+    assert 'title: "Template Based"' in deck_text
+    assert 'primary: "#123456"' in deck_text
+    assert "pages/slide-01.page" in deck_text
+    assert "Old title" not in cover_text
+    assert "Vendor footer" not in cover_text
+    assert "Template Based" in cover_text
+    assert "NeoSpectra" in cover_text

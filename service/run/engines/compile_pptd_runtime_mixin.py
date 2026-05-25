@@ -123,6 +123,7 @@ class CompilePptdRuntimeMixin:
             nodes=nodes,
             slide_count=slide_count,
             theme=theme,
+            skill_dir=Path(str(getattr(self.runtime.settings, "pptd_skill_dir", "") or "")),
         )
 
     async def _build_pptd_compile_bundle(

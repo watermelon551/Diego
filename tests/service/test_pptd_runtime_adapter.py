@@ -114,6 +114,35 @@ def test_pptd_runtime_adapter_classifies_check_failure(tmp_path: Path) -> None:
     assert "TextOverflowWarning" in result.stderr
 
 
+def test_pptd_runtime_adapter_allows_official_template_warnings_without_errors(
+    tmp_path: Path,
+) -> None:
+    def fake_run(args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout=(
+                "Checking deck.pptd\n"
+                "TextUnderfillWarning\n"
+                "Summary: 0 error(s), 2 warning(s)"
+            ),
+            stderr="",
+        )
+
+    pptd_path = _write_minimal_project(tmp_path / "project")
+    adapter = PptdRuntimeAdapter(
+        skill_dir=tmp_path / "pptx-skill",
+        runner_image="debian:bookworm-slim",
+        run_subprocess=fake_run,
+    )
+
+    result = adapter.check(pptd_path)
+
+    assert result.ok is True
+    assert result.reason == "pptd_check_warnings"
+    assert result.return_code == 1
+
+
 def test_pptd_runtime_adapter_classifies_runner_unavailable(tmp_path: Path) -> None:
     def fake_run(_args, **_kwargs):
         raise FileNotFoundError("docker")

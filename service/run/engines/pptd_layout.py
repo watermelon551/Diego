@@ -6,6 +6,7 @@ from typing import Any
 from .pptd_contracts import PptdSlideContent
 from .pptd_page_yaml import PptdPageYamlRenderer
 from .pptd_preview import PptdPreviewRenderer
+from .pptd_skill_template import PptdSkillTemplateDeck
 
 
 class PptdDeckWriter:
@@ -17,7 +18,17 @@ class PptdDeckWriter:
         nodes: list[Any],
         slide_count: int,
         theme: dict[str, Any],
+        skill_dir: Path | None = None,
     ) -> None:
+        if skill_dir and PptdSkillTemplateDeck().write_project(
+            pptd_path=pptd_path,
+            title=title,
+            nodes=nodes,
+            slide_count=slide_count,
+            theme=theme,
+            skill_dir=skill_dir,
+        ):
+            return
         pages_dir = pptd_path.parent / "pages"
         pages_dir.mkdir(parents=True, exist_ok=True)
         total = max(1, slide_count, len(nodes))
@@ -126,4 +137,3 @@ class PptdDeckWriter:
         if len(lowered) in {3, 6} and all(char in "0123456789abcdef" for char in lowered):
             return f"#{color}"
         return fallback
-

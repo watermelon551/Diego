@@ -52,6 +52,14 @@ class PptdRuntimeAdapter:
         if not result.ok:
             return result
         if result.return_code != 0:
+            if self._check_output_reports_zero_errors(result.stdout, result.stderr):
+                return PptdRuntimeResult(
+                    ok=True,
+                    reason="pptd_check_warnings",
+                    return_code=result.return_code,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                )
             return PptdRuntimeResult(
                 ok=False,
                 reason="pptd_check_failed",
@@ -141,6 +149,12 @@ class PptdRuntimeAdapter:
             return_code=completed.returncode,
             stdout=completed.stdout or "",
             stderr=completed.stderr or "",
+        )
+
+    def _check_output_reports_zero_errors(self, stdout: str, stderr: str) -> bool:
+        output = f"{stdout}\n{stderr}".lower()
+        return "summary:" in output and (
+            "0 errors" in output or "0 error(s)" in output
         )
 
     def _run_local(self, runtime_args: Sequence[str]) -> PptdRuntimeResult:
