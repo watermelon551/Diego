@@ -4,6 +4,7 @@ from typing import Any
 
 from ...models import RunRecord
 from ..scene_recompile import recompile_run_after_scene_save
+from .slide_regeneration_pptd_mixin import SlideRegenerationPptdMixin
 from .slide_regeneration_compile_mixin import SlideRegenerationCompileMixin
 from .slide_regeneration_preview_mixin import SlideRegenerationPreviewMixin
 from .slide_regeneration_scratch_mixin import SlideRegenerationScratchMixin
@@ -12,6 +13,7 @@ from .slide_regeneration_task_mixin import SlideRegenerationTaskMixin
 
 class SlideRegenerationService(
     SlideRegenerationTaskMixin,
+    SlideRegenerationPptdMixin,
     SlideRegenerationPreviewMixin,
     SlideRegenerationScratchMixin,
     SlideRegenerationCompileMixin,

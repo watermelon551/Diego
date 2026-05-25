@@ -19,7 +19,15 @@ class SlideRegenerationTaskMixin:
             run = await orch.store.get_run(run_id)
             if run is None or run.outline is None:
                 return
-            if run.input.generation_mode == GenerationMode.TEMPLATE:
+            if self._run_has_pptd_project(run):
+                await self.regenerate_single_pptd_slide(
+                    run_id=run_id,
+                    slide_no=slide_no,
+                    instruction=instruction,
+                    preserve_style=preserve_style,
+                    run=run,
+                )
+            elif run.input.generation_mode == GenerationMode.TEMPLATE:
                 await regenerate_single_template_slide(
                     orchestrator=orch,
                     run_id=run_id,

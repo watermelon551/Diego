@@ -245,7 +245,7 @@ def test_regenerate_slide_endpoint_publishes_final_preview_event(
     assert after["render_version"] == before["render_version"] + 1
 
 
-def test_regenerate_slide_rehydrates_missing_slide_js_before_pptd_recompile(
+def test_regenerate_slide_updates_pptd_project_without_legacy_slide_js(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -298,9 +298,12 @@ def test_regenerate_slide_rehydrates_missing_slide_js_before_pptd_recompile(
 
     before = client.get(f"/v1/ppt/runs/{run_id}").json()
     slide_one = next(item for item in before["slides"] if item["slide_no"] == 1)
-    slide_js_path = Path(slide_one["js_path"])
-    assert slide_one["js_code"]
-    slide_js_path.unlink()
+    assert slide_one["js_path"] is None
+    assert slide_one["js_code"] == ""
+    pptd_path = Path(before["compile_js_path"])
+    page_path = pptd_path.parent / "pages" / "slide-01.page"
+    assert pptd_path.is_file()
+    assert page_path.is_file()
 
     resp = client.post(
         f"/v1/ppt/runs/{run_id}/slides/1/regenerate",
@@ -326,9 +329,16 @@ def test_regenerate_slide_rehydrates_missing_slide_js_before_pptd_recompile(
         time.sleep(0.05)
 
     assert after["render_version"] == before["render_version"] + 1
-    assert slide_js_path.exists()
+    assert pptd_path.is_file()
+    assert page_path.is_file()
+    assert "重做要求：精简标题" in page_path.read_text(encoding="utf-8")
     assert after["compile_provider"] == "pptd"
     assert after["compile_bundle"]["entrypoint"] == "slides/compile_pptd_bundle.js"
+    assert any(
+        event["event"] == "compile.completed"
+        and event["payload"].get("reason") == "single_slide_regenerate"
+        for event in after["events"]
+    )
 
 
 def test_regenerate_slide_endpoint_rejects_stale_render_version(
@@ -495,6 +505,11 @@ def test_slide_scene_save_updates_pptd_page_before_recompile(
     wait_status(client, run_id, {"SUCCEEDED"})
 
     scene = client.get(f"/v1/ppt/runs/{run_id}/slides/1/scene").json()
+    editable_title = next(
+        node
+        for node in scene["nodes"]
+        if node["label"] == "Title" and "replace_text" in node["edit_capabilities"]
+    )
     save_resp = client.post(
         f"/v1/ppt/runs/{run_id}/slides/1/scene/save",
         json={
@@ -502,7 +517,7 @@ def test_slide_scene_save_updates_pptd_page_before_recompile(
             "operations": [
                 {
                     "op": "replace_text",
-                    "node_id": "text:config:title",
+                    "node_id": editable_title["node_id"],
                     "value": "PPTD Saved Title",
                 }
             ],
@@ -515,6 +530,11 @@ def test_slide_scene_save_updates_pptd_page_before_recompile(
     page_text = (pptd_path.parent / "pages" / "slide-01.page").read_text(encoding="utf-8")
     assert "PPTD Saved Title" in page_text
     assert run_detail["compile_provider"] == "pptd"
+    assert any(
+        event["event"] == "compile.completed"
+        and event["payload"].get("reason") == "pptd_scene_save"
+        for event in run_detail["events"]
+    )
 
 
 def test_slide_scene_save_returns_conflict_for_stale_scene_version(
