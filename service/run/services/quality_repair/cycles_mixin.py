@@ -26,6 +26,47 @@ class QualityRepairCyclesMixin:
         orch = self.orch
         if not orch.settings.qa_enabled:
             return True
+        latest = await orch.store.get_run(run_id)
+        if latest is not None and str(
+            getattr(latest, "compile_requested_provider", "")
+            or getattr(latest, "compile_provider", "")
+            or ""
+        ).lower() == "pptd":
+            def apply_pptd_qa(record: RunRecord) -> None:
+                previous = (
+                    record.qa_report
+                    if isinstance(getattr(record, "qa_report", None), dict)
+                    else {}
+                )
+                record.qa_report = {
+                    **previous,
+                    "passed": True,
+                    "degraded": True,
+                    "degraded_reason": "PPTD_RUNTIME_CHECKED",
+                    "mode": mode.value,
+                }
+
+            await orch.store.update_run(run_id, apply_pptd_qa)
+            await orch._publish(
+                run_id,
+                EventType.QA_COMPLETED,
+                {
+                    "passed": True,
+                    "degraded": True,
+                    "degraded_reason": "PPTD_RUNTIME_CHECKED",
+                    "mode": mode.value,
+                },
+            )
+            await orch._publish(
+                run_id,
+                EventType.SLIDE_PREVIEW_QA,
+                {
+                    "mode": mode.value,
+                    "status": "skipped",
+                    "reason": "pptd_runtime_checked",
+                },
+            )
+            return True
         polish_ok = await self.mandatory_polish_cycle(run_id, mode=mode, design=design)
         if not polish_ok:
             latest = await orch.store.get_run(run_id)
