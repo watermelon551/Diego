@@ -132,7 +132,7 @@ class PptdSkillTemplateDeck:
     def _render_cover(self, text: str, slide: PptdSlideContent) -> str:
         subtitle = self._short_label(
             slide.bullets[0] if slide.bullets else "课程核心概念与实践路径",
-            max_len=36,
+            max_len=30,
         )
         highlight = self._short_label(
             slide.bullets[1] if len(slide.bullets) > 1 else "结构化路径 · 启发式引导",
@@ -306,12 +306,12 @@ class PptdSkillTemplateDeck:
             "page-title": self._p(slide.title),
             "concept-tag-text": self._p("<strong>概念网络</strong>", escaped=False),
             "center-node-text": self._p(f"<strong>{self._short_label(slide.title, max_len=10)}</strong>", escaped=False),
-            "think-text": self._p(f"把四个节点连成一句话：{self._plain(self._join_brief(items, max_len=46))}"),
+            "think-text": self._p(f"把四个节点连成一句话：{self._plain(self._join_brief(items, max_len=32))}"),
         }
         for pos, item in zip(positions, items):
             head, desc = self._split_item(item)
             replacements[f"sub-{pos}-text"] = self._p(f"<strong>{self._plain(head)}</strong>", escaped=False)
-            replacements[f"sub-{pos}-desc"] = self._p(desc)
+            replacements[f"sub-{pos}-desc"] = self._p(self._short_label(desc, max_len=20))
         return self._generic_fill_text_blocks(
             self._replace_many(text, replacements),
             slide=slide,
@@ -506,24 +506,36 @@ class PptdSkillTemplateDeck:
         ) or any(
             self._is_table_row(str(item)) for item in slide.bullets
         )
-        compare_signal = any(
-            token in signal
-            for token in (" vs ", "gbn", "sr", "对比", "比较", "差异", "优劣", "versus")
+        has_gbn = "gbn" in signal or "go-back-n" in signal or "回退n" in signal or "后退n" in signal
+        has_sr = (
+            re.search(r"(^|[^a-z])sr([^a-z]|$)", signal) is not None
+            or "选择重传" in signal
+            or "selective repeat" in signal
         )
+        explicit_compare_signal = any(
+            token in signal
+            for token in (" vs ", "对比", "比较", "差异", "优劣", "versus")
+        )
+        compare_signal = explicit_compare_signal or (has_gbn and has_sr)
         framework_signal = any(
             token in signal
             for token in ("框架", "结构", "关系", "协同", "概念", "framework", "concept", "map")
         )
+        explicit_framework_signal = any(
+            token in title_signal for token in ("框架", "概念图", "结构图", "framework", "concept map")
+        ) or any(token in hint for token in ("framework", "concept", "map", "grid"))
         if data_signal or any(token in hint for token in ("data", "chart", "metric", "kpi", "table")):
             return ["content4.page", "content-data.page", "data_highlight.page", "content_chart.page"]
         if compare_signal:
             return ["content2.page", "comparison.page", "two_column.page", "market_comparison.page"]
-        if framework_signal or any(token in hint for token in ("framework", "concept", "map", "grid")):
+        if explicit_framework_signal:
             return ["content5.page", "framework.page", "content-concepts.page", "content_grid.page"]
         if process_signal or any(token in hint for token in ("timeline", "process", "flow", "step")):
             return ["content3.page", "process.page", "content-process.page", "process_timeline.page", "timeline.page"]
         if any(token in hint for token in ("two-column", "two_col", "showcase", "comparison", "compare")):
             return ["content2.page", "comparison.page", "two_column.page", "market_comparison.page"]
+        if framework_signal:
+            return ["content5.page", "framework.page", "content-concepts.page", "content_grid.page"]
         return ["content1.page", "content_bullets.page", "content-bullets.page", "bullets.page"]
 
     def _display_items(self, slide: PptdSlideContent, *, count: int) -> list[str]:

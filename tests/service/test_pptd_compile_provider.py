@@ -18,14 +18,63 @@ from service.models import (
     SlidePageType,
 )
 from service.run.engines import CompileEngine
+from service.run.engines.pptd_contracts import PptdSlideContent
 from service.run.engines.pptd_layout import PptdDeckWriter
 from service.run.engines.pptd_preview import PptdProjectPreviewRenderer
+from service.run.engines.pptd_skill_template import PptdSkillTemplateDeck
 from service.run.slide_scene.pptd_scene import (
     apply_pptd_scene_operations,
     build_pptd_slide_scene,
 )
 
 from tests.support.runtime_helpers import make_settings
+
+
+def test_pptd_template_selection_does_not_treat_single_gbn_or_sr_page_as_comparison() -> None:
+    deck = PptdSkillTemplateDeck()
+
+    gbn_pages = deck._preferred_content_pages(
+        slide=PptdSlideContent(
+            index=5,
+            total=8,
+            title="Go-Back-N (GBN) 协议详解",
+            bullets=[
+                "发送窗口大小>1，接收窗口大小=1",
+                "累积确认：ACKn表示n及之前所有帧正确接收",
+                "优点：实现简单；缺点：带宽浪费",
+            ],
+            page_type="content",
+            layout_hint="content-timeline",
+        )
+    )
+    sr_pages = deck._preferred_content_pages(
+        slide=PptdSlideContent(
+            index=6,
+            total=8,
+            title="选择重传 (SR) 协议详解",
+            bullets=[
+                "发送窗口与接收窗口大小均>1",
+                "逐个确认：每个帧需要独立ACK",
+                "优点：带宽利用率高；缺点：缓存管理复杂",
+            ],
+            page_type="content",
+            layout_hint="content-timeline",
+        )
+    )
+    comparison_pages = deck._preferred_content_pages(
+        slide=PptdSlideContent(
+            index=7,
+            total=8,
+            title="GBN vs SR 协议对比",
+            bullets=["GBN：", "批量重传", "SR：", "选择重传"],
+            page_type="content",
+            layout_hint="content-comparison",
+        )
+    )
+
+    assert gbn_pages[0] == "content3.page"
+    assert sr_pages[0] == "content3.page"
+    assert comparison_pages[0] == "content2.page"
 
 
 class _Store:

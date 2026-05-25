@@ -6,6 +6,7 @@ from ...design.skill_profile import enforce_layout_variety
 from ...design.style_catalog import resolve_style_dna_choice
 from ...models import OutlineDocument, OutlineNode, SlidePageType
 from ..parsing import _extract_json_object
+from ..pptd_outline_quality import normalize_pptd_outline_nodes
 from ..types import OutlineFormatError
 
 
@@ -42,6 +43,7 @@ class LLMOutlineDocumentNormalizationMixin:
             seed=f"{topic}|{target_slide_count}",
             style_dna_id=style_dna.id,
         )
+        normalize_pptd_outline_nodes(nodes)
         return OutlineDocument(
             version=max(1, outline.version),
             summary=outline.summary,
