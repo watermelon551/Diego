@@ -20,6 +20,7 @@ COPY --from=node-runtime /node-runtime/node_modules ./node_modules
 
 COPY pyproject.toml README.md ./
 COPY service ./service
+COPY docker_entrypoint.py ./docker_entrypoint.py
 
 RUN python -m pip install . \
     && rm -rf /app/build /app/*.egg-info /app/service
@@ -28,8 +29,9 @@ RUN groupadd --system diego \
     && useradd --system --gid diego --create-home --home /home/diego diego \
     && chown -R diego:diego /app
 
-USER diego
+USER root
 
 EXPOSE 8000
 
+ENTRYPOINT ["python", "/app/docker_entrypoint.py"]
 CMD ["python", "-m", "uvicorn", "service.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
