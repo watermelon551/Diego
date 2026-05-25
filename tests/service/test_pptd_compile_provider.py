@@ -272,6 +272,10 @@ def test_pptd_writer_prefers_external_skill_template_when_available(tmp_path: Pa
                 '    primary: "#1C4D5F"',
                 '    accent: "#E07A5F"',
                 '    background: "#F5F5F0"',
+                "  textStyles:",
+                "    accent:",
+                "      fontSize: 24",
+                '      color: "$accent"',
                 "pages:",
                 "  - pages/cover.page",
                 "",
@@ -332,6 +336,8 @@ def test_pptd_writer_prefers_external_skill_template_when_available(tmp_path: Pa
     cover_text = (pptd_path.parent / "pages" / "slide-01.page").read_text(encoding="utf-8")
     assert 'title: "Template Based"' in deck_text
     assert 'primary: "#123456"' in deck_text
+    assert "    accent:" in deck_text
+    assert "      fontSize: 24" in deck_text
     assert "pages/slide-01.page" in deck_text
     assert (pptd_path.parent / "design.md").is_file()
     assert (pptd_path.parent / "outline.md").is_file()
@@ -339,3 +345,88 @@ def test_pptd_writer_prefers_external_skill_template_when_available(tmp_path: Pa
     assert "Vendor footer" not in cover_text
     assert "Template Based" in cover_text
     assert "NeoSpectra" in cover_text
+
+
+def test_pptd_writer_selects_skill_template_family_from_run_style(tmp_path: Path) -> None:
+    template_root = tmp_path / "pptx-skill" / "guideline" / "design" / "template"
+    for template_name in ("education-1", "education-3"):
+        template_dir = template_root / template_name
+        pages_dir = template_dir / "pages"
+        pages_dir.mkdir(parents=True)
+        (template_dir / f"{template_name}.pptd").write_text(
+            "\n".join(
+                [
+                    f"title: {template_name}",
+                    "size: [1280, 720]",
+                    f"template_marker: {template_name}",
+                    "theme:",
+                    "  colors:",
+                    '    primary: "#1C4D5F"',
+                    "pages:",
+                    "  - pages/cover.page",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        for page_name in ("cover.page", "content1.page", "content2.page", "final.page"):
+            (pages_dir / page_name).write_text(
+                "\n".join(
+                    [
+                        "pageType: content",
+                        "elements:",
+                        "  - elementId: cover-title",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        Old cover title",
+                        "  - elementId: page-title",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        Old page title",
+                        "  - elementId: bullet1-text",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        Old bullet one",
+                        "  - elementId: decorative-logo",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        Keep logo text",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+    pptd_path = tmp_path / "artifacts" / "r-template-style" / "slides" / "pptd" / "presentation.pptd"
+    nodes = [
+        OutlineNode(title="课程封面", bullets=["从真实模板开始"]),
+        OutlineNode(title="第一章", bullets=["成帧边界", "差错控制"]),
+        OutlineNode(title="第二章", bullets=["滑动窗口", "确认重传"]),
+        OutlineNode(title="总结", bullets=["迁移应用"]),
+    ]
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=nodes,
+        slide_count=4,
+        theme={"primary": "#123456"},
+        skill_dir=tmp_path / "pptx-skill",
+        template_style="education courseware",
+    )
+
+    deck_text = pptd_path.read_text(encoding="utf-8")
+    content_text = (pptd_path.parent / "pages" / "slide-02.page").read_text(
+        encoding="utf-8"
+    )
+    assert "template_marker: education-3" in deck_text
+    assert "pages/slide-02.page" in deck_text
+    assert "Old page title" not in content_text
+    assert "Old bullet one" not in content_text
+    assert "第一章" in content_text
+    assert "成帧边界" in content_text
+    assert "Keep logo text" in content_text

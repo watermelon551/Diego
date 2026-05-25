@@ -19,6 +19,8 @@ class PptdDeckWriter:
         slide_count: int,
         theme: dict[str, Any],
         skill_dir: Path | None = None,
+        template_style: str = "",
+        template_id: str | None = None,
     ) -> None:
         self._write_planning_docs(
             pptd_dir=pptd_path.parent,
@@ -34,6 +36,8 @@ class PptdDeckWriter:
             slide_count=slide_count,
             theme=theme,
             skill_dir=skill_dir,
+            template_style=template_style,
+            template_id=template_id,
         ):
             return
         pages_dir = pptd_path.parent / "pages"

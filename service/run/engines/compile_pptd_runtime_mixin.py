@@ -116,14 +116,17 @@ class CompilePptdRuntimeMixin:
         slide_count: int,
         theme: dict[str, Any],
     ) -> None:
+        run_input = getattr(run, "input", None)
         nodes = list(getattr(getattr(run, "outline", None), "nodes", []) or [])
         PptdDeckWriter().write_project(
             pptd_path=pptd_path,
-            title=str(getattr(getattr(run, "input", None), "topic", "") or "Presentation"),
+            title=str(getattr(run_input, "topic", "") or "Presentation"),
             nodes=nodes,
             slide_count=slide_count,
             theme=theme,
             skill_dir=Path(str(getattr(self.runtime.settings, "pptd_skill_dir", "") or "")),
+            template_style=str(getattr(run_input, "template_style", "") or ""),
+            template_id=str(getattr(run_input, "template_id", "") or "") or None,
         )
 
     async def _build_pptd_compile_bundle(
