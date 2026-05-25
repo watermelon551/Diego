@@ -245,6 +245,64 @@ def test_scratch_compile_local_provider_is_explicit_and_succeeds(tmp_path: Path)
     assert compile_event["payload"]["fallback_used"] is False
 
 
+def test_pptd_run_detail_reports_pptd_compile_bundle_entrypoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_pptd_subprocess(args, cwd=None, **kwargs):
+        command = " ".join(args) if isinstance(args, (list, tuple)) else str(args)
+        if "convert.sh" in command and isinstance(args, (list, tuple)):
+            output = Path(args[args.index("-o") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"fake-pptx")
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="converted",
+                stderr="",
+            )
+        return fake_subprocess_run(args, cwd=cwd, **kwargs)
+
+    skill_dir = tmp_path / "pptx-skill"
+    (skill_dir / "scripts" / "runtime").mkdir(parents=True)
+    (skill_dir / "scripts" / "check.sh").write_text("", encoding="utf-8")
+    (skill_dir / "scripts" / "convert.sh").write_text("", encoding="utf-8")
+    (skill_dir / "scripts" / "runtime" / "tool.pptd").write_text("", encoding="utf-8")
+    monkeypatch.setattr(orchestrator_mod.subprocess, "run", fake_pptd_subprocess)
+    client = make_client(
+        tmp_path,
+        compile_provider="pptd",
+        pptd_skill_dir=str(skill_dir),
+        pptd_runner_mode="local",
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "PPTD Compile Bundle",
+            "project_id": "p-pptd-bundle",
+            "rag_source_ids": ["a"],
+            "template_style": "default",
+            "target_slide_count": 2,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
+    final = wait_status(client, run_id, {"SUCCEEDED"})
+
+    assert final["compile_provider"] == "pptd"
+    assert final["compile_js_path"].endswith("/slides/pptd/presentation.pptd")
+    assert (
+        final["generation_result"]["compile_bundle_entrypoint"]
+        == "slides/compile_pptd_bundle.js"
+    )
+    assert final["compile_bundle"]["entrypoint"] == "slides/compile_pptd_bundle.js"
+    assert (
+        final["artifacts"]["compile_bundle"]["entrypoint"]
+        == "slides/compile_pptd_bundle.js"
+    )
+
+
 def test_scratch_compile_pagevra_should_fail_with_compile_stage_diagnostics_when_base_url_missing(tmp_path: Path) -> None:
     client = make_client(
         tmp_path,

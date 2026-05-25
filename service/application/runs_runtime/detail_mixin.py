@@ -12,6 +12,20 @@ from ...models import (
 
 
 class RunApplicationDetailMixin:
+    def _compile_bundle_entrypoint(self, run: Any) -> str:
+        provider = str(getattr(run, "compile_provider", "") or "").strip().lower()
+        requested_provider = str(
+            getattr(run, "compile_requested_provider", "") or ""
+        ).strip().lower()
+        compile_path = Path(str(getattr(run, "compile_js_path", "") or ""))
+        if (
+            provider == "pptd"
+            or requested_provider == "pptd"
+            or compile_path.suffix == ".pptd"
+        ):
+            return "slides/compile_pptd_bundle.js"
+        return "slides/compile.js"
+
     async def get_run_detail(self, run_id: str) -> RunDetailResponse | None:
         run = await self.orch.store.get_run(run_id)
         if run is None or getattr(run.input, "capability", "ppt") != "ppt":
@@ -32,10 +46,13 @@ class RunApplicationDetailMixin:
                 or str(run.compile_js_path or "").strip()
             )
         )
+        compile_bundle_entrypoint = (
+            self._compile_bundle_entrypoint(run) if compile_bundle_ready else None
+        )
         if compile_bundle_ready:
             artifacts["compile_bundle"] = {
                 "available": True,
-                "entrypoint": "slides/compile.js",
+                "entrypoint": compile_bundle_entrypoint,
                 "provider": "diego",
                 "mode": generation_mode,
                 "build_endpoint": f"/v1/ppt/runs/{run.run_id}/artifacts/compile-bundle",
@@ -48,13 +65,13 @@ class RunApplicationDetailMixin:
             slide_artifacts_ready=bool(run.slides),
             citation_map_ready=bool(run.citation_map),
             compile_bundle_ready=compile_bundle_ready,
-            compile_bundle_entrypoint="slides/compile.js" if compile_bundle_ready else None,
+            compile_bundle_entrypoint=compile_bundle_entrypoint,
         )
         compile_bundle = CompileBundleResult(
             status="ready" if compile_bundle_ready else "not_available",
             provider="diego",
             available=compile_bundle_ready,
-            entrypoint="slides/compile.js" if compile_bundle_ready else None,
+            entrypoint=compile_bundle_entrypoint,
             build_endpoint=(
                 f"/v1/ppt/runs/{run.run_id}/artifacts/compile-bundle"
                 if compile_bundle_ready
