@@ -22,6 +22,7 @@ from service.run.engines import CompileEngine
 from service.run.engines.pptd_contracts import PptdSlideContent
 from service.run.engines.pptd_layout import PptdDeckWriter
 from service.run.engines.pptd_preview import PptdProjectPreviewRenderer
+from service.run.engines.pptd_semantic_pages import PptdSemanticPageRenderer
 from service.run.engines.pptd_source_notes import pptd_source_notes_from_report
 from service.run.engines.pptd_skill_template import PptdSkillTemplateDeck
 from service.run.flows.scratch_flow import ScratchFlowService
@@ -1382,6 +1383,7 @@ def test_pptd_semantic_comparison_keeps_cross_protocol_notes_in_summary(
     assert "确认方式" in summary_block.group(0)
     assert "实现复杂度" in summary_block.group(0)
     assert "课堂判断：课堂判断" not in summary_block.group(0)
+    assert "、；" not in summary_block.group(0)
     assert "确认方式" not in right_bullets
     assert "实现复杂度" not in right_bullets
 
@@ -1525,6 +1527,78 @@ def test_pptd_writer_renders_default_content_as_concept_diagram(tmp_path: Path) 
     assert "concept-definition-card" in concept_page
     assert "概念图解" in concept_svg
     assert "差错控制" in concept_svg
+
+
+def test_pptd_semantic_renderer_compacts_text_without_visible_ellipsis(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-3" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-3.pptd").write_text(
+        "\n".join(['title: "Template"', "size: [1280, 720]", "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old placeholder",
+            "",
+        ]
+    )
+    for page_name in ("cover.page", "toc.page", "content1.page", "final.page"):
+        (pages_dir / page_name).write_text(page_template, encoding="utf-8")
+
+    long_bullet = (
+        "带比特填充的定界符法：发送端遇到连续五个1后插入0，"
+        "接收端据此恢复原始比特流并避免误判帧边界"
+    )
+    pptd_path = tmp_path / "artifacts" / "r-no-visible-ellipsis" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="数据链路层成帧方法与差错检测机制的课堂讲解",
+        nodes=[
+            OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+            OutlineNode(title="目录", bullets=["成帧"], page_type=SlidePageType.TOC),
+            OutlineNode(
+                title="数据链路层成帧方法与差错检测机制的课堂讲解",
+                bullets=[
+                    long_bullet,
+                    "字节填充法：FLAG 作为边界，ESC 处理数据中的冲突字符",
+                    "CRC：把比特串除以生成多项式，用余数判断传输错误",
+                    "ARQ：把检错结果转成确认、超时和重传动作",
+                ],
+            ),
+            OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+        ],
+        slide_count=4,
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        template_style="education courseware",
+    )
+
+    concept_page = (pptd_path.parent / "pages" / "slide-03.page").read_text(encoding="utf-8")
+
+    assert "sourceTemplate: content1.page" in concept_page
+    assert "..." not in concept_page
+    assert "…" not in concept_page
+    assert "、；" not in concept_page
+    assert "发送端遇到连续五个1后插入0" in concept_page
+
+
+def test_pptd_semantic_renderer_does_not_split_ascii_acronyms_in_short_labels() -> None:
+    renderer = PptdSemanticPageRenderer()
+
+    label = renderer._compact_label("奇偶校验、校验和、CRC", max_len=10)
+
+    assert label == "奇偶校验、校验和"
+    assert not label.endswith("、C")
 
 
 def test_pptd_project_preview_renders_custom_paths_and_inline_text_styles(tmp_path: Path) -> None:

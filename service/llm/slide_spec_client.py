@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ..models import OutlineNode, VisualPolicy
+from .pptd_skill_guidance import PPTD_OUTLINE_QUALITY_GUIDANCE
 from .types import SlideSpec
 
 
@@ -36,10 +37,13 @@ class LLMSlideSpecMixin:
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
             f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
+            f"{PPTD_OUTLINE_QUALITY_GUIDANCE}\n"
             "Hard constraints:\n"
             "- natural language only, concise and specific; no API names/code snippets\n"
             "- keep strong title/body hierarchy intent (title short, bullets informative)\n"
             "- bullets: 3-6 preferred on content pages, avoid empty fluff\n"
+            "- Chinese bullets must be PPT-box-ready: normally <=32 Chinese chars; split long clauses instead of relying on truncation\n"
+            "- avoid ellipsis as planned visible content; rewrite to a shorter complete phrase instead\n"
             "- respect layout_hint/page_type and keep citations as short source ids\n"
             "- visual_kind in {image, chart, shape}; if visual_policy=media_required use image; if basic_graphics_only avoid image"
         )
@@ -104,11 +108,13 @@ class LLMSlideSpecMixin:
             f"visual_policy={visual_policy.value}\n"
             f"slide_plan={json.dumps(slide_plan or {}, ensure_ascii=False)}\n"
             f"slide_brief={json.dumps(slide_brief or {}, ensure_ascii=False)}\n"
+            f"{PPTD_OUTLINE_QUALITY_GUIDANCE}\n"
             "Repair goals:\n"
             "- keep intent, but make text clearer and denser where needed\n"
             "- remove vague filler and any non-natural-language artifacts\n"
             "- keep layout/page type valid and match visual policy constraints\n"
-            "- if issues mention overflow/fit/spacing, shorten bullets and prioritize readability"
+            "- if issues mention overflow/fit/spacing, shorten bullets and prioritize readability\n"
+            "- rewrite long visible text into complete compact phrases; do not use ellipsis as a fit strategy"
         )
         response_format = self._slide_spec_response_format()
         text = await self._chat_text(

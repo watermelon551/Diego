@@ -716,7 +716,61 @@ class PptdSkillTemplateDeck:
 
     def _short_label(self, value: str, *, max_len: int) -> str:
         plain = self._plain(value)
-        return plain if len(plain) <= max_len else f"{plain[:max_len - 1]}…"
+        return self._compact_label(plain, max_len=max_len)
+
+    def _compact_label(self, value: str, *, max_len: int) -> str:
+        plain = re.sub(r"\s+", " ", str(value or "").strip())
+        if len(plain) <= max_len:
+            return plain
+        without_parenthetical = re.sub(r"[（(][^）)]{1,24}[）)]", "", plain).strip()
+        if 0 < len(without_parenthetical) <= max_len:
+            return without_parenthetical
+
+        if max_len <= 14:
+            if "、" in plain:
+                fitted = self._fit_delimited_parts(plain, max_len=max_len)
+                if fitted:
+                    return fitted
+            for sep in ("：", ":", "，", ",", "；", ";", "。"):
+                if sep in plain:
+                    head = plain.split(sep, 1)[0].strip()
+                    if head:
+                        return head[:max_len].strip()
+            return plain[:max_len].strip()
+
+        clauses = [
+            clause.strip()
+            for clause in re.split(r"[。！？!?；;]", plain)
+            if clause.strip()
+        ]
+        for clause in clauses:
+            if len(clause) <= max_len:
+                return clause
+        if clauses:
+            comma_parts = [
+                part.strip()
+                for part in re.split(r"[，,、]", clauses[0])
+                if part.strip()
+            ]
+            if comma_parts:
+                fitted = self._fit_parts(comma_parts, max_len=max_len)
+                if fitted:
+                    return fitted
+                return comma_parts[0][:max_len].strip()
+        return plain[:max_len].strip()
+
+    def _fit_delimited_parts(self, value: str, *, max_len: int) -> str:
+        parts = [part.strip() for part in value.split("、") if part.strip()]
+        return self._fit_parts(parts, max_len=max_len)
+
+    def _fit_parts(self, parts: list[str], *, max_len: int) -> str:
+        fitted = ""
+        for part in parts:
+            candidate = part if not fitted else f"{fitted}、{part}"
+            if len(candidate) > max_len:
+                break
+            fitted = candidate
+        return fitted
 
     def _plain(self, value: str) -> str:
         return html.escape(str(value).strip(), quote=False)
