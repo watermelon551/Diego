@@ -11,7 +11,7 @@ FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
@@ -34,10 +34,24 @@ COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /node-runtime/node_modules ./node_modules
 
 COPY pyproject.toml README.md ./
+RUN --mount=type=cache,target=/root/.cache/pip <<'EOF'
+set -eux
+python - <<'PY' > /tmp/requirements.txt
+import tomllib
+
+with open("pyproject.toml", "rb") as handle:
+    project = tomllib.load(handle)["project"]
+for dependency in project["dependencies"]:
+    print(dependency)
+PY
+python -m pip install -r /tmp/requirements.txt
+EOF
+
 COPY service ./service
 COPY docker_entrypoint.py ./docker_entrypoint.py
 
-RUN python -m pip install . \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --no-deps . \
     && rm -rf /app/build /app/*.egg-info /app/service
 
 RUN groupadd --system diego \
