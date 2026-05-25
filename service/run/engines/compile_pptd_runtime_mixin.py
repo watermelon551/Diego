@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,13 @@ class CompilePptdRuntimeMixin:
                 return_code=convert.return_code,
                 details={"stdout": convert.stdout, "stderr": convert.stderr},
             )
+        self._write_pptd_compile_provenance(
+            slides_dir=slides_dir,
+            pptd_path=pptd_path,
+            pptx_path=pptx_path,
+            check=check,
+            repair_details=repair_details,
+        )
         return ScratchCompileResult(
             ok=True,
             compile_js_path=pptd_path,
@@ -190,9 +198,14 @@ class CompilePptdRuntimeMixin:
         input_pptx_path.parent.mkdir(parents=True, exist_ok=True)
         input_pptx_path.write_bytes(pptx_path.read_bytes())
         script_path.write_text(self._pptd_bundle_script(), encoding="utf-8")
+        provenance = self._pptd_compile_provenance(slides_dir=slides_dir)
         preview_seed_path.write_text(
             json.dumps(
-                self._pptd_preview_manifest_from_run(run=run, theme=theme or {}),
+                self._pptd_preview_manifest_from_run(
+                    run=run,
+                    theme=theme or {},
+                    provenance=provenance,
+                ),
                 ensure_ascii=False,
             ),
             encoding="utf-8",
@@ -207,6 +220,9 @@ class CompilePptdRuntimeMixin:
             doc_path = slides_dir / "pptd" / planning_doc
             if doc_path.is_file():
                 files.append(self._bundle_file_entry(doc_path, slides_dir=slides_dir))
+        provenance_path = slides_dir / "pptd" / "compile_provenance.json"
+        if provenance_path.is_file():
+            files.append(self._bundle_file_entry(provenance_path, slides_dir=slides_dir))
         for page_path in sorted((slides_dir / "pptd" / "pages").glob("*.page")):
             files.append(self._bundle_file_entry(page_path, slides_dir=slides_dir))
         assets = [self._bundle_file_entry(input_pptx_path, slides_dir=slides_dir)]
@@ -271,22 +287,30 @@ class CompilePptdRuntimeMixin:
                 "    media_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'",
                 "  }],",
                 "  preview: { page_count: preview.pages.length },",
-                "  metadata: { model: 'pptd' }",
+                "  metadata: { model: 'pptd', preview_truth: preview.metadata && preview.metadata.preview_truth || null }",
                 "}));",
                 "",
             ]
         )
 
     def _pptd_preview_manifest_from_run(
-        self, *, run: Any, theme: dict[str, Any]
+        self,
+        *,
+        run: Any,
+        theme: dict[str, Any],
+        provenance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         pptd_path = Path(str(getattr(run, "artifact_dir", "") or "")) / "slides" / "pptd" / "presentation.pptd"
         if pptd_path.is_file():
             manifest = PptdDeckWriter().preview_manifest_from_project(pptd_path=pptd_path)
             if manifest.get("pages"):
+                self._attach_preview_truth_metadata(
+                    manifest=manifest,
+                    provenance=provenance,
+                )
                 return manifest
         nodes = list(getattr(getattr(run, "outline", None), "nodes", []) or [])
-        return PptdDeckWriter().preview_manifest(
+        manifest = PptdDeckWriter().preview_manifest(
             nodes=nodes,
             slide_count=len(getattr(run, "slides", []) or []),
             theme=theme,
@@ -295,3 +319,70 @@ class CompilePptdRuntimeMixin:
                 slide_count=len(getattr(run, "slides", []) or []),
             ),
         )
+        self._attach_preview_truth_metadata(manifest=manifest, provenance=provenance)
+        return manifest
+
+    def _write_pptd_compile_provenance(
+        self,
+        *,
+        slides_dir: Path,
+        pptd_path: Path,
+        pptx_path: Path,
+        check: Any,
+        repair_details: dict[str, Any] | None,
+    ) -> None:
+        provenance = {
+            "schema_version": "diego.pptd_compile_provenance.v1",
+            "truth_owner": "Diego",
+            "preview_source": "checked_pptd_project",
+            "export_source": "converted_pptx",
+            "pptd_path": "slides/pptd/presentation.pptd",
+            "pptx_path": "slides/output/presentation.pptx",
+            "pptd_sha256": self._sha256(pptd_path),
+            "pptx_sha256": self._sha256(pptx_path),
+            "check": {
+                "error_count": check.error_count,
+                "warning_count": check.warning_count,
+                "return_code": check.return_code,
+            },
+            "warning_repair": repair_details,
+        }
+        path = slides_dir / "pptd" / "compile_provenance.json"
+        path.write_text(json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _pptd_compile_provenance(self, *, slides_dir: Path) -> dict[str, Any] | None:
+        path = slides_dir / "pptd" / "compile_provenance.json"
+        if not path.is_file():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _attach_preview_truth_metadata(
+        self,
+        *,
+        manifest: dict[str, Any],
+        provenance: dict[str, Any] | None,
+    ) -> None:
+        if not provenance:
+            return
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["preview_truth"] = {
+            "truth_owner": provenance.get("truth_owner"),
+            "preview_source": provenance.get("preview_source"),
+            "export_source": provenance.get("export_source"),
+            "pptd_sha256": provenance.get("pptd_sha256"),
+            "pptx_sha256": provenance.get("pptx_sha256"),
+            "check": provenance.get("check"),
+            "warning_repair": provenance.get("warning_repair"),
+        }
+        manifest["metadata"] = metadata
+
+    def _sha256(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()

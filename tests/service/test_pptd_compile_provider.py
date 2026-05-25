@@ -302,6 +302,19 @@ def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -
     assert (slides_dir / "pptd" / "presentation.pptd").is_file()
     assert (slides_dir / "pptd" / "design.md").is_file()
     assert (slides_dir / "pptd" / "outline.md").is_file()
+    provenance_path = slides_dir / "pptd" / "compile_provenance.json"
+    assert provenance_path.is_file()
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    assert provenance["schema_version"] == "diego.pptd_compile_provenance.v1"
+    assert provenance["preview_source"] == "checked_pptd_project"
+    assert provenance["export_source"] == "converted_pptx"
+    assert provenance["check"] == {
+        "error_count": 0,
+        "warning_count": 0,
+        "return_code": 0,
+    }
+    assert len(provenance["pptd_sha256"]) == 64
+    assert len(provenance["pptx_sha256"]) == 64
     assert (slides_dir / "pptd" / "pages" / "slide-01.page").is_file()
     assert "PPTD-first deck" in (slides_dir / "pptd" / "design.md").read_text(
         encoding="utf-8"
@@ -545,7 +558,13 @@ def test_compile_provider_pptd_builds_pagevra_bundle_without_legacy_scene_entryp
             output = tmp_path / "artifacts" / "r-pptd" / "slides" / "output" / "presentation.pptx"
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(b"pptx")
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="Created", stderr="")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="Checking presentation.pptd\nSummary: 0 errors, 0 warnings",
+            stderr="",
+        )
 
     run = RunRecord(
         run_id="r-pptd",
@@ -606,8 +625,16 @@ def test_compile_provider_pptd_builds_pagevra_bundle_without_legacy_scene_entryp
     assert "slides/pptd/presentation.pptd" in paths
     assert "slides/pptd/design.md" in paths
     assert "slides/pptd/outline.md" in paths
+    assert "slides/pptd/compile_provenance.json" in paths
     assert "slides/pptd/pages/slide-01.page" in paths
     assert "slides/input/presentation.pptx" in paths
+    compile_script = next(
+        item
+        for item in bundle["files"]
+        if item["path"] == "slides/compile_pptd_bundle.js"
+    )
+    script = base64.b64decode(compile_script["content_base64"]).decode("utf-8")
+    assert "preview_truth" in script
     preview_seed = next(
         item
         for item in bundle["files"]
@@ -615,6 +642,15 @@ def test_compile_provider_pptd_builds_pagevra_bundle_without_legacy_scene_entryp
     )
     preview = json.loads(base64.b64decode(preview_seed["content_base64"]))
     assert preview["source"] == "pptd_project"
+    assert preview["metadata"]["preview_truth"]["preview_source"] == "checked_pptd_project"
+    assert preview["metadata"]["preview_truth"]["export_source"] == "converted_pptx"
+    assert preview["metadata"]["preview_truth"]["check"] == {
+        "error_count": 0,
+        "warning_count": 0,
+        "return_code": 0,
+    }
+    assert len(preview["metadata"]["preview_truth"]["pptd_sha256"]) == 64
+    assert len(preview["metadata"]["preview_truth"]["pptx_sha256"]) == 64
     svg_data_url = preview["pages"][0]["svg_data_url"]
     svg = base64.b64decode(svg_data_url.split(",", 1)[1]).decode("utf-8")
     assert "Data Link Layer" in svg
