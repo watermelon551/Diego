@@ -8,6 +8,7 @@ from typing import Any
 from service.pptd_runtime import PptdRuntimeAdapter
 
 from .pptd_layout import PptdDeckWriter
+from .pptd_warning_repair import repair_pptd_warning_layout
 from ..results import ScratchCompileResult
 
 
@@ -58,6 +59,30 @@ class CompilePptdRuntimeMixin:
             run_subprocess=self.runtime.subprocess.run,
         )
         check = adapter.check(pptd_path)
+        repair_details: dict[str, Any] | None = None
+        if check.reason == "pptd_check_warnings":
+            repaired = repair_pptd_warning_layout(
+                pptd_path=pptd_path,
+                checker_output=f"{check.stdout}\n{check.stderr}",
+            )
+            if repaired:
+                first_check = check
+                check = adapter.check(pptd_path)
+                repair_details = {
+                    "attempted": True,
+                    "changed": True,
+                    "initial_stdout": first_check.stdout,
+                    "initial_stderr": first_check.stderr,
+                    "initial_error_count": first_check.error_count,
+                    "initial_warning_count": first_check.warning_count,
+                    "final_error_count": check.error_count,
+                    "final_warning_count": check.warning_count,
+                }
+            else:
+                repair_details = {
+                    "attempted": True,
+                    "changed": False,
+                }
         if not check.ok:
             return self._pptd_compile_failure(
                 slides_dir=slides_dir,
@@ -68,6 +93,7 @@ class CompilePptdRuntimeMixin:
                     "stderr": check.stderr,
                     "error_count": check.error_count,
                     "warning_count": check.warning_count,
+                    "repair": repair_details,
                 },
             )
         convert = adapter.convert(pptd_path, output_path=pptx_path)
@@ -89,6 +115,7 @@ class CompilePptdRuntimeMixin:
             fallback_used=False,
             fallback_from=None,
             requested_provider="pptd",
+            error_details={"repair": repair_details} if repair_details else None,
         )
 
     def _pptd_compile_failure(

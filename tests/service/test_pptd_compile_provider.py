@@ -325,7 +325,9 @@ def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -
     assert "convert.sh" in " ".join(calls[1])
 
 
-def test_compile_provider_pptd_fails_on_check_warnings_before_convert(tmp_path: Path) -> None:
+def test_compile_provider_pptd_fails_when_warning_repair_does_not_clear_check(
+    tmp_path: Path,
+) -> None:
     calls: list[list[str]] = []
 
     def fake_run(args, **_kwargs):
@@ -378,14 +380,119 @@ def test_compile_provider_pptd_fails_on_check_warnings_before_convert(tmp_path: 
 
     assert result.ok is False
     assert result.reason == "pptd_check_warnings"
-    assert result.error_details == {
-        "stdout": "Checking presentation.pptd\nTextOverflowWarning\nSummary: 0 errors, 1 warning",
-        "stderr": "",
-        "error_count": 0,
-        "warning_count": 1,
-    }
-    assert len(calls) == 1
+    assert result.error_details["stdout"] == (
+        "Checking presentation.pptd\nTextOverflowWarning\nSummary: 0 errors, 1 warning"
+    )
+    assert result.error_details["error_count"] == 0
+    assert result.error_details["warning_count"] == 1
+    assert result.error_details["repair"]["attempted"] is True
+    assert result.error_details["repair"]["changed"] is True
+    assert result.error_details["repair"]["initial_warning_count"] == 1
+    assert result.error_details["repair"]["final_warning_count"] == 1
+    assert ["check.sh" in " ".join(call) for call in calls].count(True) == 2
     assert "check.sh" in " ".join(calls[0])
+    assert all("convert.sh" not in " ".join(call) for call in calls)
+
+
+def test_compile_provider_pptd_repairs_check_warnings_once_before_convert(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        command = " ".join(args)
+        if "convert.sh" in command:
+            output = tmp_path / "artifacts" / "r-pptd-repair" / "slides" / "output" / "presentation.pptx"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"pptx")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="Created", stderr="")
+        if len([call for call in calls if "check.sh" in " ".join(call)]) == 1:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=1,
+                stdout=(
+                    "Checking presentation.pptd\n"
+                    "TextOverflowWarning: text box overflow\n"
+                    "Summary: 0 errors, 1 warning"
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="Checking presentation.pptd\nSummary: 0 errors, 0 warnings",
+            stderr="",
+        )
+
+    run = RunRecord(
+        run_id="r-pptd-repair",
+        trace_id="t-pptd-repair",
+        status=RunStatus.COMPILING,
+        input=CreateRunRequest(
+            topic="Data Link Layer",
+            project_id="p-pptd-repair",
+            target_slide_count=2,
+            generation_mode=GenerationMode.SCRATCH,
+        ),
+        artifact_dir=str(tmp_path / "artifacts" / "r-pptd-repair"),
+        outline=OutlineDocument(
+            version=1,
+            summary="network courseware",
+            nodes=[
+                OutlineNode(title="Data Link Layer", bullets=["Framing"]),
+                OutlineNode(
+                    title="Sliding Window",
+                    bullets=[
+                        "这是一个很长很长很长的课堂说明，用来触发自动修复时对正文文本框启用换行和扩展空间",
+                    ],
+                ),
+            ],
+        ),
+        slides=[
+            SlideArtifact(slide_no=1, js_code="", status="ready"),
+            SlideArtifact(slide_no=2, js_code="", status="ready"),
+        ],
+    )
+    runtime = SimpleNamespace(
+        settings=make_settings(
+            compile_provider="pptd",
+            pptd_skill_dir=str(tmp_path / "pptx-skill"),
+            pptd_runner_image="debian:bookworm-slim",
+            pptd_runner_timeout_sec=30.0,
+        ),
+        store=_Store(run),
+        subprocess=SimpleNamespace(run=fake_run),
+    )
+    engine = CompileEngine(runtime)
+    slides_dir = tmp_path / "artifacts" / "r-pptd-repair" / "slides"
+
+    result = asyncio.run(
+        engine.compile_scratch_run(
+            run_id=run.run_id,
+            slides_dir=slides_dir,
+            slide_count=2,
+            theme={"primary": "#2563eb"},
+        )
+    )
+
+    assert result.ok is True
+    assert result.error_details == {
+        "repair": {
+            "attempted": True,
+            "changed": True,
+            "initial_stdout": (
+                "Checking presentation.pptd\n"
+                "TextOverflowWarning: text box overflow\n"
+                "Summary: 0 errors, 1 warning"
+            ),
+            "initial_stderr": "",
+            "initial_error_count": 0,
+            "initial_warning_count": 1,
+            "final_error_count": 0,
+            "final_warning_count": 0,
+        }
+    }
+    assert ["check.sh" in " ".join(call) for call in calls].count(True) == 2
+    assert "convert.sh" in " ".join(calls[-1])
 
 
 def test_compile_provider_pptd_normalizes_theme_colors_for_runtime_check(
