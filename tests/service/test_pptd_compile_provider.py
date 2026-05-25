@@ -77,6 +77,93 @@ def test_pptd_template_selection_does_not_treat_single_gbn_or_sr_page_as_compari
     assert comparison_pages[0] == "content2.page"
 
 
+def test_pptd_template_selection_maps_icon_concept_hint_to_concept_page() -> None:
+    deck = PptdSkillTemplateDeck()
+
+    pages = deck._preferred_content_pages(
+        slide=PptdSlideContent(
+            index=2,
+            total=8,
+            title="可靠传输的三个基本构件",
+            bullets=["成帧：界定边界", "差错检测：发现错误", "确认重传：恢复丢失帧", "后续比较GBN与SR"],
+            page_type="content",
+            layout_hint="content-icon-rows",
+        )
+    )
+
+    assert pages[:2] == ["content1.page", "content5.page"]
+
+
+def test_pptd_template_selection_keeps_core_concept_title_a_concept_page() -> None:
+    deck = PptdSkillTemplateDeck()
+
+    pages = deck._preferred_content_pages(
+        slide=PptdSlideContent(
+            index=1,
+            total=8,
+            title="可靠传输的三个基本构件",
+            bullets=[
+                "成帧：界定边界",
+                "差错检测：发现错误",
+                "确认重传：用ACK和超时恢复丢失帧",
+            ],
+            page_type="content",
+            layout_hint="content-stat-callout",
+        )
+    )
+
+    assert pages[0] == "content1.page"
+
+
+def test_pptd_template_selection_allows_second_slide_to_be_content_page(tmp_path: Path) -> None:
+    skill_root = tmp_path / "pptx-skill"
+    pages_dir = skill_root / "guideline" / "design" / "template" / "education-3" / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir.parent / "education-3.pptd").write_text(
+        "\n".join(['title: "Template"', "size: [1280, 720]", "pages:", "  - pages/cover.page", ""]),
+        encoding="utf-8",
+    )
+    page_template = "\n".join(
+        [
+            "pageType: content",
+            "elements:",
+            "  - elementId: page-title",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        Old placeholder",
+            "",
+        ]
+    )
+    for page_name in ("cover.page", "toc.page", "content1.page", "final.page"):
+        (pages_dir / page_name).write_text(page_template, encoding="utf-8")
+
+    pptd_path = tmp_path / "artifacts" / "r-second-content" / "slides" / "pptd" / "presentation.pptd"
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="网络课程",
+        nodes=[
+            OutlineNode(title="封面", bullets=["课程入口"], page_type=SlidePageType.COVER),
+            OutlineNode(
+                title="可靠传输的三个基本构件",
+                bullets=["成帧：界定边界", "差错检测：发现错误", "确认重传：恢复丢失帧"],
+                page_type=SlidePageType.CONTENT,
+                layout_hint="content-icon-rows",
+            ),
+            OutlineNode(title="总结", bullets=["迁移应用"], page_type=SlidePageType.SUMMARY),
+        ],
+        slide_count=3,
+        theme={"primary": "#123456"},
+        skill_dir=skill_root,
+        template_style="education courseware",
+    )
+
+    second_page = (pptd_path.parent / "pages" / "slide-02.page").read_text(encoding="utf-8")
+    assert "sourceTemplate: content1.page" in second_page
+    assert "concept-definition-card" in second_page
+    assert "Old placeholder" not in second_page
+
+
 class _Store:
     def __init__(self, run: RunRecord) -> None:
         self.run = run

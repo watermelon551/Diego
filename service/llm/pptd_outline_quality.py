@@ -57,9 +57,41 @@ def _normalize_strong_layout_signal(node: OutlineNode) -> None:
     if "|" in text and any(keyword in text for keyword in ("指标", "metric", "性能", "利用率", "吞吐")):
         node.layout_hint = "content-stat-callout"
         return
+    if _is_core_concept_page(text):
+        node.layout_hint = "content-icon-rows"
+        return
     if any(keyword in text for keyword in ("步骤", "流程", "过程", "机制", "sequence", "timeline")):
         if node.layout_hint not in {"content-comparison", "content-stat-callout"}:
             node.layout_hint = "content-timeline"
+
+
+def has_strong_content_signal(node: OutlineNode) -> bool:
+    text = " ".join([node.title, *node.bullets]).lower()
+    return (
+        _is_core_concept_page(text)
+        or any(keyword in text for keyword in ("gbn", "sr", "对比", "比较", "差异", "指标", "性能", "利用率", "吞吐"))
+        or any(keyword in text for keyword in ("步骤", "流程", "过程", "机制", "sequence", "timeline"))
+        or any("|" in bullet for bullet in node.bullets)
+    )
+
+
+def _is_core_concept_page(text: str) -> bool:
+    return any(
+        keyword in text
+        for keyword in (
+            "核心概念",
+            "基本概念",
+            "基本构件",
+            "关键构件",
+            "三大功能",
+            "组成",
+            "定义",
+            "概念图",
+            "concept",
+            "component",
+            "building block",
+        )
+    )
 
 
 def _label_key(text: str) -> str:

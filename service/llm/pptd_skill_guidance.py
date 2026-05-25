@@ -40,6 +40,7 @@ PPTD outline quality constraints:
 - If the deck is a report, include context, problem, evidence, analysis, decision, risks, and next actions.
 - Treat bullets as a PPTD page plan, not prose paragraphs. Each bullet should be short enough to become one visible text block.
 - For content-comparison pages, structure bullets with explicit group labels such as "GBN:" and "SR:" or "方案A:" and "方案B:", followed by 2-3 concrete points per group and one judgment/selection point.
+- For core concept / definition / component pages, prefer layout_hint "content-icon-rows" with bullets shaped as concept name plus short explanation. This maps cleanly to PPTD concept-diagram pages.
 - For content-timeline pages, use 3-5 ordered mechanism or process steps. Each step should look like "step label: action/result".
 - For content-stat-callout pages, include concrete metrics or a compact markdown table, for example "| 指标 | GBN | SR |" plus short row bullets.
 - For content-two-column or content-showcase pages, use two or three distinct concept blocks rather than repeating the same generic wording.

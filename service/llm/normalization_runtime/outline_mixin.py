@@ -6,7 +6,7 @@ from ...design.skill_profile import enforce_layout_variety
 from ...design.style_catalog import resolve_style_dna_choice
 from ...models import OutlineDocument, OutlineNode, SlidePageType
 from ..parsing import _extract_json_object
-from ..pptd_outline_quality import normalize_pptd_outline_nodes
+from ..pptd_outline_quality import has_strong_content_signal, normalize_pptd_outline_nodes
 from ..types import OutlineFormatError
 
 
@@ -93,11 +93,21 @@ class LLMOutlineDocumentNormalizationMixin:
             return
         nodes[0].page_type = SlidePageType.COVER
         if len(nodes) > 1:
-            nodes[1].page_type = SlidePageType.TOC
+            if not has_strong_content_signal(nodes[1]):
+                nodes[1].page_type = SlidePageType.TOC
+            elif nodes[1].page_type == SlidePageType.TOC:
+                nodes[1].page_type = SlidePageType.CONTENT
         if len(nodes) > 2:
             nodes[-1].page_type = SlidePageType.SUMMARY
         for idx in range(2, len(nodes) - 1):
-            if idx % 4 == 0:
+            if nodes[idx].page_type == SlidePageType.SECTION and has_strong_content_signal(nodes[idx]):
+                nodes[idx].page_type = SlidePageType.CONTENT
+                continue
+            if (
+                idx % 4 == 0
+                and nodes[idx].page_type == SlidePageType.CONTENT
+                and not has_strong_content_signal(nodes[idx])
+            ):
                 nodes[idx].page_type = SlidePageType.SECTION
             elif nodes[idx].page_type not in {
                 SlidePageType.SECTION,

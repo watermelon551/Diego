@@ -111,7 +111,7 @@ class PptdSemanticPageRenderer:
             self._page_no_text(slide),
             _TextSpec("concept-definition-label", [88, 146, 360, 26], "先给一句可复述的定义", 18, "$primary", bold=True, wrap=False),
             _TextSpec("concept-definition-title", [88, 188, 360, 38], concept, 24, "$text", bold=True),
-            _TextSpec("concept-definition-desc", [88, 236, 360, 46], concept_desc, 17, "#64748b", line_height=1.16),
+            _TextSpec("concept-definition-desc", [88, 236, 360, 58], concept_desc, 15, "#64748b", line_height=1.1),
             _TextSpec("concept-core-text", [812, 244, 134, 52], self._short_label(slide.title, max_len=6), 18, "#ffffff", "[center, middle]", bold=True, wrap=False),
             _TextSpec("concept-left-text", [608, 250, 114, 40], self._node_label(items[1]), 15, "$text", "[center, middle]", bold=True, wrap=False),
             _TextSpec("concept-right-text", [1034, 250, 114, 40], self._node_label(items[2]), 15, "$text", "[center, middle]", bold=True, wrap=False),
@@ -132,11 +132,11 @@ class PptdSemanticPageRenderer:
             texts.append(
                 _TextSpec(
                     f"concept-point-{idx}",
-                    [112, y, 386, 40],
-                    self._short_label(item, max_len=28),
-                    17,
+                    [112, y, 386, 44],
+                    self._short_label(item, max_len=22),
+                    15,
                     "$text",
-                    line_height=1.14,
+                    line_height=1.08,
                 )
             )
         return self._page(

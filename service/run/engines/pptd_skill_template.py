@@ -425,7 +425,7 @@ class PptdSkillTemplateDeck:
             section = self._first_existing(["section.page", "chapter.page", "chapter1.page", "chapter2.page"], available)
             if section:
                 return section
-        if index == 1 and total >= 5:
+        if index == 1 and total >= 5 and page_type == "toc":
             toc = self._first_existing(["toc.page", "page2.page"], available)
             if toc:
                 return toc
@@ -524,6 +524,17 @@ class PptdSkillTemplateDeck:
         explicit_framework_signal = any(
             token in title_signal for token in ("框架", "概念图", "结构图", "framework", "concept map")
         ) or any(token in hint for token in ("framework", "concept", "map", "grid"))
+        core_concept_title_signal = any(
+            token in title_signal
+            for token in ("核心概念", "基本概念", "基本构件", "关键构件", "三大功能", "组成", "定义")
+        )
+        icon_concept_signal = any(token in hint for token in ("icon-rows", "icon_rows")) and any(
+            token in signal for token in ("概念", "构件", "组成", "定义", "功能", "concept", "component")
+        )
+        if core_concept_title_signal:
+            return ["content1.page", "content5.page", "content_bullets.page", "content-concepts.page"]
+        if icon_concept_signal:
+            return ["content1.page", "content5.page", "content_bullets.page", "content-concepts.page"]
         if data_signal or any(token in hint for token in ("data", "chart", "metric", "kpi", "table")):
             return ["content4.page", "content-data.page", "data_highlight.page", "content_chart.page"]
         if compare_signal:
