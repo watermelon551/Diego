@@ -143,6 +143,13 @@ class PptdProjectPreviewRenderer:
                 f'stroke="{stroke if stroke != "none" else "#64748b"}" stroke-width="{stroke_width or 1:g}" '
                 f'opacity="{opacity:g}"/>'
             ]
+        if shape_name == "custom":
+            path_d = self._custom_path_d(element.get("path"))
+            if path_d:
+                return [
+                    f'<path d="{html.escape(path_d)}" transform="translate({x:g} {y:g})" '
+                    f'fill="{fill_color}" stroke="{stroke}" stroke-width="{stroke_width:g}" opacity="{opacity:g}"/>'
+                ]
         if shape_name == "ellipse":
             return [
                 f'<ellipse cx="{x + w / 2:g}" cy="{y + h / 2:g}" rx="{w / 2:g}" ry="{h / 2:g}" '
@@ -213,6 +220,8 @@ class PptdProjectPreviewRenderer:
             referenced = text_styles.get(style_ref[1:])
             if isinstance(referenced, dict):
                 style.update(referenced)
+        inline_style = self._inline_text_style(str(content.get("text") or ""))
+        style.update(inline_style)
         for key in ("fontSize", "fontFamily", "color", "lineHeight", "lineHeightPx"):
             if key in content:
                 style[key] = content[key]
@@ -220,6 +229,32 @@ class PptdProjectPreviewRenderer:
             style["lineHeight"] = self._number(style["lineHeightPx"], 0) / max(
                 self._number(style["fontSize"], 18), 1
             )
+        return style
+
+    def _custom_path_d(self, value: Any) -> str:
+        path = str(value or "").strip()
+        if ";" in path:
+            path = path.split(";", 1)[1].strip()
+        if not path or not re.fullmatch(r"[MmLlHhVvCcSsQqTtAaZz0-9, .\\-]+", path):
+            return ""
+        return path
+
+    def _inline_text_style(self, value: str) -> dict[str, Any]:
+        style: dict[str, Any] = {}
+        styles = re.findall(r"style=[\"']([^\"']+)[\"']", value)
+        for raw_style in styles:
+            for declaration in raw_style.split(";"):
+                if ":" not in declaration:
+                    continue
+                key, raw_value = [part.strip() for part in declaration.split(":", 1)]
+                if key == "font-size":
+                    match = re.match(r"([0-9]+(?:\\.[0-9]+)?)px", raw_value)
+                    if match:
+                        style["fontSize"] = float(match.group(1))
+                elif key == "color":
+                    style["color"] = raw_value
+                elif key == "font-family":
+                    style["fontFamily"] = raw_value
         return style
 
     def _bounds(self, element: dict[str, Any]) -> tuple[float, float, float, float] | None:

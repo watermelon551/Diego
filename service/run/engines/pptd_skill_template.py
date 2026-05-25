@@ -51,8 +51,11 @@ class PptdSkillTemplateDeck:
                 return False
             page_name = f"slide-{index + 1:02d}.page"
             page_paths.append(f"pages/{page_name}")
+            rendered_page = self._sanitize_rendered_page(
+                self._render_page(template_page.read_text(encoding="utf-8"), slide=slide)
+            )
             (target_pages_dir / page_name).write_text(
-                self._render_page(template_page.read_text(encoding="utf-8"), slide=slide),
+                rendered_page,
                 encoding="utf-8",
             )
 
@@ -103,25 +106,47 @@ class PptdSkillTemplateDeck:
         return self._render_concept(text, slide)
 
     def _render_cover(self, text: str, slide: PptdSlideContent) -> str:
-        subtitle = self._plain(slide.bullets[0] if slide.bullets else "课程核心概念与实践路径")
-        highlight = self._plain(slide.bullets[1] if len(slide.bullets) > 1 else "结构化路径 · 启发式引导")
+        subtitle = self._short_label(
+            slide.bullets[0] if slide.bullets else "课程核心概念与实践路径",
+            max_len=36,
+        )
+        highlight = self._short_label(
+            slide.bullets[1] if len(slide.bullets) > 1 else "结构化路径 · 启发式引导",
+            max_len=28,
+        )
+        title_size = self._cover_title_font_size(slide.title)
         replacements = {
             "main-title": self._p(slide.title),
             "subtitle": self._p(subtitle),
             "highlight-text": self._p(highlight),
             "footer-info": self._p("NeoSpectra · PPTD Courseware"),
-            "cover-title": self._p(f"<strong>{self._plain(slide.title)}</strong>", escaped=False),
+            "cover-title": self._p(
+                f'<span style="font-size:{title_size}px;"><strong>{self._plain(slide.title)}</strong></span>',
+                escaped=False,
+            ),
             "cover-subject": self._p(subtitle),
             "cover-info": self._p(highlight),
-            "cover-main-title": self._p(f"<strong>{self._plain(slide.title)}</strong>", escaped=False),
+            "cover-main-title": self._p(
+                f'<span style="font-size:{title_size}px;"><strong>{self._plain(slide.title)}</strong></span>',
+                escaped=False,
+            ),
             "cover-subtitle-en": self._p(subtitle),
             "cover-author": self._p("NeoSpectra"),
+            "subject-label": self._p("课程"),
         }
         return self._generic_fill_text_blocks(
             self._replace_many(text, replacements),
             slide=slide,
             skip=set(replacements),
         )
+
+    def _cover_title_font_size(self, title: str) -> int:
+        length = len(str(title or "").strip())
+        if length <= 14:
+            return 56
+        if length <= 24:
+            return 44
+        return 36
 
     def _render_toc(self, text: str, slide: PptdSlideContent) -> str:
         items = self._display_items(slide, count=4)
@@ -145,7 +170,7 @@ class PptdSkillTemplateDeck:
             "content-text": self._rich_content(slide),
             "center-text": self._p("<strong>核心概念</strong>", escaped=False),
             "memory-text": self._p(f"<strong>关键洞察：</strong>{self._plain(items[0])}", escaped=False),
-            "subject-tag-text": self._p("<strong>COURSE · 课程</strong>", escaped=False),
+            "subject-tag-text": self._p("<strong>课程</strong>", escaped=False),
         }
         for idx, item in enumerate(items[:4], start=1):
             replacements[f"node{idx}-text"] = self._p(self._short_label(item, max_len=8))
@@ -196,6 +221,7 @@ class PptdSkillTemplateDeck:
             "thanks-text": self._p(slide.title),
             "thanks-sub": self._p("继续把概念迁移到真实问题"),
             "final-title": self._p(slide.title),
+            "right-sub": self._p("课堂迁移"),
         }
         for idx, item in enumerate(items[:4], start=1):
             replacements[f"point{idx}-text"] = self._p(item)
@@ -332,7 +358,11 @@ class PptdSkillTemplateDeck:
     ) -> str:
         skip = skip or set()
         for element_id in self._element_ids(text):
-            if element_id in skip or self._is_decorative_text_id(element_id):
+            if (
+                element_id in skip
+                or self._is_decorative_text_id(element_id)
+                or self._element_type(text, element_id=element_id) != "text"
+            ):
                 continue
             value = self._generic_value(element_id=element_id, slide=slide)
             if value:
@@ -342,8 +372,14 @@ class PptdSkillTemplateDeck:
     def _generic_value(self, *, element_id: str, slide: PptdSlideContent) -> str:
         lowered = element_id.lower()
         items = self._display_items(slide, count=5)
+        if lowered in {"subject-label", "subject-tag-text"}:
+            return self._p("课程")
         if "page-num" in lowered or lowered.endswith("-num") or lowered in {"num", "chapter-number"}:
-            return self._p(f"{slide.page_no:02d}")
+            return self._p(str(slide.page_no))
+        if lowered == "formula-label":
+            return self._p("要点")
+        if lowered == "formula-text":
+            return self._p(self._short_label(self._item_for_id(element_id, items), max_len=30))
         if "title" in lowered and not any(token in lowered for token in ("subtitle", "sub-title")):
             if any(token in lowered for token in ("card", "node", "step", "point", "title1", "title2", "title3", "title4")):
                 return self._p(f"<strong>{self._plain(self._item_for_id(element_id, items))}</strong>", escaped=False)
@@ -353,8 +389,40 @@ class PptdSkillTemplateDeck:
         if any(token in lowered for token in ("bullet", "point", "feat", "step", "item", "text")):
             return self._p(self._item_for_id(element_id, items))
         if "label" in lowered or "tag" in lowered:
-            return self._p("课程要点")
+            return self._p("课程")
         return ""
+
+    def _sanitize_rendered_page(self, text: str) -> str:
+        text = self._remove_text_element_wrap_keys(text)
+        return self._replace_bounds(text, element_id="formula-text", bounds=[230, 582, 850, 52])
+
+    def _remove_text_element_wrap_keys(self, text: str) -> str:
+        lines = text.splitlines()
+        rendered: list[str] = []
+        for line in lines:
+            indent = len(line) - len(line.lstrip(" "))
+            if indent == 4 and line.strip() == "wrap: false":
+                continue
+            rendered.append(line)
+        return "\n".join(rendered) + "\n"
+
+    def _replace_bounds(self, text: str, *, element_id: str, bounds: list[int]) -> str:
+        lines = text.splitlines()
+        marker = f"elementId: {element_id}"
+        start = next((idx for idx, line in enumerate(lines) if line.strip().lstrip("- ") == marker), None)
+        if start is None:
+            return text
+        bounds_idx = next((idx for idx in range(start + 1, len(lines)) if lines[idx].strip() == "bounds:"), None)
+        if bounds_idx is None:
+            return text
+        end = bounds_idx + 1
+        while end < len(lines):
+            stripped = lines[end].strip()
+            if stripped and not stripped.startswith("- "):
+                break
+            end += 1
+        block = ["    bounds:", *(f"      - {item}" for item in bounds)]
+        return "\n".join([*lines[:bounds_idx], *block, *lines[end:]]) + "\n"
 
     def _item_for_id(self, element_id: str, items: list[str]) -> str:
         digits = "".join(ch for ch in element_id if ch.isdigit())
@@ -386,6 +454,22 @@ class PptdSkillTemplateDeck:
             if stripped.startswith("elementId:"):
                 ids.append(stripped.split(":", 1)[1].strip())
         return ids
+
+    def _element_type(self, text: str, *, element_id: str) -> str:
+        lines = text.splitlines()
+        marker = f"elementId: {element_id}"
+        start = next((idx for idx, line in enumerate(lines) if line.strip().lstrip("- ") == marker), None)
+        if start is None:
+            return ""
+        end = start + 1
+        while end < len(lines):
+            stripped = lines[end].strip().lstrip("- ").strip()
+            if stripped.startswith("elementId:"):
+                break
+            if stripped.startswith("elementType:"):
+                return stripped.split(":", 1)[1].strip()
+            end += 1
+        return ""
 
     def _resolve_template_name(
         self,

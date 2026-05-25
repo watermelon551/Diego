@@ -18,6 +18,7 @@ from service.models import (
 )
 from service.run.engines import CompileEngine
 from service.run.engines.pptd_layout import PptdDeckWriter
+from service.run.engines.pptd_preview import PptdProjectPreviewRenderer
 
 from tests.support.runtime_helpers import make_settings
 
@@ -387,9 +388,20 @@ def test_pptd_writer_selects_skill_template_family_from_run_style(tmp_path: Path
                         "        Old page title",
                         "  - elementId: bullet1-text",
                         "    elementType: text",
+                        "    wrap: false",
                         "    content:",
                         "      text: |",
                         "        Old bullet one",
+                        "  - elementId: formula-text",
+                        "    elementType: text",
+                        "    bounds:",
+                        "      - 180",
+                        "      - 582",
+                        "      - 900",
+                        "      - 52",
+                        "    content:",
+                        "      text: |",
+                        "        Old formula",
                         "  - elementId: decorative-logo",
                         "    elementType: text",
                         "    content:",
@@ -427,6 +439,67 @@ def test_pptd_writer_selects_skill_template_family_from_run_style(tmp_path: Path
     assert "pages/slide-02.page" in deck_text
     assert "Old page title" not in content_text
     assert "Old bullet one" not in content_text
+    assert "    wrap: false" not in content_text
+    assert "      - 230" in content_text
+    assert "Old formula" not in content_text
     assert "第一章" in content_text
     assert "成帧边界" in content_text
     assert "Keep logo text" in content_text
+
+
+def test_pptd_project_preview_renders_custom_paths_and_inline_text_styles(tmp_path: Path) -> None:
+    pptd_path = tmp_path / "presentation.pptd"
+    pages_dir = tmp_path / "pages"
+    pages_dir.mkdir()
+    pptd_path.write_text(
+        "\n".join(
+            [
+                'title: "Preview"',
+                "size: [1280, 720]",
+                "theme:",
+                "  colors:",
+                '    primary: "#123456"',
+                "pages:",
+                "  - pages/slide-01.page",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (pages_dir / "slide-01.page").write_text(
+        "\n".join(
+            [
+                "pageType: cover",
+                "background:",
+                "  type: solid",
+                '  color: "#ffffff"',
+                "elements:",
+                "  - elementId: triangle",
+                "    elementType: shape",
+                "    bounds: [680, 0, 280, 720]",
+                "    shapeName: custom",
+                "    path: 280,720;M280 0 L0 720 L280 720 Z",
+                "    fill:",
+                "      type: solid",
+                '      color: "#1976D2"',
+                "  - elementId: symbol",
+                "    elementType: text",
+                "    bounds: [980, 180, 120, 80]",
+                "    content:",
+                "      align: [center, middle]",
+                "      text: |",
+                '        <p><span style="font-size:72px; color:#FFFFFF18; font-family:MiSans;">π</span></p>',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = PptdProjectPreviewRenderer().preview_manifest(pptd_path=pptd_path)
+    svg_data_url = manifest["pages"][0]["svg_data_url"]
+    svg = base64.b64decode(svg_data_url.split(",", 1)[1]).decode("utf-8")
+
+    assert '<path d="M280 0 L0 720 L280 720 Z"' in svg
+    assert 'transform="translate(680 0)"' in svg
+    assert 'font-size="72"' in svg
+    assert 'fill="#FFFFFF18"' in svg
