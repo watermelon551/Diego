@@ -79,6 +79,7 @@ class PptdSemanticPageRenderer:
     def page_yaml(self, *, slide: PptdSlideContent, template_page_name: str) -> str:
         hint = self._plain_text(slide.layout_hint).lower()
         title_signal = self._plain_text(slide.title).lower()
+        content_signal = self._content_signal(slide)
         if self._has_comparison_signal(title_signal):
             return self._comparison_page(slide=slide, template_page_name=template_page_name)
         if self._has_case_signal(title_signal):
@@ -89,7 +90,7 @@ class PptdSemanticPageRenderer:
             return self._concept_page(slide=slide, template_page_name=template_page_name)
         if any(token in hint for token in ("comparison", "compare", "two-column", "two_col")):
             return self._comparison_page(slide=slide, template_page_name=template_page_name)
-        if any(token in hint for token in ("stat", "metric", "data", "chart", "kpi", "table")):
+        if any(token in hint for token in ("stat", "metric", "data", "chart", "kpi", "table")) and self._has_metric_signal(content_signal):
             return self._metrics_page(slide=slide, template_page_name=template_page_name)
         if any(token in hint for token in ("timeline", "process", "flow", "step")):
             return self._process_page(slide=slide, template_page_name=template_page_name)
@@ -687,7 +688,7 @@ class PptdSemanticPageRenderer:
         if is_header:
             return self._short_label(text, max_len=(10 if col == 0 else 14))
         if "=" in text or any(mark in text for mark in ("≈", "/", "min(")):
-            return self._short_formula(text, max_len=(28 if col == 1 else 24))
+            return self._short_formula(text, max_len=(20 if col == 1 else 22))
         return self._short_label(text, max_len=(14 if col == 0 else 22 if col == 1 else 24))
 
     def _metric_judgment(self, item: str) -> str:
@@ -747,13 +748,15 @@ class PptdSemanticPageRenderer:
         plain = self._plain_text(item)
         formula_parts = self._formula_metric_parts(plain)
         if formula_parts:
-            return formula_parts
-        match = re.search(r"([0-9]+(?:\.[0-9]+)?)(\s*%|倍|帧|bit|ms|s|Mbps)?", plain)
+            symbol, unit, desc = formula_parts
+            if symbol != "公式":
+                return fallback.zfill(2), symbol, desc
+            return fallback.zfill(2), unit, desc
+        match = re.search(r"([0-9]+(?:\.[0-9]+)?)(\s*%|倍|帧|bit|b|ms|s|Mbps)?", plain)
         if match:
-            number = match.group(1)
             unit = (match.group(2) or "").strip() or "指标"
             desc = plain.replace(match.group(0), "", 1).strip(" ：:-，,") or plain
-            return number, unit, self._short_label(desc, max_len=30)
+            return fallback.zfill(2), self._short_label(unit, max_len=6), self._short_label(desc, max_len=30)
         head, desc = self._split_item(plain)
         return fallback.zfill(2), self._short_label(head, max_len=6), self._short_label(desc, max_len=30)
 
@@ -799,7 +802,41 @@ class PptdSemanticPageRenderer:
         text = self._plain_text(value).strip()
         if len(text) <= max_len:
             return text
-        return text[:max_len].strip(" ：:，,、；;。.!！?？")
+        compact = self._compact_formula(text)
+        if len(compact) <= max_len:
+            return compact
+        return self._trim_incomplete_formula(compact[:max_len]).strip(" ：:，,、；;。.!！?？")
+
+    def _compact_formula(self, value: str) -> str:
+        text = self._plain_text(value).strip()
+        replacements = {
+            "T_frame": "Tf",
+            "T_prop": "Tp",
+            "frame_bits": "bits",
+            "link_rate": "rate",
+            "W_max": "Wmax",
+        }
+        for source, target in replacements.items():
+            text = text.replace(source, target)
+        text = re.sub(r"\s*/\s*", "/", text)
+        text = re.sub(r"\s*([*+−-])\s*", r"\1", text)
+        text = re.sub(r"\s*([=≈≤≥])\s*", r" \1 ", text)
+        text = re.sub(r"\(\s*", "(", text)
+        text = re.sub(r"\s*\)", ")", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        formula_head = re.split(r"[，,；;。]", text, maxsplit=1)[0].strip()
+        if self._has_formula_operator(formula_head) and len(formula_head) >= 4:
+            return formula_head
+        text = re.sub(r"(其中|where).*$", "", text, flags=re.IGNORECASE).strip(" ：:，,、；;。.!！?？")
+        return text or formula_head
+
+    def _trim_incomplete_formula(self, value: str) -> str:
+        text = value.strip()
+        text = re.sub(r"[\s,，:：;；]*(其中|where)?\s*[A-Za-z]\s*(=|≈|≤|≥)\s*$", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"[\s,，:：;；]*(其中|where)?\s*[A-Za-z]\s*为\s*$", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"[\s,，:：;；]*(其中|where)\s*$", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"[\s,，:：;；]*(=|≈|≤|≥|/|\\+|−|-)\s*$", "", text)
+        return text
 
     def _join_brief(self, items: list[str], *, max_len: int) -> str:
         cleaned = []

@@ -179,12 +179,13 @@ class PptdSkillTemplateDeck:
         return 36
 
     def _render_toc(self, text: str, slide: PptdSlideContent) -> str:
-        items = self._display_items(slide, count=4)
+        items = self._display_items(slide, count=6)
         replacements = {
             "page-title": self._p("学习路径导航"),
             "toc-title-cn": self._p("<strong>学习路径</strong>", escaped=False),
             "toc-title": self._p("<strong>目录</strong>", escaped=False),
             "toc-title-en": self._p("Learning Roadmap"),
+            "header-label": self._p("目录 · TABLE OF CONTENTS"),
         }
         for idx in range(1, 5):
             item = items[idx - 1] if idx <= len(items) else f"模块 {idx}"
@@ -194,16 +195,30 @@ class PptdSkillTemplateDeck:
             replacements[f"desc{idx}"] = self._p("建立概念、识别条件、迁移到真实问题。")
         for idx in range(1, 7):
             item = items[idx - 1] if idx <= len(items) else f"模块 {idx}"
+            short_item = self._short_label(item, max_len=22)
             replacements[f"toc-item-{idx}-num"] = self._p(
                 f'<span style="font-size:34px;"><strong>{idx:02d}</strong></span>',
                 escaped=False,
             )
             replacements[f"toc-item-{idx}-title"] = self._p(
-                f"<strong>{self._plain(self._short_label(item, max_len=22))}</strong>",
+                f"<strong>{self._plain(short_item)}</strong>",
                 escaped=False,
             )
             replacements[f"toc-item-{idx}-en"] = self._p("Course Module")
-        return self._replace_many(text, replacements)
+            replacements[f"toc-num-{idx}"] = self._p(
+                f'<span style="font-size:28px;"><strong>{idx:02d}</strong></span>',
+                escaped=False,
+            )
+            replacements[f"toc-title-{idx}"] = self._p(
+                f"<strong>{self._plain(short_item)}</strong>",
+                escaped=False,
+            )
+            replacements[f"toc-time-{idx}"] = self._p("Course Module")
+        return self._generic_fill_text_blocks(
+            self._replace_many(text, replacements),
+            slide=slide,
+            skip=set(replacements),
+        )
 
     def _render_section(self, text: str, slide: PptdSlideContent) -> str:
         items = self._display_items(slide, count=3)
@@ -395,10 +410,31 @@ class PptdSkillTemplateDeck:
             "thanks-sub": self._p("继续把概念迁移到真实问题"),
             "final-title": self._p(slide.title),
             "right-sub": self._p("课堂迁移"),
+            "qa-tag-text": self._p(
+                '<span style="font-size:18px; color:#2B6777;"><strong>Questions &amp; Discussion</strong></span>',
+                escaped=False,
+            ),
+            "thankyou-text": self._p(
+                f'<span style="font-size:40px; color:#FFFFFF;"><strong>{self._plain(self._short_label(slide.title, max_len=16))}</strong></span>',
+                escaped=False,
+            ),
+            "takeaway-label": self._p(
+                '<span style="font-size:14px; color:#D4956A;">CORE TAKEAWAYS · 核心收获</span>',
+                escaped=False,
+            ),
+            "contact-info": self._p(
+                f'<span style="font-size:18px; color:#D4956A;">{self._plain(self._footer_label(slide, fallback="NeoSpectra · Generated Courseware"))}</span>',
+                escaped=False,
+            ),
         }
         for idx, item in enumerate(items[:4], start=1):
             replacements[f"point{idx}-text"] = self._p(item)
             replacements[f"think{idx}-text"] = self._p(item)
+        for idx, item in enumerate(items[:3], start=1):
+            replacements[f"takeaway-{idx}"] = self._p(
+                f'<span style="font-size:20px; color:#FFFFFFcc;"><strong>{idx}</strong>  {self._plain(self._short_label(item, max_len=42))}</span>',
+                escaped=False,
+            )
         return self._generic_fill_text_blocks(
             self._replace_many(text, replacements),
             slide=slide,
@@ -939,7 +975,11 @@ class PptdSkillTemplateDeck:
             return requested
         lowered = f"{template_style} {requested}".lower()
         candidates: list[str]
-        if any(token in lowered for token in ("academic", "research", "thesis", "paper", "论文", "答辩", "学术")):
+        if any(token in lowered for token in ("academic-curation", "university", "undergraduate", "lecture", "higher education", "本科", "大学", "高校", "讲座")) and any(
+            token in lowered for token in ("education", "course", "training", "teaching", "课程", "教学", "课件")
+        ):
+            candidates = ["education-5", "education-1", "education-3"]
+        elif any(token in lowered for token in ("academic", "research", "thesis", "paper", "论文", "答辩", "学术")):
             candidates = ["academic-1", "academic-2", "education-3"]
         elif any(token in lowered for token in ("business", "insight", "finance", "market", "data", "商业", "市场", "金融")):
             candidates = ["business_insight-1", "business_insight-2", "strategic-1"]

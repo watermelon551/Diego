@@ -30,6 +30,8 @@ class PptdDeckWriter:
             nodes=nodes,
             slide_count=slide_count,
             theme=theme,
+            template_style=template_style,
+            template_id=template_id,
         )
         if skill_dir and PptdSkillTemplateDeck().write_project(
             pptd_path=pptd_path,
@@ -195,11 +197,18 @@ class PptdDeckWriter:
         nodes: list[Any],
         slide_count: int,
         theme: dict[str, Any],
+        template_style: str = "",
+        template_id: str | None = None,
     ) -> None:
         pptd_dir.mkdir(parents=True, exist_ok=True)
         total = max(1, slide_count, len(nodes))
         (pptd_dir / "design.md").write_text(
-            self._design_doc(title=title, theme=theme),
+            self._design_doc(
+                title=title,
+                theme=theme,
+                template_style=template_style,
+                template_id=template_id,
+            ),
             encoding="utf-8",
         )
         (pptd_dir / "outline.md").write_text(
@@ -207,22 +216,39 @@ class PptdDeckWriter:
             encoding="utf-8",
         )
 
-    def _design_doc(self, *, title: str, theme: dict[str, Any]) -> str:
+    def _design_doc(
+        self,
+        *,
+        title: str,
+        theme: dict[str, Any],
+        template_style: str = "",
+        template_id: str | None = None,
+    ) -> str:
         primary = self._color(theme.get("primary") or theme.get("accent"), "#2563eb")
         background = self._color(theme.get("background"), "#ffffff")
         text = self._color(theme.get("text"), "#111827")
         accent = self._color(theme.get("accent"), "#16a34a")
+        profile = self._profile_baseline(template_style=template_style)
+        template_note = str(template_id or template_style or "auto").strip()
         return "\n".join(
             [
                 f"# Design Plan: {title}",
                 "",
+                "## Profile Baseline Declaration",
+                f"- Profile selection: `profiles/{profile}.md`.",
+                "- Referenced dimensions: audience density, font-size floor, visual-as-comprehension-tool policy, layout rhythm, and risk prohibitions from the PPTD skill profile.",
+                f"- Template/style request: `{template_note}`.",
+                "- Deviation notes: NeoSpectra keeps Shell/Workbench UI stable; Diego only materializes PPTD project artifacts and does not expose source/vendor branding.",
+                "",
                 "## Visual Mode",
-                "Creative mode unless an explicit reference/template is attached.",
+                "Creative mode unless an explicit reference/template is attached; preset-template mode when a neutral PPTD template is selected.",
                 "",
                 "## Style Direction",
                 "- PPTD-first deck generated from a durable outline before page authoring.",
-                "- Calm professional layout with strong title/body hierarchy and grid-aligned content.",
-                "- Use diagrams, timelines, comparisons, or summary blocks before decorative filler.",
+                "- Use the external PPTD skill's profile-first approach: choose the scenario profile, then select template/layout rhythm.",
+                "- Titles should carry the knowledge point or conclusion, not only a chapter label.",
+                "- Use diagrams, timelines, comparisons, metric tables, or summary blocks before decorative filler.",
+                "- Body text should remain projection-readable; dense pages should use zoning instead of shrinking text below the profile floor.",
                 "",
                 "## Theme",
                 "```yaml",
@@ -246,9 +272,21 @@ class PptdDeckWriter:
                 "- Keep body text readable and avoid overflow-prone dense paragraphs.",
                 "- Preserve consistent margins, slide numbers, and common page elements.",
                 "- Avoid default decorative gradients and empty placeholder graphics.",
+                "- Treat PPTD checker warnings as visual defects unless explicitly intended.",
+                "- Keep evidence/source notes visible when provided.",
                 "",
             ]
         )
+
+    def _profile_baseline(self, *, template_style: str) -> str:
+        lowered = str(template_style or "").lower()
+        if any(token in lowered for token in ("education", "course", "training", "teaching", "课程", "教学", "课件")):
+            return "education"
+        if any(token in lowered for token in ("academic", "research", "thesis", "paper", "论文", "答辩", "学术")):
+            return "academic"
+        if any(token in lowered for token in ("business", "finance", "market", "strategy", "商业", "金融", "战略")):
+            return "business_insight"
+        return "general"
 
     def _outline_doc(self, *, title: str, nodes: list[Any], slide_count: int) -> str:
         lines = ["# Presentation Outline", "", f"## Deck", f"- **Title**: {title}", ""]

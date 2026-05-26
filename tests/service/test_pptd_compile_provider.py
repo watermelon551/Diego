@@ -1100,6 +1100,172 @@ def test_pptd_writer_selects_skill_template_family_from_run_style(tmp_path: Path
     assert "Keep logo text" not in content_text
 
 
+def test_pptd_writer_routes_academic_curation_courses_to_university_education_template(tmp_path: Path) -> None:
+    template_root = tmp_path / "pptx-skill" / "guideline" / "design" / "template"
+    for template_name in ("academic-1", "education-3", "education-5"):
+        template_dir = template_root / template_name
+        pages_dir = template_dir / "pages"
+        pages_dir.mkdir(parents=True)
+        (template_dir / f"{template_name}.pptd").write_text(
+            "\n".join(
+                [
+                    f"title: {template_name}",
+                    "size: [1280, 720]",
+                    f"template_marker: {template_name}",
+                    "theme:",
+                    "  colors:",
+                    '    primary: "#2B6777"',
+                    "pages:",
+                    "  - pages/cover.page",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        for page_name in ("cover.page", "toc.page", "content1.page", "final.page"):
+            (pages_dir / page_name).write_text(
+                "\n".join(
+                    [
+                        "pageType: content",
+                        "elements:",
+                        "  - elementId: page-title",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        Old title",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+    pptd_path = tmp_path / "artifacts" / "r-university-template" / "slides" / "pptd" / "presentation.pptd"
+
+    PptdDeckWriter().write_project(
+        pptd_path=pptd_path,
+        title="本科数据链路层课程",
+        nodes=[
+            OutlineNode(title="封面", page_type=SlidePageType.COVER),
+            OutlineNode(title="目录", bullets=["成帧", "CRC"], page_type=SlidePageType.TOC),
+            OutlineNode(title="成帧方法", bullets=["边界识别"], page_type=SlidePageType.CONTENT),
+            OutlineNode(title="总结", page_type=SlidePageType.SUMMARY),
+        ],
+        slide_count=4,
+        theme={"primary": "#123456"},
+        skill_dir=tmp_path / "pptx-skill",
+        template_style="preset:academic-curation education",
+    )
+
+    assert "template_marker: education-5" in pptd_path.read_text(encoding="utf-8")
+    design_doc = (pptd_path.parent / "design.md").read_text(encoding="utf-8")
+    assert "Profile Baseline Declaration" in design_doc
+    assert "`profiles/education.md`" in design_doc
+
+
+def test_pptd_skill_template_replaces_university_toc_placeholders() -> None:
+    deck = PptdSkillTemplateDeck()
+    template = "\n".join(
+        [
+            "pageType: table_of_contents",
+            "elements:",
+            "  - elementId: header-label",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>目录 · TABLE OF CONTENTS</p>",
+            "  - elementId: toc-num-1",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>01</p>",
+            "  - elementId: toc-title-1",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>研究背景与问题提出</p>",
+            "  - elementId: toc-time-1",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>~15 min</p>",
+            "",
+        ]
+    )
+
+    rendered = deck._render_toc(
+        template,
+        PptdSlideContent(
+            index=1,
+            total=10,
+            title="课程内容导览",
+            bullets=["数据链路层功能与成帧"],
+            page_type="toc",
+            layout_hint="toc-list",
+        ),
+    )
+
+    assert "数据链路层功能与成帧" in rendered
+    assert "Course Module" in rendered
+    assert "研究背景与问题提出" not in rendered
+    assert "~15 min" not in rendered
+
+
+def test_pptd_skill_template_replaces_university_final_placeholders() -> None:
+    deck = PptdSkillTemplateDeck()
+    template = "\n".join(
+        [
+            "pageType: final",
+            "elements:",
+            "  - elementId: qa-tag-text",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>Questions &amp; Discussion</p>",
+            "  - elementId: thankyou-text",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>Thank You · 谢谢</p>",
+            "  - elementId: takeaway-label",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>CORE TAKEAWAYS · 核心收获</p>",
+            "  - elementId: takeaway-1",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>Old takeaway</p>",
+            "  - elementId: contact-info",
+            "    elementType: text",
+            "    content:",
+            "      text: |",
+            "        <p>presenter@university.edu.cn</p>",
+            "",
+        ]
+    )
+
+    rendered = deck._render_final(
+        template,
+        PptdSlideContent(
+            index=9,
+            total=10,
+            title="课堂总结与关键要点",
+            bullets=["成帧是数据链路层基础，CRC提供高效差错检测"],
+            page_type="summary",
+            layout_hint="summary-takeaways",
+        ),
+    )
+
+    assert "Questions &amp; Discussion" in rendered
+    assert "课堂总结与关键要点" in rendered
+    assert "成帧是数据链路层基础" in rendered
+    assert "color:#FFFFFF" in rendered
+    assert "color:#FFFFFFcc" in rendered
+    assert "Old takeaway" not in rendered
+    assert "presenter@university.edu.cn" not in rendered
+
+
 def test_pptd_writer_uses_outline_semantics_to_choose_template_pages(tmp_path: Path) -> None:
     template_dir = (
         tmp_path
@@ -1682,6 +1848,27 @@ def test_pptd_semantic_renderer_uses_metric_signal_over_template_name() -> None:
     assert "process-step-title-1" not in page
 
 
+def test_pptd_semantic_renderer_does_not_treat_stat_hint_as_metric_without_metric_content() -> None:
+    renderer = PptdSemanticPageRenderer()
+    page = renderer.page_yaml(
+        slide=PptdSlideContent(
+            index=3,
+            total=10,
+            title="数据链路层功能与服务",
+            bullets=[
+                "核心功能：成帧、差错控制、流量控制",
+                "设计目标：将物理层比特流转化为可靠、有序的帧传输",
+                "服务类型：无确认无连接、有确认无连接、有确认有连接",
+            ],
+            layout_hint="content-stat-callout",
+        ),
+        template_page_name="content3.page",
+    )
+
+    assert "metric-card-1" not in page
+    assert "process-step-title-1" in page
+
+
 def test_pptd_semantic_renderer_does_not_promote_formula_only_content_to_metric() -> None:
     renderer = PptdSemanticPageRenderer()
     page = renderer.page_yaml(
@@ -1810,8 +1997,8 @@ def test_pptd_semantic_renderer_preserves_formula_metric_cards() -> None:
         fallback="1",
     )
 
-    assert number == "U"
-    assert unit == "公式"
+    assert number == "01"
+    assert unit == "U"
     assert desc == "U = W / (1 + 2a)，a=传播时延/发送时延"
     assert "U = W / ，" not in desc
 
@@ -1824,9 +2011,22 @@ def test_pptd_semantic_renderer_preserves_min_formula_metric_cards() -> None:
         fallback="2",
     )
 
-    assert number == "U"
-    assert unit == "公式"
+    assert number == "02"
+    assert unit == "U"
     assert "min(1, WT / (1 + 2a))" in desc
+
+
+def test_pptd_semantic_renderer_handles_long_formula_symbols() -> None:
+    renderer = PptdSemanticPageRenderer()
+
+    number, unit, desc = renderer._metric_parts(
+        "发送时长公式：T_frame = frame_bits / link_rate",
+        fallback="3",
+    )
+
+    assert number == "03"
+    assert unit == "Tf"
+    assert desc == "T_frame = frame_bits / link_rate"
 
 
 def test_pptd_semantic_renderer_preserves_formula_metric_table_cells() -> None:
@@ -1842,6 +2042,11 @@ def test_pptd_semantic_renderer_preserves_formula_metric_table_cells() -> None:
     )
     formula = renderer._metric_table_cell(
         "U ≈ 1/(1+2a)，其中 a = 传播时延/发送时延",
+        col=1,
+        is_header=False,
+    )
+    compact_formula = renderer._metric_table_cell(
+        "U ≈ W / (1 + 2a)，W 为窗口大小",
         col=1,
         is_header=False,
     )
@@ -1861,12 +2066,15 @@ def test_pptd_semantic_renderer_preserves_formula_metric_table_cells() -> None:
     )
 
     assert rows[1][0] == "信道利用率"
-    assert rows[1][1].startswith("U = WT / (1 + 2a)")
+    assert rows[1][1] == "U = WT/(1+2a)"
     assert "U = WT / ，" not in rows[1][1]
     assert rows[2][:2] == ("停等协议", "U = 1/(1+2a)，效率极低")
     assert "U =" not in rows[2][0]
     assert renderer._formula_metric_row("滑动窗口(WS=10)：利用率显著提升，可近100%") is None
-    assert formula.startswith("U ≈ 1/(1+2a)")
+    assert formula == "U ≈ 1/(1+2a)"
+    assert compact_formula == "U ≈ W/(1+2a)"
+    assert "a =" not in formula
+    assert "W 为" not in compact_formula
     assert "U ≈ 1/，" not in formula
     assert "U ≈ 1/，" not in page
     assert "wrap: false" in page
@@ -1928,6 +2136,20 @@ def test_pptd_semantic_renderer_shortens_metric_units() -> None:
     assert unit == "点对点协议"
     assert len(unit) <= 6
     assert "拨号上网" in desc
+
+
+def test_pptd_semantic_renderer_keeps_numeric_examples_out_of_metric_number_slot() -> None:
+    renderer = PptdSemanticPageRenderer()
+
+    number, unit, desc = renderer._metric_parts(
+        "性能分析（量化示例）：停等协议：帧长1000b、速率1Mbps",
+        fallback="2",
+    )
+
+    assert number == "02"
+    assert unit == "b"
+    assert "100" not in number
+    assert "速率1Mbps" in desc
 
 
 def test_pptd_semantic_renderer_cleans_nested_bullet_markers() -> None:
