@@ -182,6 +182,7 @@ class OutlineRequirementsMixin:
         rag_context_snippets: list[dict[str, Any]],
     ) -> dict[str, Any]:
         has_rag = bool(rag_context_snippets)
+        profile = self._pptd_skill_scenario_profile(template_style=template_style, topic=topic)
         page_focus = self._page_focus_from_rag(
             topic=topic,
             target_slide_count=target_slide_count,
@@ -206,6 +207,12 @@ class OutlineRequirementsMixin:
             "style_intent": "PPTD-first course/report deck with clear visual explanation",
             "effective_template_style": template_style,
             "requirements_mode": "pptd_fast_deterministic",
+            "scenario_profile": profile,
+            "visual_mode": "template" if "preset:" in template_style else "creative",
+            "content_mode": "summary" if has_rag else "search",
+            "density_guidance": self._pptd_skill_density_guidance(profile=profile),
+            "font_guidance": self._pptd_skill_font_guidance(profile=profile),
+            "risk_prohibitions": self._pptd_skill_risk_prohibitions(profile=profile),
         }
 
     def _build_pptd_fast_design_intent(
@@ -262,3 +269,43 @@ class OutlineRequirementsMixin:
         cleaned = re.sub(r"#+", " ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return cleaned[:180]
+
+    def _pptd_skill_scenario_profile(self, *, template_style: str, topic: str) -> str:
+        lowered = f"{template_style} {topic}".lower()
+        if any(token in lowered for token in ("education", "course", "training", "teaching", "课程", "教学", "课件", "本科", "大学", "lecture")):
+            return "education"
+        if any(token in lowered for token in ("academic", "research", "thesis", "paper", "论文", "答辩", "学术")):
+            return "academic"
+        if any(token in lowered for token in ("business", "finance", "market", "strategy", "商业", "金融", "战略")):
+            return "business_insight"
+        return "general"
+
+    def _pptd_skill_density_guidance(self, *, profile: str) -> str:
+        if profile == "education":
+            return "university/courseware medium-high density 65-80%; one knowledge point per page; avoid dense text walls"
+        if profile == "academic":
+            return "research/defense medium-high density; argument-evidence-summary per page"
+        if profile == "business_insight":
+            return "insight/report medium-high density; claim, evidence, implication, action"
+        return "balanced medium density; readable zoning instead of crowded paragraphs"
+
+    def _pptd_skill_font_guidance(self, *, profile: str) -> str:
+        if profile == "education":
+            return "courseware title 26-30px, body 18-22px, annotations 12-16px; projector-readable"
+        return "title/body hierarchy with body usually 18-22px and annotations no smaller than 12px"
+
+    def _pptd_skill_risk_prohibitions(self, *, profile: str) -> list[str]:
+        risks = [
+            "checker warnings are visual defects and must be cleared",
+            "do not use decorative placeholders instead of diagrams/tables/comparisons",
+            "do not repeat adjacent layouts without communicative reason",
+        ]
+        if profile == "education":
+            risks.extend(
+                [
+                    "content pages should stay light-background for projector readability",
+                    "page titles must state the knowledge point or conclusion",
+                    "formula/code pages need examples or visual explanation, not pure text lists",
+                ]
+            )
+        return risks

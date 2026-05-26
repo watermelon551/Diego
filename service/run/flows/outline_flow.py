@@ -36,6 +36,7 @@ class OutlineFlowService(
                 run_id=run_id,
                 run=run,
                 rag_context_snippets=rag_context_snippets,
+                requirements_report=requirements_report,
                 effective_template_style=effective_template_style,
             )
             if outline is None:
@@ -46,6 +47,7 @@ class OutlineFlowService(
                     run=run,
                     outline=outline,
                     rag_context_snippets=rag_context_snippets,
+                    requirements_report=requirements_report,
                     effective_template_style=effective_template_style,
                 )
             await self._finalize_outline(

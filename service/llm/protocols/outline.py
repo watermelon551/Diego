@@ -35,6 +35,7 @@ class LLMOutlineProtocol(Protocol):
         rag_source_ids: list[str],
         rag_context_snippets: list[dict[str, Any]],
         template_style: str,
+        requirements_report: dict[str, Any] | None = None,
         target_slide_count: int,
         on_token: TokenCallback,
     ) -> OutlineDocument: ...
@@ -47,6 +48,7 @@ class LLMOutlineProtocol(Protocol):
         rag_source_ids: list[str],
         rag_context_snippets: list[dict[str, Any]],
         template_style: str,
+        requirements_report: dict[str, Any] | None = None,
         target_slide_count: int,
         previous_response: str,
         error_category: str,
@@ -60,5 +62,5 @@ class LLMOutlineProtocol(Protocol):
         template_style: str,
         target_slide_count: int,
         outline: OutlineDocument,
+        requirements_report: dict[str, Any] | None = None,
     ) -> OutlineDocument: ...
-

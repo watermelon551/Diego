@@ -2050,6 +2050,11 @@ def test_pptd_semantic_renderer_preserves_formula_metric_table_cells() -> None:
         col=1,
         is_header=False,
     )
+    compact_window_formula = renderer._metric_table_cell(
+        "Ws ≥ 1 + 2a (a = Tp/Tt)，满足窗口规模",
+        col=1,
+        is_header=False,
+    )
     page = renderer.page_yaml(
         slide=PptdSlideContent(
             index=8,
@@ -2073,8 +2078,10 @@ def test_pptd_semantic_renderer_preserves_formula_metric_table_cells() -> None:
     assert renderer._formula_metric_row("滑动窗口(WS=10)：利用率显著提升，可近100%") is None
     assert formula == "U ≈ 1/(1+2a)"
     assert compact_formula == "U ≈ W/(1+2a)"
+    assert compact_window_formula == "Ws≥1+2a(a=Tp/Tt)"
     assert "a =" not in formula
     assert "W 为" not in compact_formula
+    assert compact_window_formula.count("(") == compact_window_formula.count(")")
     assert "U ≈ 1/，" not in formula
     assert "U ≈ 1/，" not in page
     assert "wrap: false" in page
@@ -2150,6 +2157,25 @@ def test_pptd_semantic_renderer_keeps_numeric_examples_out_of_metric_number_slot
     assert unit == "b"
     assert "100" not in number
     assert "速率1Mbps" in desc
+
+
+def test_pptd_semantic_renderer_compacts_course_metric_labels_for_template_slots() -> None:
+    renderer = PptdSemanticPageRenderer()
+
+    number, unit, desc = renderer._metric_parts(
+        "带宽-延迟积(BDP)：衡量链路容量的关键指标",
+        fallback="3",
+    )
+    table_cell = renderer._metric_table_cell(
+        "允许发送方连续发送多个帧而不等待确认",
+        col=1,
+        is_header=False,
+    )
+
+    assert number == "03"
+    assert unit == "带宽延迟积"
+    assert desc == "衡量链路容量"
+    assert table_cell == "连续发送多个帧不等ACK"
 
 
 def test_pptd_semantic_renderer_cleans_nested_bullet_markers() -> None:

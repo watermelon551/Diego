@@ -21,6 +21,21 @@ class CountingRequirementsLLM(MockLLMClient):
         self.outline_calls += 1
         return await super().generate_outline(**kwargs)
 
+
+class CaptureOutlineRequirementsLLM(CountingRequirementsLLM):
+    def __init__(self) -> None:
+        super().__init__()
+        self.outline_requirements: dict | None = None
+        self.critique_requirements: dict | None = None
+
+    async def generate_outline(self, **kwargs):
+        self.outline_requirements = dict(kwargs.get("requirements_report") or {})
+        return await super().generate_outline(**kwargs)
+
+    async def critique_outline(self, **kwargs):
+        self.critique_requirements = dict(kwargs.get("requirements_report") or {})
+        return await super().critique_outline(**kwargs)
+
 def test_outline_format_error_should_trigger_repair_and_succeed(tmp_path: Path) -> None:
     client = make_client(tmp_path, llm_client=MalformedOutlineThenRepairLLM())
     run_id = client.post(
@@ -103,6 +118,42 @@ def test_pptd_fast_requirements_skip_serial_planning_llm_calls(tmp_path: Path) -
     assert llm.research_calls == 0
     assert llm.design_calls == 0
     assert llm.outline_calls == 1
+
+
+def test_pptd_fast_requirements_are_forwarded_to_outline_prompt(tmp_path: Path) -> None:
+    llm = CaptureOutlineRequirementsLLM()
+    client = make_client(
+        tmp_path,
+        llm_client=llm,
+        compile_provider="pptd",
+        pptd_fast_requirements_enabled=True,
+        outline_critique_enabled=True,
+    )
+    run_id = client.post(
+        "/v1/ppt/runs",
+        json={
+            "topic": "本科课程：数据链路层窗口大小与信道利用率",
+            "project_id": "p-forward-requirements",
+            "rag_source_ids": [],
+            "template_style": "preset:academic-curation education",
+            "target_slide_count": 4,
+            "generation_mode": "scratch",
+        },
+    ).json()["run_id"]
+    detail = wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
+    report = detail["research_report"]
+
+    assert report["scenario_profile"] == "education"
+    assert report["visual_mode"] == "template"
+    assert report["content_mode"] == "search"
+    assert "projector-readable" in report["font_guidance"]
+    assert any("knowledge point" in item for item in report["risk_prohibitions"])
+    assert llm.outline_requirements is not None
+    assert llm.outline_requirements["scenario_profile"] == "education"
+    assert llm.outline_requirements["visual_mode"] == "template"
+    assert llm.outline_requirements["content_mode"] == "search"
+    assert llm.critique_requirements is not None
+    assert llm.critique_requirements["risk_prohibitions"] == report["risk_prohibitions"]
 
 
 def test_non_pptd_requirements_keep_existing_planning_llm_calls(tmp_path: Path) -> None:

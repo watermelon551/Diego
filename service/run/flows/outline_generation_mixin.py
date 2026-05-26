@@ -16,6 +16,7 @@ class OutlineGenerationMixin:
         run_id: str,
         run: RunRecord,
         rag_context_snippets: list[dict],
+        requirements_report: dict,
         effective_template_style: str,
     ) -> OutlineDocument | None:
         orch = self.orch
@@ -41,6 +42,7 @@ class OutlineGenerationMixin:
                             rag_source_ids=run.input.rag_source_ids,
                             rag_context_snippets=rag_context_snippets,
                             template_style=effective_template_style,
+                            requirements_report=requirements_report,
                             target_slide_count=run.input.target_slide_count,
                             on_token=on_token,
                         ),
@@ -65,6 +67,7 @@ class OutlineGenerationMixin:
                             rag_source_ids=run.input.rag_source_ids,
                             rag_context_snippets=rag_context_snippets,
                             template_style=effective_template_style,
+                            requirements_report=requirements_report,
                             target_slide_count=run.input.target_slide_count,
                             previous_response=previous_response,
                             error_category=error_category,
@@ -130,6 +133,7 @@ class OutlineGenerationMixin:
         run: RunRecord,
         outline: OutlineDocument,
         rag_context_snippets: list[dict],
+        requirements_report: dict,
         effective_template_style: str,
     ) -> OutlineDocument:
         orch = self.orch
@@ -143,6 +147,7 @@ class OutlineGenerationMixin:
                     template_style=effective_template_style,
                     target_slide_count=run.input.target_slide_count,
                     outline=outline,
+                    requirements_report=requirements_report,
                 ),
             )
         except OutlineFormatError as fmt_err:
@@ -176,6 +181,7 @@ class OutlineGenerationMixin:
                         rag_source_ids=run.input.rag_source_ids,
                         rag_context_snippets=rag_context_snippets,
                         template_style=effective_template_style,
+                        requirements_report=requirements_report,
                         target_slide_count=run.input.target_slide_count,
                         previous_response=fmt_err.raw_response,
                         error_category=f"critique_{fmt_err.category}",

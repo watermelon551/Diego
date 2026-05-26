@@ -23,7 +23,8 @@ class LLMOutlineRequirementsMixin:
         system_prompt = (
             "You are a presentation research planner. "
             "Return JSON only with keys: audience, purpose, tone, narrative_arc, page_focus(list[str]), "
-            "design_notes(list[str]), style_intent, effective_template_style. "
+            "design_notes(list[str]), style_intent, effective_template_style, scenario_profile, visual_mode, content_mode, "
+            "density_guidance, font_guidance, risk_prohibitions(list[str]). "
             "When rag_context_snippets is non-empty, ground page_focus and design_notes in that evidence."
             f"\n\n{PPTD_SKILL_WORKFLOW_GUIDANCE}"
         )
@@ -54,6 +55,12 @@ class LLMOutlineRequirementsMixin:
                 "design_notes",
                 "style_intent",
                 "effective_template_style",
+                "scenario_profile",
+                "visual_mode",
+                "content_mode",
+                "density_guidance",
+                "font_guidance",
+                "risk_prohibitions",
             ],
             temperature=self.outline_temperature,
         )
@@ -63,6 +70,9 @@ class LLMOutlineRequirementsMixin:
         notes = payload.get("design_notes", [])
         if not isinstance(notes, list):
             notes = []
+        risk_prohibitions = payload.get("risk_prohibitions", [])
+        if not isinstance(risk_prohibitions, list):
+            risk_prohibitions = []
         return {
             "audience": str(payload.get("audience", "")).strip() or "general",
             "purpose": str(payload.get("purpose", "")).strip() or "inform",
@@ -79,6 +89,14 @@ class LLMOutlineRequirementsMixin:
             "effective_template_style": str(
                 payload.get("effective_template_style", "")
             ).strip(),
+            "scenario_profile": str(payload.get("scenario_profile", "")).strip(),
+            "visual_mode": str(payload.get("visual_mode", "")).strip(),
+            "content_mode": str(payload.get("content_mode", "")).strip(),
+            "density_guidance": str(payload.get("density_guidance", "")).strip(),
+            "font_guidance": str(payload.get("font_guidance", "")).strip(),
+            "risk_prohibitions": [
+                str(item).strip() for item in risk_prohibitions if str(item).strip()
+            ][:8],
         }
 
     async def generate_design_intent(

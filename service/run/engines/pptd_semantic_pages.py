@@ -689,7 +689,8 @@ class PptdSemanticPageRenderer:
             return self._short_label(text, max_len=(10 if col == 0 else 14))
         if "=" in text or any(mark in text for mark in ("≈", "/", "min(")):
             return self._short_formula(text, max_len=(20 if col == 1 else 22))
-        return self._short_label(text, max_len=(14 if col == 0 else 22 if col == 1 else 24))
+        text = self._compact_metric_meaning(text) if col == 1 else text
+        return self._short_label(text, max_len=(14 if col == 0 else 16 if col == 1 else 24))
 
     def _metric_judgment(self, item: str) -> str:
         text = self._plain_text(item)
@@ -758,7 +759,21 @@ class PptdSemanticPageRenderer:
             desc = plain.replace(match.group(0), "", 1).strip(" ：:-，,") or plain
             return fallback.zfill(2), self._short_label(unit, max_len=6), self._short_label(desc, max_len=30)
         head, desc = self._split_item(plain)
-        return fallback.zfill(2), self._short_label(head, max_len=6), self._short_label(desc, max_len=30)
+        return fallback.zfill(2), self._short_label(self._compact_metric_meaning(head), max_len=5), self._short_label(self._compact_metric_meaning(desc), max_len=30)
+
+    def _compact_metric_meaning(self, value: str) -> str:
+        text = self._plain_text(value)
+        replacements = {
+            "允许发送方连续发送多个帧而不等待确认": "连续发送多个帧不等ACK",
+            "允许连续发送的未确认帧数量": "可连续发送未确认帧数",
+            "允许连续接收的帧数量": "可连续接收帧数",
+            "W为窗口大小，当W足够大时，U趋近于1": "W足够大时U趋近1",
+            "衡量链路容量的关键指标": "衡量链路容量",
+        }
+        for source, target in replacements.items():
+            text = text.replace(source, target)
+        text = text.replace("带宽-延迟积", "带宽延迟积")
+        return text
 
     def _formula_metric_parts(self, plain: str) -> tuple[str, str, str] | None:
         if not self._has_formula_operator(plain):
@@ -805,7 +820,10 @@ class PptdSemanticPageRenderer:
         compact = self._compact_formula(text)
         if len(compact) <= max_len:
             return compact
-        return self._trim_incomplete_formula(compact[:max_len]).strip(" ：:，,、；;。.!！?？")
+        ultra_compact = self._ultra_compact_formula(compact)
+        if len(ultra_compact) <= max_len:
+            return ultra_compact
+        return self._trim_incomplete_formula(ultra_compact[:max_len]).strip(" ：:，,、；;。.!！?？")
 
     def _compact_formula(self, value: str) -> str:
         text = self._plain_text(value).strip()
@@ -836,6 +854,17 @@ class PptdSemanticPageRenderer:
         text = re.sub(r"[\s,，:：;；]*(其中|where)?\s*[A-Za-z]\s*为\s*$", "", text, flags=re.IGNORECASE)
         text = re.sub(r"[\s,，:：;；]*(其中|where)\s*$", "", text, flags=re.IGNORECASE)
         text = re.sub(r"[\s,，:：;；]*(=|≈|≤|≥|/|\\+|−|-)\s*$", "", text)
+        if text.count("(") > text.count(")") and len(text) >= 4:
+            return text + ")"
+        return text
+
+    def _ultra_compact_formula(self, value: str) -> str:
+        text = self._plain_text(value).strip()
+        text = re.sub(r"\s*([=≈≤≥+−*/-])\s*", r"\1", text)
+        text = re.sub(r"\s+\(", "(", text)
+        text = re.sub(r"\(\s*", "(", text)
+        text = re.sub(r"\s*\)", ")", text)
+        text = re.sub(r"\s+", " ", text).strip()
         return text
 
     def _join_brief(self, items: list[str], *, max_len: int) -> str:
