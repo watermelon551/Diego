@@ -145,15 +145,17 @@ class PptdSkillTemplateDeck:
             max_len=28,
         )
         title_size = self._cover_title_font_size(slide.title)
+        cover_title = self._cover_title_markup(
+            title=slide.title,
+            subtitle=subtitle,
+            title_size=title_size,
+        )
         replacements = {
             "main-title": self._p(slide.title),
             "subtitle": self._p(subtitle),
             "highlight-text": self._p(highlight),
             "footer-info": self._p(self._footer_label(slide, fallback="NeoSpectra · PPTD Courseware")),
-            "cover-title": self._p(
-                f'<span style="font-size:{title_size}px;"><strong>{self._plain(slide.title)}</strong></span>',
-                escaped=False,
-            ),
+            "cover-title": self._p(cover_title, escaped=False),
             "cover-subject": self._p(subtitle),
             "cover-info": self._p(highlight),
             "cover-main-title": self._p(
@@ -163,12 +165,41 @@ class PptdSkillTemplateDeck:
             "cover-subtitle-en": self._p(subtitle),
             "cover-author": self._p("NeoSpectra"),
             "subject-label": self._p("课程"),
+            "institution-label": self._p(
+                '<span style="font-size:13px; color:#D4956A99; font-family:SortsMillGoudy, MiSans, MiSans; letter-spacing:3px">COURSEWARE · 课程课件</span>',
+                escaped=False,
+            ),
+            "cover-subtitle": self._p(
+                f'<span style="font-size:22px; color:#D4956A99; font-family:SortsMillGoudy, siyuanSongti, MiSans;">{self._plain(self._cover_subtitle_label(subtitle))}</span>',
+                escaped=False,
+            ),
+            "speaker-info": self._p(
+                '<span style="font-size:20px; color:#FFFFFF; font-family:SortsMillGoudy, MiSans, MiSans;">NeoSpectra 生成课件</span><br/><span style="font-size:18px; color:#8CA3AD; font-family:SortsMillGoudy, MiSans, MiSans;">资料驱动 · Source-grounded Courseware</span>',
+                escaped=False,
+            ),
+            "cover-date": self._p(
+                '<span style="font-size:18px; color:#8CA3AD; font-family:SortsMillGoudy, MiSans, MiSans;">PPTD-first · 可追踪资料依据</span>',
+                escaped=False,
+            ),
         }
         return self._generic_fill_text_blocks(
             self._replace_many(text, replacements),
             slide=slide,
             skip=set(replacements),
         )
+
+    def _cover_title_markup(self, *, title: str, subtitle: str, title_size: int) -> str:
+        if self.template_name == "education-5":
+            return (
+                f'<span style="font-size:{title_size}px; color:#FFFFFF; '
+                f'font-family:SortsMillGoudy, siyuanSongti, MiSans;"><strong>{self._plain(title)}</strong></span>'
+            )
+        return f'<span style="font-size:{title_size}px;"><strong>{self._plain(title)}</strong></span>'
+
+    def _cover_subtitle_label(self, subtitle: str) -> str:
+        if self.template_name == "education-5":
+            return "PPTD-first · 资料可追踪"
+        return subtitle
 
     def _cover_title_font_size(self, title: str) -> int:
         length = len(str(title or "").strip())

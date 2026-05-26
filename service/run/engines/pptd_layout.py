@@ -23,6 +23,7 @@ class PptdDeckWriter:
         template_style: str = "",
         template_id: str | None = None,
         source_notes: list[str] | None = None,
+        requirements_report: dict[str, Any] | None = None,
     ) -> None:
         self._write_planning_docs(
             pptd_dir=pptd_path.parent,
@@ -32,6 +33,7 @@ class PptdDeckWriter:
             theme=theme,
             template_style=template_style,
             template_id=template_id,
+            requirements_report=requirements_report,
         )
         if skill_dir and PptdSkillTemplateDeck().write_project(
             pptd_path=pptd_path,
@@ -199,6 +201,7 @@ class PptdDeckWriter:
         theme: dict[str, Any],
         template_style: str = "",
         template_id: str | None = None,
+        requirements_report: dict[str, Any] | None = None,
     ) -> None:
         pptd_dir.mkdir(parents=True, exist_ok=True)
         total = max(1, slide_count, len(nodes))
@@ -208,6 +211,7 @@ class PptdDeckWriter:
                 theme=theme,
                 template_style=template_style,
                 template_id=template_id,
+                requirements_report=requirements_report,
             ),
             encoding="utf-8",
         )
@@ -223,25 +227,80 @@ class PptdDeckWriter:
         theme: dict[str, Any],
         template_style: str = "",
         template_id: str | None = None,
+        requirements_report: dict[str, Any] | None = None,
     ) -> str:
         primary = self._color(theme.get("primary") or theme.get("accent"), "#2563eb")
         background = self._color(theme.get("background"), "#ffffff")
         text = self._color(theme.get("text"), "#111827")
         accent = self._color(theme.get("accent"), "#16a34a")
-        profile = self._profile_baseline(template_style=template_style)
+        report = requirements_report if isinstance(requirements_report, dict) else {}
+        profile = self._report_value(report, "scenario_profile") or self._profile_baseline(
+            template_style=template_style
+        )
+        visual_mode = self._report_value(report, "visual_mode") or "creative"
+        content_mode = self._report_value(report, "content_mode") or "outline"
+        density_guidance = self._report_value(report, "density_guidance") or (
+            "projection-readable medium density; use zoning before shrinking text."
+        )
+        font_guidance = self._report_value(report, "font_guidance") or (
+            "body text should remain 18px or above unless the template explicitly requires otherwise."
+        )
+        risk_prohibitions = self._report_list(report, "risk_prohibitions")
+        design_intent = (
+            report.get("design_intent")
+            if isinstance(report.get("design_intent"), dict)
+            else {}
+        )
         template_note = str(template_id or template_style or "auto").strip()
-        return "\n".join(
+        lines = [
+            f"# Design Plan: {title}",
+            "",
+            "## Profile Baseline Declaration",
+            f"- Profile selection: `profiles/{profile}.md`.",
+            "- Referenced dimensions: audience density, font-size floor, visual-as-comprehension-tool policy, layout rhythm, and risk prohibitions from the PPTD skill profile.",
+            f"- Template/style request: `{template_note}`.",
+            "- Deviation notes: NeoSpectra keeps Shell/Workbench UI stable; Diego only materializes PPTD project artifacts and does not expose source/vendor branding.",
+            "",
+            "## Visual Mode",
+            f"- Visual mode: `{visual_mode}`.",
+            f"- Content mode: `{content_mode}`.",
+            "- Creative mode applies when no explicit reference/template is attached; preset-template mode applies when a neutral PPTD template is selected.",
+            "",
+            "## Skill Planning Contract",
+            f"- Density guidance: {density_guidance}",
+            f"- Font guidance: {font_guidance}",
+            "- Visual strategy: "
+            + (
+                self._design_intent_value(design_intent, "visual_strategy")
+                or "use diagrams, comparisons, tables, or process blocks as comprehension aids."
+            ),
+            "- Layout family: "
+            + (
+                self._design_intent_value(design_intent, "layout_family")
+                or "template-led content pages with consistent common elements."
+            ),
+            "- Style recipe: "
+            + (
+                self._design_intent_value(design_intent, "style_recipe")
+                or "neutral PPTD-first courseware style."
+            ),
+            "",
+            "## Risk Prohibitions",
+        ]
+        if risk_prohibitions:
+            lines.extend(f"- {item}" for item in risk_prohibitions)
+        else:
+            lines.extend(
+                [
+                    "- Keep body text readable and avoid overflow-prone dense paragraphs.",
+                    "- Preserve consistent margins, slide numbers, and common page elements.",
+                    "- Avoid default decorative gradients and empty placeholder graphics.",
+                    "- Treat PPTD checker warnings as visual defects unless explicitly intended.",
+                    "- Keep evidence/source notes visible when provided.",
+                ]
+            )
+        lines.extend(
             [
-                f"# Design Plan: {title}",
-                "",
-                "## Profile Baseline Declaration",
-                f"- Profile selection: `profiles/{profile}.md`.",
-                "- Referenced dimensions: audience density, font-size floor, visual-as-comprehension-tool policy, layout rhythm, and risk prohibitions from the PPTD skill profile.",
-                f"- Template/style request: `{template_note}`.",
-                "- Deviation notes: NeoSpectra keeps Shell/Workbench UI stable; Diego only materializes PPTD project artifacts and does not expose source/vendor branding.",
-                "",
-                "## Visual Mode",
-                "Creative mode unless an explicit reference/template is attached; preset-template mode when a neutral PPTD template is selected.",
                 "",
                 "## Style Direction",
                 "- PPTD-first deck generated from a durable outline before page authoring.",
@@ -269,14 +328,14 @@ class PptdDeckWriter:
                 "```",
                 "",
                 "## Quality Guardrails",
-                "- Keep body text readable and avoid overflow-prone dense paragraphs.",
-                "- Preserve consistent margins, slide numbers, and common page elements.",
-                "- Avoid default decorative gradients and empty placeholder graphics.",
-                "- Treat PPTD checker warnings as visual defects unless explicitly intended.",
+                "- Follow the Skill Planning Contract above before selecting page layouts.",
+                "- Use the checker summary as the final source of truth for layout safety.",
+                "- If a page fails because content is too dense, condense or split content before reducing font size.",
                 "- Keep evidence/source notes visible when provided.",
                 "",
             ]
         )
+        return "\n".join(lines)
 
     def _profile_baseline(self, *, template_style: str) -> str:
         lowered = str(template_style or "").lower()
@@ -316,6 +375,24 @@ class PptdDeckWriter:
                 lines.append("  - ")
             lines.append("")
         return "\n".join(lines)
+
+    def _report_value(self, report: dict[str, Any], key: str) -> str:
+        value = report.get(key)
+        if isinstance(value, str):
+            return " ".join(value.split())
+        return ""
+
+    def _report_list(self, report: dict[str, Any], key: str) -> list[str]:
+        value = report.get(key)
+        if not isinstance(value, list):
+            return []
+        return [" ".join(str(item).split()) for item in value if str(item).strip()]
+
+    def _design_intent_value(self, design_intent: dict[Any, Any], key: str) -> str:
+        value = design_intent.get(key)
+        if isinstance(value, str):
+            return " ".join(value.split())
+        return ""
 
     def _yaml_plain(self, value: str) -> str:
         return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'

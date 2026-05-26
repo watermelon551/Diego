@@ -297,6 +297,19 @@ def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -
             generation_mode=GenerationMode.SCRATCH,
         ),
         artifact_dir=str(tmp_path / "artifacts" / "r-pptd"),
+        research_report={
+            "scenario_profile": "education",
+            "visual_mode": "template",
+            "content_mode": "summary",
+            "density_guidance": "courseware medium-high density",
+            "font_guidance": "projector-readable body text",
+            "risk_prohibitions": ["checker warnings are visual defects"],
+            "design_intent": {
+                "visual_strategy": "concept diagrams and metric tables",
+                "layout_family": "education-5 template rhythm",
+                "style_recipe": "university courseware",
+            },
+        },
         outline=OutlineDocument(
             version=1,
             summary="network courseware",
@@ -356,6 +369,13 @@ def test_compile_provider_pptd_builds_checked_project_and_pptx(tmp_path: Path) -
     assert "PPTD-first deck" in (slides_dir / "pptd" / "design.md").read_text(
         encoding="utf-8"
     )
+    design_doc = (slides_dir / "pptd" / "design.md").read_text(encoding="utf-8")
+    assert "- Visual mode: `template`." in design_doc
+    assert "- Content mode: `summary`." in design_doc
+    assert "courseware medium-high density" in design_doc
+    assert "projector-readable body text" in design_doc
+    assert "checker warnings are visual defects" in design_doc
+    assert "concept diagrams and metric tables" in design_doc
     assert "## Page 2" in (slides_dir / "pptd" / "outline.md").read_text(
         encoding="utf-8"
     )
@@ -910,6 +930,9 @@ def test_pptd_writer_prefers_external_skill_template_when_available(tmp_path: Pa
     assert "Vendor footer" not in cover_text
     assert "Template Based" in cover_text
     assert "NeoSpectra" in cover_text
+    assert "Prof. Presenter Name" not in cover_text
+    assert "Department, University" not in cover_text
+    assert "March 2026" not in cover_text
 
 
 def test_pptd_source_notes_from_research_report_are_written_to_pages(tmp_path: Path) -> None:
@@ -1123,8 +1146,42 @@ def test_pptd_writer_routes_academic_curation_courses_to_university_education_te
             encoding="utf-8",
         )
         for page_name in ("cover.page", "toc.page", "content1.page", "final.page"):
-            (pages_dir / page_name).write_text(
-                "\n".join(
+            if page_name == "cover.page":
+                page_text = "\n".join(
+                    [
+                        "pageType: cover",
+                        "elements:",
+                        "  - elementId: institution-label",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        <p>UNIVERSITY LECTURE · 学术讲座</p>",
+                        "  - elementId: cover-title",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        <p>学术讲座主标题</p>",
+                        "  - elementId: cover-subtitle",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        <p>副标题 / 研究方向 · Research Direction</p>",
+                        "  - elementId: speaker-info",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        <p>演讲者姓名 · Prof. Presenter Name</p>",
+                        "        <p>所属院系 / 研究机构 · Department, University</p>",
+                        "  - elementId: cover-date",
+                        "    elementType: text",
+                        "    content:",
+                        "      text: |",
+                        "        <p>2026年3月 · March 2026</p>",
+                        "",
+                    ]
+                )
+            else:
+                page_text = "\n".join(
                     [
                         "pageType: content",
                         "elements:",
@@ -1135,7 +1192,9 @@ def test_pptd_writer_routes_academic_curation_courses_to_university_education_te
                         "        Old title",
                         "",
                     ]
-                ),
+                )
+            (pages_dir / page_name).write_text(
+                page_text,
                 encoding="utf-8",
             )
 
@@ -1158,8 +1217,15 @@ def test_pptd_writer_routes_academic_curation_courses_to_university_education_te
 
     assert "template_marker: education-5" in pptd_path.read_text(encoding="utf-8")
     design_doc = (pptd_path.parent / "design.md").read_text(encoding="utf-8")
+    cover_text = (pptd_path.parent / "pages" / "slide-01.page").read_text(encoding="utf-8")
     assert "Profile Baseline Declaration" in design_doc
     assert "`profiles/education.md`" in design_doc
+    assert "COURSEWARE" in cover_text
+    assert "NeoSpectra 生成课件" in cover_text
+    assert "color:#FFFFFF" in cover_text
+    assert "Prof. Presenter Name" not in cover_text
+    assert "Department, University" not in cover_text
+    assert "March 2026" not in cover_text
 
 
 def test_pptd_skill_template_replaces_university_toc_placeholders() -> None:

@@ -166,6 +166,11 @@ class SlideRegenerationPptdMixin:
             template_style=str(getattr(run.input, "template_style", "") or ""),
             template_id=str(getattr(run.input, "template_id", "") or "") or None,
             source_notes=writer.source_notes_for_run(run=run, slide_count=slide_count),
+            requirements_report=(
+                getattr(run, "research_report", {})
+                if isinstance(getattr(run, "research_report", {}), dict)
+                else {}
+            ),
         )
 
     async def _regenerated_pptd_outline_node(

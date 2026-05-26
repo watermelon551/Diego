@@ -189,6 +189,11 @@ class CompilePptdRuntimeMixin:
             template_style=str(getattr(run_input, "template_style", "") or ""),
             template_id=str(getattr(run_input, "template_id", "") or "") or None,
             source_notes=source_notes,
+            requirements_report=(
+                getattr(run, "research_report", {})
+                if isinstance(getattr(run, "research_report", {}), dict)
+                else {}
+            ),
         )
 
     async def _build_pptd_compile_bundle(
