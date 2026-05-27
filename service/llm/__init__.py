@@ -1,5 +1,6 @@
 from .client import OpenAICompatibleLLMClient
 from .mock import MockLLMClient
+from .parsing import _extract_json_object
 from .types import (
     GeneratedSlide,
     LLMClient,
@@ -20,4 +21,5 @@ __all__ = [
     "OpenAICompatibleLLMClient",
     "OutlineFormatError",
     "SlideSpec",
+    "_extract_json_object",
 ]

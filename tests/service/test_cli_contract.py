@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from service.orchestrator import RunOrchestrator
-from service.store import RunStore
+from service.run.orchestrator import RunOrchestrator
+from service.infra.store import RunStore
 
 from tests.support.service_flow_shared import MockLLMClient, make_settings
 

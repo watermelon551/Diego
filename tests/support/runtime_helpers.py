@@ -9,11 +9,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from service.app import create_app
+from service.api.app import create_app
 from service.config import Settings
-from service.llm_client import MockLLMClient
-from service.orchestrator import RunOrchestrator
-from service.store import RunStore
+from service.llm import MockLLMClient
+from service.run.orchestrator import RunOrchestrator
+from service.infra.store import RunStore
 
 
 def fake_subprocess_run(args, cwd=None, capture_output=False, text=False, check=False, **kwargs):

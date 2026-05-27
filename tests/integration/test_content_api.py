@@ -5,12 +5,12 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from service.app import create_app
+from service.api.app import create_app
 from service.config import Settings
-from service.llm_client import MockLLMClient
+from service.llm import MockLLMClient
 from service.models import LongFormPlan
-from service.orchestrator import RunOrchestrator
-from service.store import RunStore
+from service.run.orchestrator import RunOrchestrator
+from service.infra.store import RunStore
 
 from tests.support.runtime_helpers import make_client, make_settings
 

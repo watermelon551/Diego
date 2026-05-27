@@ -6,20 +6,6 @@ from pathlib import Path
 from tests.service.architecture_guard_support import ROOT, iter_py_files
 
 
-def test_legacy_shims_should_use_explicit_exports() -> None:
-    shim_files = [
-        ROOT / "service" / "app.py",
-        ROOT / "service" / "orchestrator.py",
-        ROOT / "service" / "llm_client.py",
-        ROOT / "service" / "store.py",
-        ROOT / "service" / "skill_profile.py",
-        ROOT / "service" / "style_catalog.py",
-    ]
-    for path in shim_files:
-        text = path.read_text(encoding="utf-8")
-        assert "import *" not in text, f"{path} should not use wildcard exports"
-
-
 def test_layer_boundaries_should_not_have_forbidden_imports() -> None:
     checks: list[tuple[Path, list[str]]] = [
         (
@@ -105,13 +91,6 @@ def test_runtime_kernel_and_engines_should_keep_explicit_boundaries() -> None:
 def test_internal_service_modules_should_not_import_legacy_shims() -> None:
     service_root = ROOT / "service"
     shim_roots = {
-        service_root / "app.py",
-        service_root / "orchestrator.py",
-        service_root / "llm_client.py",
-        service_root / "store.py",
-        service_root / "skill_profile.py",
-        service_root / "style_catalog.py",
-        service_root / "_compat.py",
         service_root / "__init__.py",
     }
     patterns = [

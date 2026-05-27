@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 
-from service.llm_client import GeneratedSlide, LLMTimeoutError, MockLLMClient, OutlineFormatError, SlideSpec
+from service.llm import GeneratedSlide, LLMTimeoutError, MockLLMClient, OutlineFormatError, SlideSpec
 from service.models import OutlineNode
 
 

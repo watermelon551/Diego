@@ -5,11 +5,11 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from service.app import create_app
-from service.llm_client import MockLLMClient
-from service.orchestrator import RunOrchestrator
+from service.api.app import create_app
+from service.llm import MockLLMClient
+from service.run.orchestrator import RunOrchestrator
 from service.rag.stratumind_client import StratumindSearchError
-from service.store import RunStore
+from service.infra.store import RunStore
 
 from tests.support.runtime_helpers import make_settings, wait_status
 

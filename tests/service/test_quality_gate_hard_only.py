@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from service.llm import MockLLMClient
-from service.orchestrator import RunOrchestrator
-from service.store import RunStore
+from service.run.orchestrator import RunOrchestrator
+from service.infra.store import RunStore
 from tests.support.runtime_helpers import make_settings
 
 
