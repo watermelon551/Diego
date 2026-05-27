@@ -5,7 +5,6 @@ from pathlib import Path
 from ..design.skill_profile import DesignProfile
 from ..models import OutlineNode, SlideArtifact
 from .agentic_slide_generation import generate_agentic_slide
-from .legacy_slide_generation import generate_legacy_skill_slide
 from .slide_generation_plan_adapter_mixin import SlideGenerationPlanAdapterMixin
 from .slide_generation_render_adapter_mixin import SlideGenerationRenderAdapterMixin
 
@@ -38,21 +37,13 @@ class RunSlideGenerationPrimitivesMixin(
         run = await self.store.get_run(run_id)
         assert run is not None
         slides_dir = Path(run.artifact_dir) / "slides"
-        if self._use_agentic_engine():
-            return await generate_agentic_slide(
-                self,
-                run_id=run_id,
-                slide_no=slide_no,
-                node=node,
-                design=design,
-                slides_dir=slides_dir,
-            )
-        return await generate_legacy_skill_slide(
+        return await generate_agentic_slide(
             self,
             run_id=run_id,
             slide_no=slide_no,
             node=node,
             design=design,
+            slides_dir=slides_dir,
         )
 
     async def _generate_agentic_slide(

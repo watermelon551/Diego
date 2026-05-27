@@ -14,31 +14,6 @@ class SlowMockLLMClient(MockLLMClient):
         return await super().generate_outline(**kwargs)
 
 
-class CaptureRepairCandidateLLM(MockLLMClient):
-    def __init__(self) -> None:
-        self.review_candidate_titles: list[str] = []
-
-    async def generate_slide(self, **kwargs):
-        outline_node = kwargs["outline_node"]
-        slide_no = kwargs["slide_no"]
-        return await super().generate_slide(
-            **{
-                **kwargs,
-                "outline_node": OutlineNode(
-                    title=f"GEN-{slide_no}-{outline_node.title}",
-                    bullets=[f"GEN bullet {slide_no}.1", f"GEN bullet {slide_no}.2"],
-                    page_type=outline_node.page_type,
-                    layout_hint=outline_node.layout_hint,
-                ),
-            }
-        )
-
-    async def review_slide(self, **kwargs):
-        candidate = kwargs["candidate"]
-        self.review_candidate_titles.append(candidate.title)
-        return await super().review_slide(**kwargs)
-
-
 class CaptureTemplateRepairLLM(MockLLMClient):
     def __init__(self) -> None:
         self.review_candidate_titles: list[str] = []

@@ -120,7 +120,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         raise ValueError("PEXELS_API_KEY is required when ASSET_PROVIDER=pexels")
     if asset_provider == "auto" and not (unsplash_access_key or pexels_api_key):
         raise ValueError("UNSPLASH_ACCESS_KEY or PEXELS_API_KEY is required when ASSET_PROVIDER=auto")
-    if generation_engine not in {"agentic_v2", "legacy"}:
+    if generation_engine != "agentic_v2":
         raise ValueError(f"invalid GENERATION_ENGINE={generation_engine!r}")
     compile_provider = os.getenv("COMPILE_PROVIDER", "none").strip().lower()
     if compile_provider not in {"none", "local", "pagevra", "pptd"}:

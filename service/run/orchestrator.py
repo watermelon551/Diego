@@ -78,5 +78,3 @@ class RunOrchestrator(
         self.settings = settings
         self._initialize_runtime(llm_client=llm_client, rag_client=rag_client)
 
-    def _use_agentic_engine(self) -> bool:
-        return self.settings.generation_engine == "agentic_v2"

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from .slide_regeneration_scratch import (
     SlideRegenerationAgenticScratchMixin,
-    SlideRegenerationReviewedScratchMixin,
     SlideRegenerationScratchFinalizeMixin,
     SlideRegenerationScratchRuntimeMixin,
 )
@@ -11,7 +10,6 @@ from .slide_regeneration_scratch import (
 class SlideRegenerationScratchMixin(
     SlideRegenerationScratchRuntimeMixin,
     SlideRegenerationAgenticScratchMixin,
-    SlideRegenerationReviewedScratchMixin,
     SlideRegenerationScratchFinalizeMixin,
 ):
     """Thin scratch-regeneration facade that delegates into feature-local mixins."""

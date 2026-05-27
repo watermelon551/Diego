@@ -5,12 +5,10 @@ from typing import Any
 from .....design.skill_profile import DesignProfile
 from .....models import OutlineNode
 from .agentic_mixin import AgenticScratchRevisionMixin
-from .standard_mixin import StandardScratchRevisionMixin
 
 
 class QualityScratchRevisionMixin(
     AgenticScratchRevisionMixin,
-    StandardScratchRevisionMixin,
 ):
     orch: Any
 
@@ -26,15 +24,7 @@ class QualityScratchRevisionMixin(
         if run is None or run.outline is None:
             return False
         effective_template_style = orch._resolved_template_style(run)
-        if orch._use_agentic_engine():
-            return await self._revise_agentic_scratch_slides(
-                run_id=run_id,
-                run=run,
-                design=design,
-                effective_template_style=effective_template_style,
-                forced_issues=forced_issues,
-            )
-        return await self._revise_standard_scratch_slides(
+        return await self._revise_agentic_scratch_slides(
             run_id=run_id,
             run=run,
             design=design,

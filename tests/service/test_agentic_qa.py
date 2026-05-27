@@ -567,27 +567,6 @@ def test_agentic_should_emit_candidate_failures_when_llm_candidates_fail(tmp_pat
     ]
     assert candidate_errors
 
-def test_repair_cycle_uses_latest_slide_candidate_not_outline_fallback(tmp_path: Path) -> None:
-    llm = CaptureRepairCandidateLLM()
-    client = make_client(tmp_path, llm_client=llm)
-    run_id = client.post(
-        "/v1/ppt/runs",
-        json={
-            "topic": "Repair Candidate",
-            "project_id": "p-repair",
-            "rag_source_ids": ["a", "b"],
-            "template_style": "default",
-            "target_slide_count": 2,
-            "generation_mode": "scratch",
-        },
-    ).json()["run_id"]
-    wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
-    client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
-    final = wait_status(client, run_id, {"SUCCEEDED"})
-    assert final["qa_report"]["passed"] is True
-    assert llm.review_candidate_titles
-    assert all(title.startswith("GEN-") for title in llm.review_candidate_titles)
-
 def test_agentic_should_pass_slide_brief_and_asset_plan_to_llm(tmp_path: Path) -> None:
     class CaptureBriefAgenticLLM(AgenticMockLLM):
         def __init__(self) -> None:

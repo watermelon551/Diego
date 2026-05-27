@@ -93,7 +93,7 @@ def make_settings(**overrides) -> Settings:
         pexels_api_key="",
         asset_timeout_sec=5.0,
         asset_max_retries=1,
-        generation_engine="legacy",
+        generation_engine="agentic_v2",
         debug_keep_previews=False,
         max_slide_repair_rounds=2,
         outline_timeout_retries=3,

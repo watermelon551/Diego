@@ -815,7 +815,6 @@ def test_run_service_module_layout_should_remain_explicit() -> None:
         "agentic_request_mixin.py",
         "agentic_slide_plan_mixin.py",
         "agentic_js_finalize_mixin.py",
-        "standard_mixin.py",
     }
     existing_scratch_revision_files = {
         path.name for path in scratch_revision_dir.glob("*.py")
@@ -882,7 +881,6 @@ def test_run_service_module_layout_should_remain_explicit() -> None:
     for marker in [
         "SlideRegenerationScratchRuntimeMixin",
         "SlideRegenerationAgenticScratchMixin",
-        "SlideRegenerationReviewedScratchMixin",
         "SlideRegenerationScratchFinalizeMixin",
     ]:
         assert marker in scratch_regen_facade_text, (
@@ -895,7 +893,6 @@ def test_run_service_module_layout_should_remain_explicit() -> None:
         "__init__.py",
         "runtime_mixin.py",
         "agentic_mixin.py",
-        "review_mixin.py",
         "finalize_mixin.py",
     }
     existing_scratch_regen_files = {

@@ -30,27 +30,15 @@ class SlideRegenerationScratchRuntimeMixin:
             instruction=instruction,
             preserve_style=preserve_style,
         )
-        if orch._use_agentic_engine():
-            reviewed, js_code = await self._regenerate_agentic_scratch_slide(
-                run_id=run_id,
-                slide_no=slide_no,
-                run=run,
-                node=node,
-                slide=slide,
-                effective_template_style=effective_template_style,
-                rule_violations=rule_violations,
-            )
-        else:
-            reviewed, js_code = await self._regenerate_reviewed_scratch_slide(
-                run_id=run_id,
-                slide_no=slide_no,
-                run=run,
-                node=node,
-                slide=slide,
-                design=design,
-                effective_template_style=effective_template_style,
-                rule_violations=rule_violations,
-            )
+        reviewed, js_code = await self._regenerate_agentic_scratch_slide(
+            run_id=run_id,
+            slide_no=slide_no,
+            run=run,
+            node=node,
+            slide=slide,
+            effective_template_style=effective_template_style,
+            rule_violations=rule_violations,
+        )
         citations = orch._normalize_citations(
             reviewed.citations, run.input.rag_source_ids, slide_no
         )

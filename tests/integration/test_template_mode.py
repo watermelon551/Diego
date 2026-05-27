@@ -214,7 +214,7 @@ def test_template_asset_provider_failure_should_hard_fail(tmp_path: Path) -> Non
             pexels_api_key="",
             asset_timeout_sec=3.0,
             asset_max_retries=1,
-            generation_engine="legacy",
+            generation_engine="agentic_v2",
             debug_keep_previews=False,
             max_slide_repair_rounds=2,
         ),

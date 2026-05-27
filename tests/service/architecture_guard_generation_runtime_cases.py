@@ -93,7 +93,6 @@ def test_slide_generation_execution_modules_should_remain_explicit() -> None:
         "agentic_slide_generation.py",
         "agentic_slide_candidate_rounds.py",
         "agentic_slide_finalization.py",
-        "legacy_slide_generation.py",
     }
     existing_files = {path.name for path in run_dir.glob("*slide_generation*.py")} | {
         path.name for path in run_dir.glob("agentic_slide_finalization.py")
