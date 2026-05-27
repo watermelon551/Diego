@@ -3,6 +3,10 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 
+import base64
+import shutil
+import tempfile
+
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -13,6 +17,7 @@ from ..models import (
     RegenerateSlideRequest,
     SaveSlideSceneRequest,
 )
+from ..models.pptd_tool import PptdCheckRequest, PptdCompileRequest, PptdScreenshotRequest
 from ..run import (
     SlideSceneConflictError,
     SlideSceneNodeNotFoundError,
@@ -189,3 +194,112 @@ def register_ppt_routes(app: FastAPI, ctx: AppContext) -> None:
         return StreamingResponse(
             sse_event_stream(ctx, run_id), media_type="text/event-stream"
         )
+
+    # --- Generic pptd tool endpoints (for noeryn agent delegation) ---
+
+    def _build_pptd_adapter():
+        from ..pptd_runtime import PptdRuntimeAdapter
+
+        settings = ctx.orchestrator.settings
+        return PptdRuntimeAdapter(
+            skill_dir=Path(str(getattr(settings, "pptd_skill_dir", "") or "")),
+            runner_mode=str(getattr(settings, "pptd_runner_mode", "") or "local"),
+            runner_image=str(getattr(settings, "pptd_runner_image", "") or "debian:bookworm-slim"),
+            platform=str(getattr(settings, "pptd_runner_platform", "") or "linux/amd64"),
+            timeout_sec=float(getattr(settings, "pptd_runner_timeout_sec", 120.0) or 120.0),
+        )
+
+    @app.post("/v1/pptd/check")
+    async def check_pptd(req: PptdCheckRequest):
+        pptd_path = Path(req.pptd_path)
+        if not pptd_path.is_file():
+            raise HTTPException(status_code=404, detail=f".pptd file not found: {req.pptd_path}")
+        adapter = _build_pptd_adapter()
+        result = adapter.check(pptd_path)
+        return {
+            "ok": result.ok,
+            "reason": result.reason,
+            "return_code": result.return_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "error_count": result.error_count,
+            "warning_count": result.warning_count,
+        }
+
+    @app.post("/v1/pptd/compile")
+    async def compile_pptd(req: PptdCompileRequest):
+        pptd_path = Path(req.pptd_path)
+        output_path = Path(req.output_path)
+        if not pptd_path.is_file():
+            raise HTTPException(status_code=404, detail=f".pptd file not found: {req.pptd_path}")
+        adapter = _build_pptd_adapter()
+        # Agent handles check→fix loop; compile endpoint only blocks on errors, not warnings
+        check = adapter.check(pptd_path)
+        if check.reason == "pptd_check_failed":
+            return {
+                "ok": False,
+                "stage": "check",
+                "reason": check.reason,
+                "return_code": check.return_code,
+                "stdout": check.stdout,
+                "stderr": check.stderr,
+                "error_count": check.error_count,
+                "warning_count": check.warning_count,
+            }
+        # Use /tmp for intermediate output (pptd_tool via QEMU can't write to Docker volumes)
+        with tempfile.TemporaryDirectory(prefix="pptd-compile-") as tmp_dir:
+            tmp_output = Path(tmp_dir) / "presentation.pptx"
+            convert = adapter.convert(pptd_path, output_path=tmp_output)
+            if not convert.ok:
+                return {
+                    "ok": False,
+                    "stage": "convert",
+                    "reason": convert.reason,
+                    "return_code": convert.return_code,
+                    "stdout": convert.stdout,
+                    "stderr": convert.stderr,
+                }
+            # Copy result to requested output path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(tmp_output, output_path)
+            pptx_bytes = tmp_output.read_bytes()
+        return {
+            "ok": True,
+            "pptx_path": str(output_path),
+            "return_code": convert.return_code,
+            "stdout": convert.stdout,
+            "check_warning_count": check.warning_count,
+            "pptx_size_bytes": len(pptx_bytes),
+        }
+
+    @app.post("/v1/pptd/screenshot")
+    async def screenshot_pptd(req: PptdScreenshotRequest):
+        pptx_path = Path(req.pptx_path)
+        output_dir = Path(req.output_dir)
+        if not pptx_path.is_file():
+            raise HTTPException(status_code=404, detail=f".pptx file not found: {req.pptx_path}")
+        adapter = _build_pptd_adapter()
+        # Use /tmp for screenshots (pptd_tool via QEMU can't write to Docker volumes)
+        with tempfile.TemporaryDirectory(prefix="pptd-screenshot-") as tmp_dir:
+            tmp_output = Path(tmp_dir)
+            result = adapter.screenshot(pptx_path, output_dir=tmp_output, pages=req.pages)
+            screenshots_data = []
+            if result.ok:
+                # Copy screenshots to requested output dir and collect base64
+                output_dir.mkdir(parents=True, exist_ok=True)
+                for png_path in sorted(tmp_output.glob("*.png")):
+                    shutil.copy2(png_path, output_dir / png_path.name)
+                    screenshots_data.append({
+                        "filename": png_path.name,
+                        "path": str(output_dir / png_path.name),
+                        "size_bytes": png_path.stat().st_size,
+                    })
+        return {
+            "ok": result.ok,
+            "reason": result.reason,
+            "return_code": result.return_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "screenshots": [s["path"] for s in screenshots_data],
+            "count": len(screenshots_data),
+        }

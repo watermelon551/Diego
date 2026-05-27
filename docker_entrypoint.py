@@ -16,6 +16,10 @@ def main() -> None:
     if os.geteuid() == 0:
         user = pwd.getpwnam("diego")
         _chown_tree(runtime_dir, user.pw_uid, user.pw_gid)
+        # Grant diego user write access to workspace volume (for pptd tool endpoints)
+        workspace_dir = Path("/app/workspace")
+        if workspace_dir.is_dir():
+            _chown_tree(workspace_dir, user.pw_uid, user.pw_gid)
         os.environ["HOME"] = user.pw_dir
         os.setgid(user.pw_gid)
         os.setuid(user.pw_uid)
