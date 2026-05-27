@@ -318,7 +318,7 @@ def test_regenerate_slide_updates_pptd_project_without_legacy_slide_js(
     slide_one = next(item for item in before["slides"] if item["slide_no"] == 1)
     assert slide_one["js_path"] is None
     assert slide_one["js_code"] == ""
-    pptd_path = Path(before["compile_js_path"])
+    pptd_path = Path(before["artifacts"]["compile_bundle"]["script_path"])
     page_path = pptd_path.parent / "pages" / "slide-01.page"
     assert pptd_path.is_file()
     assert page_path.is_file()
@@ -354,7 +354,7 @@ def test_regenerate_slide_updates_pptd_project_without_legacy_slide_js(
     assert "Reviewed mechanism point" in page_text
     assert "重做要求：" not in page_text
     assert any("精简标题" in item for item in llm.review_rule_violations[0])
-    assert after["compile_provider"] == "pptd"
+    assert after["compile_result"]["provider"] == "pptd"
     assert after["compile_bundle"]["entrypoint"] == "slides/compile_pptd_bundle.js"
     assert any(
         event["event"] == "compile.completed"
@@ -548,10 +548,10 @@ def test_slide_scene_save_updates_pptd_page_before_recompile(
 
     assert save_resp.status_code == 200
     run_detail = client.get(f"/v1/ppt/runs/{run_id}").json()
-    pptd_path = Path(run_detail["compile_js_path"])
+    pptd_path = Path(run_detail["artifacts"]["compile_bundle"]["script_path"])
     page_text = (pptd_path.parent / "pages" / "slide-01.page").read_text(encoding="utf-8")
     assert "PPTD Saved Title" in page_text
-    assert run_detail["compile_provider"] == "pptd"
+    assert run_detail["compile_result"]["provider"] == "pptd"
     assert any(
         event["event"] == "compile.completed"
         and event["payload"].get("reason") == "pptd_scene_save"

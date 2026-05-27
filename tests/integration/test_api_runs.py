@@ -100,8 +100,8 @@ def test_confirm_gate_and_scratch_success_flow(tmp_path: Path) -> None:
     assert client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True}).status_code == 200
     final_data = wait_status(client, run_id, {"SUCCEEDED"})
 
-    assert final_data["compile_js_path"] and Path(final_data["compile_js_path"]).exists()
-    assert final_data["pptx_path"] in {None, ""}
+    assert final_data["compile_bundle"]["status"] == "ready"
+    assert "pptx" not in final_data["artifacts"]
     assert len(final_data["slides"]) == 4
     assert all(item.get("js_path") and Path(item["js_path"]).exists() for item in final_data["slides"])
     assert final_data["qa_report"]["passed"] is True
@@ -205,9 +205,9 @@ def test_scratch_compile_can_use_pagevra_provider(tmp_path: Path, monkeypatch: p
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"})
 
-    assert Path(final["pptx_path"]).read_bytes() == b"pagevra-pptx"
-    assert final["compile_provider"] == "pagevra"
-    assert final["compile_fallback_used"] is False
+    assert Path(final["compile_result"]["artifact_path"]).read_bytes() == b"pagevra-pptx"
+    assert final["compile_result"]["provider"] == "pagevra"
+    assert final["compile_result"]["fallback_used"] is False
     compile_event = next(item for item in final["events"] if item["event"] == "compile.completed")
     assert compile_event["payload"]["provider"] == "pagevra"
     assert compile_event["payload"]["requested_provider"] == "pagevra"
@@ -233,9 +233,9 @@ def test_scratch_compile_local_provider_is_explicit_and_succeeds(tmp_path: Path)
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"})
 
-    assert Path(final["pptx_path"]).exists()
-    assert final["compile_provider"] == "local"
-    assert final["compile_fallback_used"] is False
+    assert Path(final["compile_result"]["artifact_path"]).exists()
+    assert final["compile_result"]["provider"] == "local"
+    assert final["compile_result"]["fallback_used"] is False
     assert final["compile_bundle"]["available"] is True
     assert final["compile_bundle"]["provider"] == "diego"
     assert final["compile_result"]["status"] == "succeeded"
@@ -290,8 +290,8 @@ def test_pptd_run_detail_reports_pptd_compile_bundle_entrypoint(
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"})
 
-    assert final["compile_provider"] == "pptd"
-    assert final["compile_js_path"].endswith("/slides/pptd/presentation.pptd")
+    assert final["compile_result"]["provider"] == "pptd"
+    assert final["compile_bundle"]["entrypoint"] == "slides/compile_pptd_bundle.js"
     assert (
         final["generation_result"]["compile_bundle_entrypoint"]
         == "slides/compile_pptd_bundle.js"

@@ -81,8 +81,8 @@ def test_template_upload_and_template_generation(tmp_path: Path) -> None:
     wait_status(client, run_id, {"AWAITING_OUTLINE_CONFIRM"})
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"})
-    assert final["pptx_path"] and Path(final["pptx_path"]).exists()
-    assert final["compile_js_path"] and Path(final["compile_js_path"]).exists()
+    assert final["artifacts"]["pptx"]["downloadable"] is True
+    assert Path(final["artifacts"]["pptx"]["path"]).exists()
     assert final["slides"]
     assert all(item.get("js_path") and Path(item["js_path"]).exists() for item in final["slides"])
     assert final["qa_report"]["passed"] is True
@@ -91,7 +91,6 @@ def test_template_upload_and_template_generation(tmp_path: Path) -> None:
     assert final["compile_result"]["requested_provider"] is None
     assert final["compile_result"]["provider"] is None
     assert final["compile_result"]["artifact_path"] is None
-    assert final["compile_provider"] is None
     compile_event = next(item for item in final["events"] if item["event"] == "compile.completed")
     assert compile_event["payload"]["requested_provider"] == "none"
     assert compile_event["payload"]["provider"] is None
@@ -125,7 +124,7 @@ def test_template_structural_rebuild_for_target_count(tmp_path: Path) -> None:
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"})
 
-    output_pptx = Path(final["pptx_path"])
+    output_pptx = Path(final["artifacts"]["pptx"]["path"])
     assert output_pptx.exists()
     with ZipFile(output_pptx, "r") as zf:
         names = set(zf.namelist())
@@ -167,7 +166,7 @@ def test_template_semantic_placeholder_replacement(tmp_path: Path) -> None:
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"})
 
-    output_pptx = Path(final["pptx_path"])
+    output_pptx = Path(final["artifacts"]["pptx"]["path"])
     assert output_pptx.exists()
     with ZipFile(output_pptx, "r") as zf:
         slide1_xml = zf.read("ppt/slides/slide1.xml").decode("utf-8", errors="ignore")
@@ -275,7 +274,7 @@ def test_template_slot_mismatch_should_remove_excess_picture_groups(tmp_path: Pa
     client.post(f"/v1/ppt/runs/{run_id}/outline/confirm", json={"approved": True})
     final = wait_status(client, run_id, {"SUCCEEDED"})
 
-    with ZipFile(final["pptx_path"], "r") as zf:
+    with ZipFile(final["artifacts"]["pptx"]["path"], "r") as zf:
         slide1_xml = zf.read("ppt/slides/slide1.xml").decode("utf-8", errors="ignore")
         slide1_rels = zf.read("ppt/slides/_rels/slide1.xml.rels").decode("utf-8", errors="ignore")
 

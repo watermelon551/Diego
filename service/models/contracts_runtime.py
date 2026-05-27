@@ -106,31 +106,6 @@ class RunDetailResponse(BaseModel):
     generation_result: GenerationResult
     compile_bundle: CompileBundleResult
     compile_result: CompileResult
-    compile_js_path: Optional[str] = Field(
-        default=None,
-        deprecated=True,
-        description="Legacy mirror for compatibility. Prefer generation_result/compile_bundle/compile_result.",
-    )
-    pptx_path: Optional[str] = Field(
-        default=None,
-        deprecated=True,
-        description="Legacy mirror for compatibility. Prefer artifacts.pptx for Diego-owned files and compile_result for explicit provider outcomes.",
-    )
-    compile_requested_provider: Optional[str] = Field(
-        default=None,
-        deprecated=True,
-        description="Legacy mirror for compatibility. Prefer compile_result.requested_provider.",
-    )
-    compile_provider: Optional[str] = Field(
-        default=None,
-        deprecated=True,
-        description="Legacy mirror for compatibility. Prefer compile_result.provider.",
-    )
-    compile_fallback_used: bool = Field(
-        default=False,
-        deprecated=True,
-        description="Legacy mirror for compatibility. Prefer compile_result.fallback_used.",
-    )
     qa_report: dict[str, Any]
     template_mapping_report: dict[str, Any]
     chart_truth_report: dict[str, Any]

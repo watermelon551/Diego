@@ -50,12 +50,14 @@ class RunApplicationDetailMixin:
             self._compile_bundle_entrypoint(run) if compile_bundle_ready else None
         )
         if compile_bundle_ready:
+            compile_js_path = str(run.compile_js_path or "").strip()
             artifacts["compile_bundle"] = {
                 "available": True,
                 "entrypoint": compile_bundle_entrypoint,
                 "provider": "diego",
                 "mode": generation_mode,
                 "build_endpoint": f"/v1/ppt/runs/{run.run_id}/artifacts/compile-bundle",
+                **({"script_path": compile_js_path} if compile_js_path else {}),
             }
         generation_result = GenerationResult(
             mode=run.input.generation_mode,
@@ -131,11 +133,6 @@ class RunApplicationDetailMixin:
             generation_result=generation_result,
             compile_bundle=compile_bundle,
             compile_result=compile_result,
-            compile_js_path=run.compile_js_path,
-            pptx_path=run.pptx_path,
-            compile_requested_provider=getattr(run, "compile_requested_provider", None),
-            compile_provider=run.compile_provider,
-            compile_fallback_used=run.compile_fallback_used,
             qa_report=run.qa_report,
             template_mapping_report=run.template_mapping_report,
             chart_truth_report=run.chart_truth_report,
