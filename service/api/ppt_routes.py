@@ -259,9 +259,16 @@ def register_ppt_routes(app: FastAPI, ctx: AppContext) -> None:
                     "stdout": convert.stdout,
                     "stderr": convert.stderr,
                 }
-            # Copy result to requested output path
+            # Copy to requested output path (workspace is shared volume, Diego owns it)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(tmp_output, output_path)
+            try:
+                shutil.copy2(tmp_output, output_path)
+            except PermissionError:
+                # Parent owned by root — write to /app/workspace/output/ instead (diego-owned)
+                alt_dir = Path("/app/workspace/output")
+                alt_dir.mkdir(parents=True, exist_ok=True)
+                output_path = alt_dir / output_path.name
+                shutil.copy2(tmp_output, output_path)
             pptx_bytes = tmp_output.read_bytes()
         return {
             "ok": True,
@@ -285,8 +292,12 @@ def register_ppt_routes(app: FastAPI, ctx: AppContext) -> None:
             result = adapter.screenshot(pptx_path, output_dir=tmp_output, pages=req.pages)
             screenshots_data = []
             if result.ok:
-                # Copy screenshots to requested output dir and collect base64
-                output_dir.mkdir(parents=True, exist_ok=True)
+                # Copy to requested output dir (workspace is shared volume)
+                try:
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                except PermissionError:
+                    output_dir = Path("/app/workspace/output") / "screenshots"
+                    output_dir.mkdir(parents=True, exist_ok=True)
                 for png_path in sorted(tmp_output.glob("*.png")):
                     shutil.copy2(png_path, output_dir / png_path.name)
                     screenshots_data.append({

@@ -20,6 +20,11 @@ def main() -> None:
         workspace_dir = Path("/app/workspace")
         if workspace_dir.is_dir():
             _chown_tree(workspace_dir, user.pw_uid, user.pw_gid)
+            # Set world-writable + setgid so new files by any user are writable by diego
+            os.chmod(workspace_dir, 0o777)
+            for child in workspace_dir.iterdir():
+                if child.is_dir():
+                    os.chmod(child, 0o777)
         os.environ["HOME"] = user.pw_dir
         os.setgid(user.pw_gid)
         os.setuid(user.pw_uid)
