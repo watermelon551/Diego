@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -13,11 +14,31 @@ from ...models import (
     RunStatus,
 )
 
+# Overall timeout for plan generation (RAG + plan + critique)
+_PLAN_GENERATION_TIMEOUT_SEC = 600  # 10 minutes hard cap
+
 
 class ContentPlanGenerationMixin:
     orch: Any
 
     async def start_plan(self, run_id: str) -> None:
+        try:
+            await asyncio.wait_for(
+                self._start_plan_inner(run_id),
+                timeout=_PLAN_GENERATION_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            await self.orch._fail_run(
+                run_id,
+                "PLANNING",
+                "PLAN_GENERATION_TIMEOUT",
+                retryable=True,
+                error_details={
+                    "reason": f"Plan generation exceeded overall timeout ({_PLAN_GENERATION_TIMEOUT_SEC}s).",
+                },
+            )
+
+    async def _start_plan_inner(self, run_id: str) -> None:
         run = await self.orch.store.get_run(run_id)
         if (
             run is None

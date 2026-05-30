@@ -8,10 +8,31 @@ from ...llm import LongFormFormatError
 from ...models import ContentBlock, EventType, LongFormDraft, LongFormDraftSection, RunStatus
 
 
+# Overall timeout for draft generation (all sections combined)
+_DRAFT_GENERATION_TIMEOUT_SEC = 900  # 15 minutes hard cap (5 sections × ~3 min each)
+
+
 class ContentDraftGenerationMixin:
     orch: Any
 
     async def generate_draft(self, run_id: str) -> None:
+        try:
+            await asyncio.wait_for(
+                self._generate_draft_inner(run_id),
+                timeout=_DRAFT_GENERATION_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            await self.orch._fail_run(
+                run_id,
+                "DRAFTING",
+                "DRAFT_GENERATION_TIMEOUT",
+                retryable=True,
+                error_details={
+                    "reason": f"Draft generation exceeded overall timeout ({_DRAFT_GENERATION_TIMEOUT_SEC}s).",
+                },
+            )
+
+    async def _generate_draft_inner(self, run_id: str) -> None:
         run = await self.orch.store.get_run(run_id)
         if run is None or getattr(run.input, "capability", "") != "content":
             return
