@@ -35,11 +35,11 @@ class ContentRunLifecycleMixin:
         await self.orch.store.add_run(run)
         content_kind = str(getattr(req, "content_kind", "longform_draft") or "longform_draft")
         if content_kind == "structure_expansion":
-            self.orch._spawn(self.generate_structure_expansion(run_id))
+            self.orch._spawn(self.generate_structure_expansion(run_id), run_id=run_id)
         elif content_kind == "item_generation":
-            self.orch._spawn(self.generate_item_generation(run_id))
+            self.orch._spawn(self.generate_item_generation(run_id), run_id=run_id)
         else:
-            self.orch._spawn(self.start_plan(run_id))
+            self.orch._spawn(self.start_plan(run_id), run_id=run_id)
         return RunSummaryResponse(run_id=run_id, trace_id=trace_id, status=run.status)
 
     async def get_run_detail(self, run_id: str) -> LongFormRunDetailResponse | None:

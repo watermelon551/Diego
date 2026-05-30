@@ -77,7 +77,7 @@ class ContentPlanConfirmMixin:
                 },
             )
         if req.approved:
-            self.orch._spawn(self.generate_draft(run_id))
+            self.orch._spawn(self.generate_draft(run_id), run_id=run_id)
         updated = await self.orch.store.get_run(run_id)
         assert updated is not None
         return RunSummaryResponse(

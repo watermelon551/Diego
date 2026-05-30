@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -10,11 +11,31 @@ from ...models import (
     StructureExpansionRunRequest,
 )
 
+# Overall timeout for structured content generation (LLM + RAG + processing)
+_STRUCTURED_GENERATION_TIMEOUT_SEC = 240  # 4 minutes, leaves 1 min for shell poll
+
 
 class StructuredContentGenerationMixin:
     orch: Any
 
     async def generate_structure_expansion(self, run_id: str) -> None:
+        try:
+            await asyncio.wait_for(
+                self._generate_structure_expansion_inner(run_id),
+                timeout=_STRUCTURED_GENERATION_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            await self.orch._fail_run(
+                run_id,
+                "DRAFTING",
+                "STRUCTURE_EXPANSION_TIMEOUT",
+                retryable=True,
+                error_details={
+                    "reason": f"Structure expansion exceeded overall timeout ({_STRUCTURED_GENERATION_TIMEOUT_SEC}s). LLM call may have hung.",
+                },
+            )
+
+    async def _generate_structure_expansion_inner(self, run_id: str) -> None:
         run = await self.orch.store.get_run(run_id)
         if (
             run is None
@@ -87,6 +108,23 @@ class StructuredContentGenerationMixin:
         )
 
     async def generate_item_generation(self, run_id: str) -> None:
+        try:
+            await asyncio.wait_for(
+                self._generate_item_generation_inner(run_id),
+                timeout=_STRUCTURED_GENERATION_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            await self.orch._fail_run(
+                run_id,
+                "DRAFTING",
+                "ITEM_GENERATION_TIMEOUT",
+                retryable=True,
+                error_details={
+                    "reason": f"Item generation exceeded overall timeout ({_STRUCTURED_GENERATION_TIMEOUT_SEC}s). LLM call may have hung.",
+                },
+            )
+
+    async def _generate_item_generation_inner(self, run_id: str) -> None:
         run = await self.orch.store.get_run(run_id)
         if (
             run is None

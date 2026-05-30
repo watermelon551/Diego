@@ -46,7 +46,8 @@ class SlideRegenerationApplicationMixin:
                 slide_no=slide_no,
                 instruction=instruction.strip(),
                 preserve_style=preserve_style,
-            )
+            ),
+            run_id=run_id,
         )
         return RunSummaryResponse(
             run_id=run.run_id,

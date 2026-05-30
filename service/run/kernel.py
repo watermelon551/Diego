@@ -43,7 +43,7 @@ class RunKernel:
             artifact_dir=str(artifact_dir),
         )
         await self.orch.store.add_run(run)
-        self.orch._spawn(self.start_outline(run_id))
+        self.orch._spawn(self.start_outline(run_id), run_id=run_id)
         return RunSummaryResponse(run_id=run_id, trace_id=trace_id, status=run.status)
 
     async def get_run_detail(self, run_id: str) -> Any:

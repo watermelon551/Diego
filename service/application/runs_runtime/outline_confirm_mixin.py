@@ -75,7 +75,7 @@ class RunApplicationOutlineConfirmMixin:
                 },
             )
         if req.approved:
-            self.orch._spawn(self.orch._kernel.execute_generation_pipeline(run_id))
+            self.orch._spawn(self.orch._kernel.execute_generation_pipeline(run_id), run_id=run_id)
         updated = await self.orch.store.get_run(run_id)
         assert updated is not None
         return RunSummaryResponse(
