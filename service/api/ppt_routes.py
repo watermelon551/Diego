@@ -295,11 +295,25 @@ def register_ppt_routes(app: FastAPI, ctx: AppContext) -> None:
                 # Copy to requested output dir (workspace is shared volume)
                 try:
                     output_dir.mkdir(parents=True, exist_ok=True)
+                    # Ensure directory is writable
+                    import stat
+                    output_dir.chmod(output_dir.stat().st_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
                 except PermissionError:
                     output_dir = Path("/app/workspace/output") / "screenshots"
                     output_dir.mkdir(parents=True, exist_ok=True)
                 for png_path in sorted(tmp_output.glob("*.png")):
-                    shutil.copy2(png_path, output_dir / png_path.name)
+                    try:
+                        shutil.copy2(png_path, output_dir / png_path.name)
+                    except PermissionError:
+                        # If copy fails, try to fix permissions and retry
+                        import stat
+                        output_dir.chmod(output_dir.stat().st_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+                        for child in output_dir.iterdir():
+                            try:
+                                child.chmod(child.stat().st_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+                            except (OSError, PermissionError):
+                                pass
+                        shutil.copy2(png_path, output_dir / png_path.name)
                     screenshots_data.append({
                         "filename": png_path.name,
                         "path": str(output_dir / png_path.name),
