@@ -35,7 +35,7 @@ class PptdRuntimeAdapter:
         runner_image: str,
         run_subprocess: RunSubprocess = subprocess.run,
         platform: str = "linux/amd64",
-        timeout_sec: float = 120.0,
+        timeout_sec: float = 1200.0,
         runner_mode: str = "docker",
     ) -> None:
         self.skill_dir = Path(skill_dir)

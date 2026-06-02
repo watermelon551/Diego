@@ -13,8 +13,8 @@ from ...models import (
 
 # Overall timeout for structured content generation (LLM + RAG + processing)
 # Must exceed per-attempt LLM timeout × max retries to avoid false timeouts.
-# With LLM_TIMEOUT_SEC=120 and OUTLINE_TIMEOUT_RETRIES=3, max retry time = 480s.
-_STRUCTURED_GENERATION_TIMEOUT_SEC = 600  # 10 minutes hard cap
+# With LLM_TIMEOUT_SEC=1200 and OUTLINE_TIMEOUT_RETRIES=3, max retry time = 4800s.
+_STRUCTURED_GENERATION_TIMEOUT_SEC = 6000  # 10 minutes hard cap
 
 
 class StructuredContentGenerationMixin:

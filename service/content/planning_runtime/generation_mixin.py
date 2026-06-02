@@ -15,7 +15,7 @@ from ...models import (
 )
 
 # Overall timeout for plan generation (RAG + plan + critique)
-_PLAN_GENERATION_TIMEOUT_SEC = 600  # 10 minutes hard cap
+_PLAN_GENERATION_TIMEOUT_SEC = 6000  # 10 minutes hard cap
 
 
 class ContentPlanGenerationMixin:

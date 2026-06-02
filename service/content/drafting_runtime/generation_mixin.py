@@ -9,7 +9,7 @@ from ...models import ContentBlock, EventType, LongFormDraft, LongFormDraftSecti
 
 
 # Overall timeout for draft generation (all sections combined)
-_DRAFT_GENERATION_TIMEOUT_SEC = 900  # 15 minutes hard cap (5 sections × ~3 min each)
+_DRAFT_GENERATION_TIMEOUT_SEC = 9000  # 15 minutes hard cap scaled by generation settings (10x)
 
 
 class ContentDraftGenerationMixin:
@@ -62,7 +62,7 @@ class ContentDraftGenerationMixin:
                             rag_context_snippets=rag_context_snippets,
                         ),
                     ),
-                    timeout=max(90.0, min(240.0, float(self.orch.settings.llm_timeout_sec))),
+                    timeout=max(900.0, min(2400.0, float(self.orch.settings.llm_timeout_sec))),
                 )
             except asyncio.TimeoutError:
                 drafted = self._section_from_confirmed_plan(section)

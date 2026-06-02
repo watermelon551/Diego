@@ -46,7 +46,7 @@ class RunPreviewRuntimeMixin:
                 slide_no=slide_no,
                 pagevra_base_url=pagevra_base_url,
                 timeout_sec=float(
-                    getattr(self.settings, "pagevra_preview_timeout_sec", 30.0) or 30.0
+                    getattr(self.settings, "pagevra_preview_timeout_sec", 300.0) or 300.0
                 ),
                 provider_run_id=run_id,
             )

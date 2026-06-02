@@ -56,7 +56,7 @@ async def render_slide_via_pagevra(
     theme: dict[str, Any],
     slide_no: int,
     pagevra_base_url: str,
-    timeout_sec: float = 30.0,
+    timeout_sec: float = 300.0,
     provider_run_id: str | None = None,
     provider_trace_id: str | None = None,
     **kwargs: Any,

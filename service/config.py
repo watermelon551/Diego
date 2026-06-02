@@ -22,19 +22,19 @@ class Settings:
     asset_provider: str = "auto"
     unsplash_access_key: str = ""
     pexels_api_key: str = ""
-    asset_timeout_sec: float = 20.0
+    asset_timeout_sec: float = 200.0
     asset_max_retries: int = 2
     generation_engine: str = "agentic_v2"
     debug_keep_previews: bool = False
     max_slide_repair_rounds: int = 4
     outline_timeout_retries: int = 3
-    outline_timeout_backoff_sec: float = 1.0
+    outline_timeout_backoff_sec: float = 10.0
     outline_structured_output: bool = True
     outline_critique_enabled: bool = True
     pptd_fast_requirements_enabled: bool = False
     llm_request_concurrency: int = 6
     slide_candidate_workers: int = 3
-    llm_timeout_jitter_sec: float = 0.2
+    llm_timeout_jitter_sec: float = 2.0
     llm_sanitize_think_tags: bool = True
     llm_json_repair_retry: int = 1
     slide_fatal_early_stop_rounds: int = 2
@@ -49,30 +49,30 @@ class Settings:
     llm_concurrency_evaluate: int = 2
     llm_concurrency_repair: int = 1
     timeout_streak_degrade_threshold: int = 3
-    timeout_streak_recover_window_sec: float = 120.0
-    slide_generation_timeout_sec: float = 900.0
-    qa_finalize_timeout_sec: float = 300.0
+    timeout_streak_recover_window_sec: float = 1200.0
+    slide_generation_timeout_sec: float = 9000.0
+    qa_finalize_timeout_sec: float = 3000.0
     compile_provider: str = "none"
     pptd_skill_dir: str = ""
     pptd_runner_mode: str = "docker"
     pptd_runner_image: str = "debian:bookworm-slim"
     pptd_runner_platform: str = "linux/amd64"
-    pptd_runner_timeout_sec: float = 120.0
+    pptd_runner_timeout_sec: float = 1200.0
     pptd_screenshot_enabled: bool = False
     pptd_screenshot_dpi: int = 150
     pagevra_base_url: str = ""
     pagevra_preview_enabled: bool = False
-    pagevra_preview_timeout_sec: float = 30.0
-    pagevra_compile_timeout_sec: float = 180.0
+    pagevra_preview_timeout_sec: float = 300.0
+    pagevra_compile_timeout_sec: float = 1800.0
     stratumind_base_url: str = ""
-    stratumind_timeout_sec: float = 12.0
+    stratumind_timeout_sec: float = 120.0
     rag_top_k: int = 10
     rag_context_max_snippets: int = 10
     rag_context_max_chars: int = 700
     run_store: str = "memory"
     database_url: str = ""
     recovery_scan_on_boot: bool = True
-    event_poll_interval_sec: float = 0.5
+    event_poll_interval_sec: float = 5.0
 
 
 def _require_env(name: str) -> str:
@@ -125,38 +125,38 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     compile_provider = os.getenv("COMPILE_PROVIDER", "none").strip().lower()
     if compile_provider not in {"none", "local", "pagevra", "pptd"}:
         raise ValueError(f"invalid COMPILE_PROVIDER={compile_provider!r}")
-    pptd_runner_timeout_sec = _env_float("PPTD_RUNNER_TIMEOUT_SEC", 120.0)
+    pptd_runner_timeout_sec = _env_float("PPTD_RUNNER_TIMEOUT_SEC", 1200.0)
     if pptd_runner_timeout_sec <= 0:
         raise ValueError("PPTD_RUNNER_TIMEOUT_SEC must be > 0")
     pptd_screenshot_dpi = _env_int("PPTD_SCREENSHOT_DPI", 150)
     pptd_runner_mode = os.getenv("PPTD_RUNNER_MODE", "docker").strip().lower()
     if pptd_runner_mode not in {"docker", "local"}:
         raise ValueError(f"invalid PPTD_RUNNER_MODE={pptd_runner_mode!r}")
-    pagevra_compile_timeout_sec = _env_float("PAGEVRA_COMPILE_TIMEOUT_SEC", 180.0)
+    pagevra_compile_timeout_sec = _env_float("PAGEVRA_COMPILE_TIMEOUT_SEC", 1800.0)
     if pagevra_compile_timeout_sec <= 0:
         raise ValueError("PAGEVRA_COMPILE_TIMEOUT_SEC must be > 0")
-    pagevra_preview_timeout_sec = _env_float("PAGEVRA_PREVIEW_TIMEOUT_SEC", 30.0)
+    pagevra_preview_timeout_sec = _env_float("PAGEVRA_PREVIEW_TIMEOUT_SEC", 300.0)
     if pagevra_preview_timeout_sec <= 0:
         raise ValueError("PAGEVRA_PREVIEW_TIMEOUT_SEC must be > 0")
-    stratumind_timeout_sec = _env_float("STRATUMIND_TIMEOUT_SECONDS", 12.0)
+    stratumind_timeout_sec = _env_float("STRATUMIND_TIMEOUT_SECONDS", 120.0)
     if stratumind_timeout_sec <= 0:
         raise ValueError("STRATUMIND_TIMEOUT_SECONDS must be > 0")
 
-    outline_timeout_backoff_sec = _env_float("OUTLINE_TIMEOUT_BACKOFF_SEC", 1.0)
+    outline_timeout_backoff_sec = _env_float("OUTLINE_TIMEOUT_BACKOFF_SEC", 10.0)
     if outline_timeout_backoff_sec < 0:
         raise ValueError("OUTLINE_TIMEOUT_BACKOFF_SEC must be >= 0")
-    llm_timeout_jitter_sec = _env_float("LLM_TIMEOUT_JITTER_SEC", 0.2)
+    llm_timeout_jitter_sec = _env_float("LLM_TIMEOUT_JITTER_SEC", 2.0)
     if llm_timeout_jitter_sec < 0:
         raise ValueError("LLM_TIMEOUT_JITTER_SEC must be >= 0")
-    timeout_streak_recover_window_sec = _env_float("TIMEOUT_STREAK_RECOVER_WINDOW_SEC", 120.0)
+    timeout_streak_recover_window_sec = _env_float("TIMEOUT_STREAK_RECOVER_WINDOW_SEC", 1200.0)
     if timeout_streak_recover_window_sec < 0:
         raise ValueError("TIMEOUT_STREAK_RECOVER_WINDOW_SEC must be >= 0")
-    qa_finalize_timeout_sec = _env_float("QA_FINALIZE_TIMEOUT_SEC", 300.0)
+    qa_finalize_timeout_sec = _env_float("QA_FINALIZE_TIMEOUT_SEC", 3000.0)
     if qa_finalize_timeout_sec <= 0:
         raise ValueError("QA_FINALIZE_TIMEOUT_SEC must be > 0")
-    slide_generation_timeout_sec = _env_float("DIEGO_SLIDE_GENERATION_TIMEOUT_SEC", 900.0)
-    if slide_generation_timeout_sec < 300:
-        raise ValueError("DIEGO_SLIDE_GENERATION_TIMEOUT_SEC must be >= 300")
+    slide_generation_timeout_sec = _env_float("DIEGO_SLIDE_GENERATION_TIMEOUT_SEC", 9000.0)
+    if slide_generation_timeout_sec < 3000:
+        raise ValueError("DIEGO_SLIDE_GENERATION_TIMEOUT_SEC must be >= 3000")
     run_store = os.getenv("DIEGO_RUN_STORE", "memory").strip().lower()
     if run_store not in {"memory", "postgres"}:
         raise ValueError(f"invalid DIEGO_RUN_STORE={run_store!r}")
@@ -172,7 +172,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         llm_base_url=_require_env("LLM_BASE_URL"),
         llm_api_key=_require_env("LLM_API_KEY"),
         llm_model=_require_env("LLM_MODEL"),
-        llm_timeout_sec=_env_float("LLM_TIMEOUT_SEC", 300.0),
+        llm_timeout_sec=_env_float("LLM_TIMEOUT_SEC", 3000.0),
         llm_max_retries=_env_int("LLM_MAX_RETRIES", 2),
         llm_temperature_outline=_env_float("LLM_TEMPERATURE_OUTLINE", 0.3),
         llm_temperature_slide=_env_float("LLM_TEMPERATURE_SLIDE", 0.6),
@@ -183,7 +183,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         asset_provider=asset_provider,
         unsplash_access_key=unsplash_access_key,
         pexels_api_key=pexels_api_key,
-        asset_timeout_sec=_env_float("ASSET_TIMEOUT_SEC", 20.0),
+        asset_timeout_sec=_env_float("ASSET_TIMEOUT_SEC", 200.0),
         asset_max_retries=_env_int("ASSET_MAX_RETRIES", 2),
         generation_engine=generation_engine,
         debug_keep_previews=_env_bool("DEBUG_KEEP_PREVIEWS", False),

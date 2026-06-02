@@ -206,7 +206,7 @@ def register_ppt_routes(app: FastAPI, ctx: AppContext) -> None:
             runner_mode=str(getattr(settings, "pptd_runner_mode", "") or "local"),
             runner_image=str(getattr(settings, "pptd_runner_image", "") or "debian:bookworm-slim"),
             platform=str(getattr(settings, "pptd_runner_platform", "") or "linux/amd64"),
-            timeout_sec=float(getattr(settings, "pptd_runner_timeout_sec", 120.0) or 120.0),
+            timeout_sec=float(getattr(settings, "pptd_runner_timeout_sec", 1200.0) or 1200.0),
         )
 
     @app.post("/v1/pptd/check")

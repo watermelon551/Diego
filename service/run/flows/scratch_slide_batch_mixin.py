@@ -85,7 +85,7 @@ class ScratchSlideBatchMixin:
             generate_one(i, node)
             for i, node in enumerate(run.outline.nodes, start=1)
         ]
-        timeout_sec = float(getattr(orch.settings, "slide_generation_timeout_sec", 900.0) or 900.0)
+        timeout_sec = float(getattr(orch.settings, "slide_generation_timeout_sec", 9000.0) or 9000.0)
         timed_out = False
         try:
             results = await asyncio.wait_for(

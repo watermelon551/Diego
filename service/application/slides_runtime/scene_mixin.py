@@ -391,8 +391,8 @@ class SlideSceneApplicationMixin:
                 or "linux/amd64"
             ),
             timeout_sec=float(
-                getattr(self.orch.settings, "pptd_runner_timeout_sec", 120.0)
-                or 120.0
+                getattr(self.orch.settings, "pptd_runner_timeout_sec", 1200.0)
+                or 1200.0
             ),
             run_subprocess=self.orch.subprocess.run,
         )

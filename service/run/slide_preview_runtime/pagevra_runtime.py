@@ -32,7 +32,7 @@ async def render_slide_via_pagevra_runtime(
     slide_no: int,
     pagevra_base_url: str,
     httpx_module: Any,
-    timeout_sec: float = 30.0,
+    timeout_sec: float = 300.0,
     provider_run_id: str | None = None,
     provider_trace_id: str | None = None,
     **_: Any,
@@ -48,7 +48,7 @@ async def render_slide_via_pagevra_runtime(
         provider_trace_id=provider_trace_id,
     )
 
-    timeout_value = max(1.0, float(timeout_sec or 30.0))
+    timeout_value = max(1.0, float(timeout_sec or 300.0))
     try:
         async with httpx_module.AsyncClient(timeout=timeout_value) as client:
             response = await client.post(f"{base_url}/compile/bundles", json=bundle)
