@@ -33,7 +33,7 @@ class LLMContentPrimitivesMixin:
             "You are Diego's generic structure-expansion primitive. "
             "Expand source-grounded ideas into reusable structure units for an upstream host. "
             "Do not mention any host product internals. Return JSON only with keys: "
-            "units, anchors, source_refs, revision_targets, warnings."
+            "title, units, anchors, source_refs, revision_targets, warnings."
         )
         user_prompt = (
             f"generation_goal={generation_goal}\n"
@@ -45,7 +45,8 @@ class LLMContentPrimitivesMixin:
             f"requested_output_shape={requested_output_shape}\n"
             f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
             f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
-            "Produce concise but substantive units. Each unit must have stable unit_id, title, "
+            "Produce a concise formal title for this generated structure and concise but substantive units. "
+            "Each unit must have stable unit_id, title, "
             "summary, 2-5 key_points, source_refs, anchor_ref, and revision_target. "
             "If selected_node_path is present, treat this as a node-local replacement expansion."
         )
@@ -91,7 +92,7 @@ class LLMContentPrimitivesMixin:
             "You are Diego's generic item-generation primitive. "
             "Generate source-grounded assessment or interaction items for an upstream host. "
             "Do not own host workflow semantics. Return JSON only with keys: "
-            "items, source_refs, revision_targets, warnings."
+            "title, items, source_refs, revision_targets, warnings."
         )
         user_prompt = (
             f"generation_goal={generation_goal}\n"
@@ -102,7 +103,7 @@ class LLMContentPrimitivesMixin:
             f"requested_output_shape={requested_output_shape}\n"
             f"rag_source_ids={json.dumps(rag_source_ids, ensure_ascii=False)}\n"
             f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
-            "Produce items with stable item_id, stem, choices when applicable, expected_response, "
+            "Produce a concise formal title for this generated item set and items with stable item_id, stem, choices when applicable, expected_response, "
             "expected_response_hints, explanation, source_refs, difficulty, and intent. "
             "Honor current_question_id as a single-item rewrite anchor when present. "
             "If humorous_distractors is true, distractors may be playful but must remain plausible."
@@ -193,6 +194,7 @@ class LLMContentPrimitivesMixin:
                 }
             )
         return {
+            "title": self._text(parsed.get("title")) or self._text(parsed.get("topic")),
             "units": units,
             "anchors": self._text_list(parsed.get("anchors")),
             "source_refs": self._text_list(parsed.get("source_refs")),
@@ -235,6 +237,7 @@ class LLMContentPrimitivesMixin:
                 }
             )
         return {
+            "title": self._text(parsed.get("title")) or self._text(parsed.get("topic")),
             "items": items,
             "source_refs": self._text_list(parsed.get("source_refs")),
             "revision_targets": self._text_list(parsed.get("revision_targets"))

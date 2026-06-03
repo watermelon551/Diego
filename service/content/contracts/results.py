@@ -78,6 +78,7 @@ class StructureExpansionUnit(BaseModel):
 class StructureExpansionResult(BaseModel):
     schema_version: Literal["structure_expansion_v1"] = "structure_expansion_v1"
     content_kind: Literal["structure_expansion"] = "structure_expansion"
+    title: str = ""
     units: list[StructureExpansionUnit] = Field(default_factory=list, min_length=1)
     anchors: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
@@ -100,6 +101,7 @@ class GeneratedItem(BaseModel):
 class ItemGenerationResult(BaseModel):
     schema_version: Literal["item_generation_v1"] = "item_generation_v1"
     content_kind: Literal["item_generation"] = "item_generation"
+    title: str = ""
     items: list[GeneratedItem] = Field(default_factory=list, min_length=1)
     source_refs: list[str] = Field(default_factory=list)
     revision_targets: list[str] = Field(default_factory=list)
@@ -146,4 +148,3 @@ class LongFormSectionRevisionResponse(BaseModel):
     status: RunStatus
     draft_version: int = Field(ge=1)
     section: LongFormDraftSection
-

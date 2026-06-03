@@ -169,6 +169,7 @@ class LLMStructuredOutputMixin:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
+                        "title": {"type": "string"},
                         "units": {
                             "type": "array",
                             "minItems": 1,
@@ -192,7 +193,7 @@ class LLMStructuredOutputMixin:
                         "revision_targets": {"type": "array", "items": {"type": "string"}},
                         "warnings": {"type": "array", "items": {"type": "string"}},
                     },
-                    "required": ["units", "anchors", "source_refs", "revision_targets", "warnings"],
+                    "required": ["title", "units", "anchors", "source_refs", "revision_targets", "warnings"],
                 },
             },
         }
@@ -211,6 +212,7 @@ class LLMStructuredOutputMixin:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
+                        "title": {"type": "string"},
                         "items": {
                             "type": "array",
                             "minItems": 1,
@@ -235,7 +237,7 @@ class LLMStructuredOutputMixin:
                         "revision_targets": {"type": "array", "items": {"type": "string"}},
                         "warnings": {"type": "array", "items": {"type": "string"}},
                     },
-                    "required": ["items", "source_refs", "revision_targets", "warnings"],
+                    "required": ["title", "items", "source_refs", "revision_targets", "warnings"],
                 },
             },
         }

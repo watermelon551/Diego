@@ -46,6 +46,7 @@ class MockStructuredContentGenerationMixin:
             for idx in range(1, 3)
         ]
         return StructureExpansionResult(
+            title=f"{generation_goal} structure",
             units=units,
             anchors=[anchor] if anchor else [],
             source_refs=list(base_refs),
@@ -88,6 +89,7 @@ class MockStructuredContentGenerationMixin:
             for idx in range(1, 3)
         ]
         return ItemGenerationResult(
+            title=f"{generation_goal} items",
             items=items,
             source_refs=list(base_refs),
             revision_targets=[item.item_id for item in items],

@@ -277,6 +277,7 @@ def test_structure_expansion_run_should_return_generic_units_without_product_sem
     result = detail["structure_expansion"]
     assert result["schema_version"] == "structure_expansion_v1"
     assert result["content_kind"] == "structure_expansion"
+    assert result["title"]
     assert len(result["units"]) == 2
     assert result["revision_targets"] == ["unit-1", "unit-2"]
     assert "draft" in detail and detail["draft"] is None
@@ -313,6 +314,7 @@ def test_item_generation_run_should_return_generic_items_without_grading_or_quiz
     result = detail["item_generation"]
     assert result["schema_version"] == "item_generation_v1"
     assert result["content_kind"] == "item_generation"
+    assert result["title"]
     assert len(result["items"]) == 2
     assert result["revision_targets"] == ["item-1", "item-2"]
     assert "grading" not in str(result).lower()

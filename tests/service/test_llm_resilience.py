@@ -271,6 +271,7 @@ def test_content_primitives_use_llm_json_for_structure_expansion() -> None:
             self.last_max_tokens = kwargs.get("max_tokens")
             return json.dumps(
                 {
+                    "title": "TCP 拥塞控制结构",
                     "units": [
                         {
                             "unit_id": "node-1",
@@ -306,6 +307,7 @@ def test_content_primitives_use_llm_json_for_structure_expansion() -> None:
     )
 
     assert result.units[0].title == "拥塞窗口变化"
+    assert result.title == "TCP 拥塞控制结构"
     assert result.revision_targets == ["node-1"]
     assert client.last_messages is not None
     assert "selected_node_path" in client.last_messages[1]["content"]
@@ -324,6 +326,7 @@ def test_content_primitives_use_llm_json_for_item_generation() -> None:
             self.last_max_tokens = kwargs.get("max_tokens")
             return json.dumps(
                 {
+                    "title": "拥塞控制随堂题",
                     "items": [
                         {
                             "item_id": "q-1",
@@ -363,6 +366,7 @@ def test_content_primitives_use_llm_json_for_item_generation() -> None:
     )
 
     assert result.items[0].item_id == "q-1"
+    assert result.title == "拥塞控制随堂题"
     assert result.items[0].expected_response == "探测可用带宽"
     assert client.last_messages is not None
     assert "current_question_id" in client.last_messages[1]["content"]
