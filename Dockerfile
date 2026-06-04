@@ -34,18 +34,10 @@ COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /node-runtime/node_modules ./node_modules
 
 COPY pyproject.toml README.md ./
-RUN --mount=type=cache,target=/root/.cache/pip <<'EOF'
-set -eux
-python - <<'PY' > /tmp/requirements.txt
-import tomllib
-
-with open("pyproject.toml", "rb") as handle:
-    project = tomllib.load(handle)["project"]
-for dependency in project["dependencies"]:
-    print(dependency)
-PY
-python -m pip install -r /tmp/requirements.txt
-EOF
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
+    python -c "import tomllib; project = tomllib.load(open('pyproject.toml', 'rb'))['project']; print('\n'.join(project['dependencies']))" > /tmp/requirements.txt; \
+    python -m pip install -r /tmp/requirements.txt
 
 COPY service ./service
 COPY docker_entrypoint.py ./docker_entrypoint.py
