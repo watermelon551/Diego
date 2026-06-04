@@ -47,8 +47,13 @@ class LLMContentPrimitivesMixin:
             f"rag_context_snippets={json.dumps(rag_context_snippets, ensure_ascii=False)}\n"
             "Produce a concise formal title for this generated structure and concise but substantive units. "
             "Each unit must have stable unit_id, title, "
-            "summary, 2-5 key_points, source_refs, anchor_ref, and revision_target. "
-            "If selected_node_path is present, treat this as a node-local replacement expansion."
+            "optional parent_unit_id, summary, 2-5 key_points, source_refs, anchor_ref, and revision_target. "
+            "When requested_output_shape=hierarchical_units or constraints.quality_profile=educational_mindmap, "
+            "produce a rich, teachable, asymmetric structure with several primary branches and deeper sub-branches where useful; "
+            "avoid a flat taxonomy, repeated branch names, filenames, page numbers, chunk markers, and source-trace wording. "
+            "Use parent_unit_id to place sub-branches under their conceptual parent. "
+            "If constraints.refine_scope=local_subtree, expand only the selected target branch described by anchor_context and target_subtree_snapshot; "
+            "do not redesign sibling branches or the whole map."
         )
         text = await self._chat_text(
             messages=[
@@ -173,6 +178,7 @@ class LLMContentPrimitivesMixin:
             units.append(
                 {
                     "unit_id": unit_id,
+                    "parent_unit_id": self._text(raw.get("parent_unit_id")),
                     "title": self._text(raw.get("title")) or f"Unit {index}",
                     "summary": self._text(raw.get("summary")),
                     "key_points": [self._text(item) for item in self._list_value(raw.get("key_points")) if self._text(item)],
@@ -185,6 +191,7 @@ class LLMContentPrimitivesMixin:
             units.append(
                 {
                     "unit_id": "unit-1",
+                    "parent_unit_id": "",
                     "title": "Generated structure",
                     "summary": self._text(parsed.get("summary")),
                     "key_points": [],

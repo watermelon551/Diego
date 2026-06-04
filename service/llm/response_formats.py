@@ -178,6 +178,7 @@ class LLMStructuredOutputMixin:
                                 "additionalProperties": False,
                                 "properties": {
                                     "unit_id": {"type": "string"},
+                                    "parent_unit_id": {"type": "string"},
                                     "title": {"type": "string"},
                                     "summary": {"type": "string"},
                                     "key_points": {"type": "array", "items": {"type": "string"}},
@@ -185,7 +186,7 @@ class LLMStructuredOutputMixin:
                                     "anchor_ref": {"type": "string"},
                                     "revision_target": {"type": "string"},
                                 },
-                                "required": ["unit_id", "title", "summary", "key_points", "source_refs", "anchor_ref", "revision_target"],
+                                "required": ["unit_id", "parent_unit_id", "title", "summary", "key_points", "source_refs", "anchor_ref", "revision_target"],
                             },
                         },
                         "anchors": {"type": "array", "items": {"type": "string"}},

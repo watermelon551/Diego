@@ -67,6 +67,7 @@ class LongFormDraft(BaseModel):
 
 class StructureExpansionUnit(BaseModel):
     unit_id: str = Field(min_length=1)
+    parent_unit_id: str = ""
     title: str = Field(min_length=1)
     summary: str = ""
     key_points: list[str] = Field(default_factory=list)

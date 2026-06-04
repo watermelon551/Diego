@@ -275,6 +275,7 @@ def test_content_primitives_use_llm_json_for_structure_expansion() -> None:
                     "units": [
                         {
                             "unit_id": "node-1",
+                            "parent_unit_id": "",
                             "title": "拥塞窗口变化",
                             "summary": "围绕窗口增长和收缩组织节点。",
                             "key_points": ["慢启动", "拥塞避免"],
@@ -300,17 +301,20 @@ def test_content_primitives_use_llm_json_for_structure_expansion() -> None:
             evidence_refs=["chunk-1"],
             anchor_context=StructureExpansionAnchorContext(anchor_label="root"),
             constraints={"selected_node_path": "root/slow-start", "depth": "deep"},
-            requested_output_shape="units",
+            requested_output_shape="hierarchical_units",
             rag_source_ids=["file-1"],
             rag_context_snippets=[{"chunk_id": "chunk-1", "text": "慢启动"}],
         )
     )
 
     assert result.units[0].title == "拥塞窗口变化"
+    assert result.units[0].parent_unit_id == ""
     assert result.title == "TCP 拥塞控制结构"
     assert result.revision_targets == ["node-1"]
     assert client.last_messages is not None
     assert "selected_node_path" in client.last_messages[1]["content"]
+    assert "hierarchical_units" in client.last_messages[1]["content"]
+    assert "parent_unit_id" in client.last_messages[1]["content"]
     assert client.last_max_tokens == 2780
 
 
@@ -393,6 +397,7 @@ def test_content_primitives_repair_malformed_structure_json() -> None:
                     "units": [
                         {
                             "unit_id": "node-1",
+                            "parent_unit_id": "",
                             "title": "拥塞窗口变化",
                             "summary": "围绕窗口增长和收缩组织节点。",
                             "key_points": ["慢启动"],
@@ -426,6 +431,22 @@ def test_content_primitives_repair_malformed_structure_json() -> None:
 
     assert client.calls == 2
     assert result.units[0].title == "拥塞窗口变化"
+
+
+def test_structure_expansion_response_format_allows_parent_unit_id() -> None:
+    client = llm_client_mod.OpenAICompatibleLLMClient(
+        base_url="https://api.example.com/v1",
+        api_key="k",
+        model="gpt-test",
+    )
+
+    response_format = client._structure_expansion_response_format()
+
+    unit_schema = response_format["json_schema"]["schema"]["properties"]["units"][
+        "items"
+    ]
+    assert "parent_unit_id" in unit_schema["properties"]
+    assert "parent_unit_id" in unit_schema["required"]
 
 
 def test_longform_section_normalizes_object_bullet_items() -> None:
